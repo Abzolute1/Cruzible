@@ -1,0 +1,139 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775995664598,
+    "model": {
+      "provider": "local",
+      "id": "lm-studio",
+      "name": "Local (LM Studio)"
+    },
+    "contextWindow": 50000,
+    "cwd": "/home/alex",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "webSearch",
+      "webFetch"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775995683814,
+    "turn": 1,
+    "inputLength": 85,
+    "inputPreview": "hey, can you search online about the recent claude code leak and sumamrize it fo..."
+  },
+  {
+    "type": "degraded_turn",
+    "timestamp": 1775995689196,
+    "turn": 1,
+    "severity": "critical",
+    "stopReason": "error",
+    "outputTokens": 0,
+    "textLength": 0,
+    "reasons": [
+      "error_turn"
+    ],
+    "recoveryHint": "Recover from the failed turn directly. Keep the next response concise and avoid replaying the full prior reasoning."
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775995689198,
+    "turn": 1,
+    "inputTokensDelta": 0,
+    "outputTokensDelta": 0,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 0.044000000000000004,
+    "stopReason": null
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775995722990,
+    "turn": 2,
+    "inputLength": 401,
+    "inputPreview": "hey, can you search online about the recent claude code leak and sumamrize it fo..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775995730662,
+    "turn": 2,
+    "toolName": "webSearch",
+    "toolCallId": "267295273",
+    "arguments": {
+      "query": "claude code leak summary"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775995731492,
+    "turn": 2,
+    "toolName": "webSearch",
+    "toolCallId": "267295273",
+    "isError": false,
+    "contentLength": 1046,
+    "contentPreview": "Web search: claude code leak summary\nTop sources:\n1. Anthropic Claude Code Source Code Leak: Full Analysis (2026) — //duckduckgo.com/l/?uddg=https%3A%2F%2Ftech%2Dinsider.org%2Fanthropic%2Dclaude%2Dcod...",
+    "durationMs": 830
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775995741219,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "386614102",
+    "arguments": {
+      "url": "https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775995741357,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "386614102",
+    "isError": false,
+    "contentLength": 537,
+    "contentPreview": "Fetched source: https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/\nTitle: Anthropic&#8217;s Claude Code Source Code Leak: Inside the 512,000-Line npm Packaging Error That Expose...",
+    "durationMs": 138
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775995756701,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "256940874",
+    "arguments": {
+      "url": "https://www.varonis.com/blog/claude-code-leak"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775995757184,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "256940874",
+    "isError": false,
+    "contentLength": 524,
+    "contentPreview": "Fetched source: https://www.varonis.com/blog/claude-code-leak\nTitle: A Look Inside Claude's Leaked AI Coding Agent\nKey excerpt:\nA Look Inside Claude's Leaked AI Coding Agent\n-\na.cta_button{-moz-box-si...",
+    "durationMs": 483
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775995797641,
+    "turn": 2,
+    "inputTokensDelta": 15424,
+    "outputTokensDelta": 2758,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 11.802,
+    "stopReason": null
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775937279458,
+    "model": {
+      "provider": "local",
+      "id": "lm-studio",
+      "name": "Local (LM Studio)"
+    },
+    "contextWindow": 50000,
+    "cwd": "/home/alex",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775937284978,
+    "turn": 1,
+    "inputLength": 5,
+    "inputPreview": "hello"
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775937288239,
+    "turn": 1,
+    "inputTokensDelta": 1352,
+    "outputTokensDelta": 139,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 2.9819999999999998,
+    "stopReason": null
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775937293888,
+    "turn": 2,
+    "inputLength": 3,
+    "inputPreview": "yes"
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775937296776,
+    "turn": 2,
+    "inputTokensDelta": 1447,
+    "outputTokensDelta": 206,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 3.306,
+    "stopReason": null
+  }
+]

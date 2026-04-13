@@ -1,0 +1,39 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775787368253,
+    "model": {
+      "provider": "nvidia",
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "Nemotron 3 Super 120B A12B"
+    },
+    "contextWindow": 50000,
+    "cwd": "/home/alex",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775787383210,
+    "turn": 1,
+    "inputLength": 5,
+    "inputPreview": "hello"
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775787383274,
+    "turn": 1,
+    "inputTokensDelta": 0,
+    "outputTokensDelta": 0,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 0.004,
+    "stopReason": null
+  }
+]

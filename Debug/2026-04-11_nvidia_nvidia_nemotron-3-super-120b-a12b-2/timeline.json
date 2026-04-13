@@ -1,0 +1,346 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775872383824,
+    "model": {
+      "provider": "nvidia",
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "Nemotron 3 Super 120B A12B"
+    },
+    "contextWindow": 50000,
+    "cwd": "/home/alex/Desktop/Tests/broken_code_base",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775872432756,
+    "turn": 1,
+    "inputLength": 91,
+    "inputPreview": "Audit the codebase in your current directory. Summarize i at the end and then pr..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872437504,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "751507729",
+    "arguments": {
+      "command": "find . -type f | head -50 && echo \"---\" && find . -name \"*.py\" -o -name \"*.js\" -o -name \"*.ts\" -o -name \"*.go\" -o -name \"*.rs\" | head -30",
+      "command_timeout": 10
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872439626,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "751507729",
+    "isError": false,
+    "contentLength": 487,
+    "contentPreview": "./utils.py\n./app.pyc\n./services.pyc\n./services.py\n./utils.pyc\n./migrations.pyc\n./migrations.py\n./config.py\n./__pycache__/config.cpython-312.pyc\n./__pycache__/models.cpython-312.pyc\n./__pycache__/migra...",
+    "durationMs": 2122
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445637,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "764161843",
+    "arguments": {
+      "path": "./README.md"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "400860426",
+    "arguments": {
+      "path": "./requirements.txt"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "879494915",
+    "arguments": {
+      "path": "./config.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "853889385",
+    "arguments": {
+      "path": "./models.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "793885842",
+    "arguments": {
+      "path": "./app.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "496235591",
+    "arguments": {
+      "path": "./utils.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "619750003",
+    "arguments": {
+      "path": "./services.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775872445638,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "860572684",
+    "arguments": {
+      "path": "./migrations.py"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445643,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "764161843",
+    "isError": false,
+    "contentLength": 3975,
+    "contentPreview": "# Inventory Management System\n\nA REST API for managing product inventory across multiple warehouses. Built with Flask and SQLAlchemy.\n\n## Features\n\n- Product CRUD operations with category management\n-...",
+    "durationMs": 6
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445655,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "400860426",
+    "isError": false,
+    "contentLength": 76,
+    "contentPreview": "flask==3.0.0\nsqlalchemy==2.0.23\npsycopg2-binary==2.9.9\npython-dotenv==1.0.0\n",
+    "durationMs": 17
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445655,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "879494915",
+    "isError": false,
+    "contentLength": 6823,
+    "contentPreview": "\"\"\"\nApplication configuration module.\nHandles environment variables, database connections, and application settings.\n\"\"\"\nimport os\nimport json\nfrom pathlib import Path\nfrom typing import Optional, Dic...",
+    "durationMs": 17
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445667,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "853889385",
+    "isError": false,
+    "contentLength": 19175,
+    "contentPreview": "\"\"\"\nSQLAlchemy database models for the inventory management system.\nDefines tables for products, categories, warehouses, transactions, and audit logs.\n\"\"\"\nimport logging\nfrom datetime import datetime,...",
+    "durationMs": 29
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445692,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "793885842",
+    "isError": false,
+    "contentLength": 23432,
+    "contentPreview": "\"\"\"\nFlask application for the inventory management REST API.\nDefines routes, request handling, authentication, and error handlers.\n\"\"\"\nimport os\nimport re\nimport json\nimport logging\nfrom datetime impo...",
+    "durationMs": 54
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445707,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "496235591",
+    "isError": false,
+    "contentLength": 16097,
+    "contentPreview": "\"\"\"\nUtility functions for the inventory management system.\nIncludes validators, formatters, date helpers, and calculation utilities.\n\"\"\"\nimport re\nimport math\nimport hashlib\nimport logging\nfrom dateti...",
+    "durationMs": 69
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445719,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "619750003",
+    "isError": false,
+    "contentLength": 34173,
+    "contentPreview": "\"\"\"\nBusiness logic services for the inventory management system.\nHandles complex operations like stock transfers, reorder calculations,\nreporting, and batch operations.\n\"\"\"\nimport logging\nimport json\n...",
+    "durationMs": 81
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775872445736,
+    "turn": 1,
+    "toolName": "read",
+    "toolCallId": "860572684",
+    "isError": false,
+    "contentLength": 12662,
+    "contentPreview": "\"\"\"\nDatabase migration management for the inventory system.\nHandles schema versioning, migrations up/down, and data migrations.\n\"\"\"\nimport logging\nfrom datetime import datetime, timezone\nfrom typing i...",
+    "durationMs": 98
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775872746097,
+    "turn": 1,
+    "nudgeType": "duplicate_tools",
+    "details": "Tool repetition detected: `read` called 3+ times. Consider a different approach.",
+    "shouldStop": false
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775872746097,
+    "turn": 1,
+    "nudgeType": "wasted_reads",
+    "details": "Excessive file reading without editing. Consider using /compact or changing strategy.",
+    "shouldStop": false
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775872746097,
+    "turn": 1,
+    "inputTokensDelta": 3274,
+    "outputTokensDelta": 433,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 62.248000000000005,
+    "stopReason": null
+  },
+  {
+    "type": "auto_retry_start",
+    "timestamp": 1775872746098,
+    "attempt": 1,
+    "maxAttempts": 3,
+    "delayMs": 2000,
+    "errorMessage": "terminated"
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775872748100,
+    "turn": 2,
+    "inputLength": 0,
+    "inputPreview": ""
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775873048578,
+    "turn": 2,
+    "nudgeType": "duplicate_tools",
+    "details": "Tool repetition detected: `read` called 3+ times. Consider a different approach.",
+    "shouldStop": false
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775873048578,
+    "turn": 2,
+    "nudgeType": "wasted_reads",
+    "details": "Excessive file reading without editing. Consider using /compact or changing strategy.",
+    "shouldStop": false
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775873048578,
+    "turn": 2,
+    "inputTokensDelta": 0,
+    "outputTokensDelta": 0,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 62.248000000000005,
+    "stopReason": null
+  },
+  {
+    "type": "auto_retry_start",
+    "timestamp": 1775873048578,
+    "attempt": 2,
+    "maxAttempts": 3,
+    "delayMs": 4000,
+    "errorMessage": "terminated"
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775873052579,
+    "turn": 3,
+    "inputLength": 0,
+    "inputPreview": ""
+  },
+  {
+    "type": "auto_retry_end",
+    "timestamp": 1775873104659,
+    "attempt": 2,
+    "success": true
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775873104659,
+    "turn": 3,
+    "nudgeType": "duplicate_tools",
+    "details": "Tool repetition detected: `read` called 3+ times. Consider a different approach.",
+    "shouldStop": false
+  },
+  {
+    "type": "nudge",
+    "timestamp": 1775873104659,
+    "turn": 3,
+    "nudgeType": "wasted_reads",
+    "details": "Excessive file reading without editing. Consider using /compact or changing strategy.",
+    "shouldStop": false
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775873104659,
+    "turn": 3,
+    "inputTokensDelta": 0,
+    "outputTokensDelta": 0,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 62.248000000000005,
+    "stopReason": null
+  }
+]

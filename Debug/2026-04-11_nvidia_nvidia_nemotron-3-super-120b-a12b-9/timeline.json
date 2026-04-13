@@ -1,0 +1,234 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775935781734,
+    "model": {
+      "provider": "nvidia",
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "Nemotron 3 Super 120B A12B"
+    },
+    "contextWindow": 1000000,
+    "cwd": "/home/alex",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775935879322,
+    "turn": 1,
+    "inputLength": 84,
+    "inputPreview": "Hey. Can you find whats in my downloads folder. Name the files and their file si..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935880966,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "136859738",
+    "arguments": {
+      "command": "ls -lh ~/Downloads/"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935882261,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "136859738",
+    "isError": false,
+    "contentLength": 829,
+    "contentPreview": "total 2,1G\n-rw-rw-r-- 1 alex alex  13K Apr 10 16:38 ag1_visual_verification_impl(1).md\n-rw-rw-r-- 1 alex alex  12K Apr 10 16:32 ag1_visual_verification_impl.md\n-rw-rw-r-- 1 alex alex 103M Apr  2 17:48...",
+    "durationMs": 1295
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775935887842,
+    "turn": 1,
+    "inputTokensDelta": 3217,
+    "outputTokensDelta": 427,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 4.346,
+    "stopReason": null
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775935912712,
+    "turn": 2,
+    "inputLength": 99,
+    "inputPreview": "Can you look into each file and tell me more about them? If there is any metadat..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935915386,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "146046019",
+    "arguments": {
+      "path": "/home/alex/Downloads/ag1_visual_verification_impl.md"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935915391,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "146046019",
+    "isError": false,
+    "contentLength": 12119,
+    "contentPreview": "# Implementing Visual Verification in AG1\n\nThis document covers how to build the visual verification pipeline into AG1 end to end.\nNo prior knowledge of Playwright is assumed. Nothing is left to infer...",
+    "durationMs": 5
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935917186,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "244139240",
+    "arguments": {
+      "path": "/home/alex/Downloads/ag1_visual_verification_impl(1).md"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935917189,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "244139240",
+    "isError": false,
+    "contentLength": 13267,
+    "contentPreview": "# Implementing Visual Verification in AG1\n\nThis document covers how to build the visual verification pipeline into AG1 end to end.\nNo prior knowledge of Playwright is assumed. Nothing is left to infer...",
+    "durationMs": 3
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935918922,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "509322622",
+    "arguments": {
+      "path": "/home/alex/Downloads/kairos_prompt.md"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935918924,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "509322622",
+    "isError": false,
+    "contentLength": 7417,
+    "contentPreview": "# Kairos — Build Prompt\n\nYou are going to build a terminal coding agent harness from scratch in TypeScript. This is a greenfield project. Do not ask clarifying questions — follow these instructions ex...",
+    "durationMs": 2
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935920285,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "561894703",
+    "arguments": {
+      "path": "/home/alex/Downloads/vision_prompt.md"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935920288,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "561894703",
+    "isError": false,
+    "contentLength": 8372,
+    "contentPreview": "# Auton — Future Architecture Vision\n\n> This document captures architectural ideas discussed during early Auton development.\n> None of this is in the current build. Park it, revisit when the core is s...",
+    "durationMs": 3
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935924880,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "594541734",
+    "arguments": {
+      "path": "/home/alex/Downloads/renderer.ts"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935924884,
+    "turn": 2,
+    "toolName": "read",
+    "toolCallId": "594541734",
+    "isError": false,
+    "contentLength": 13065,
+    "contentPreview": "// Kairos — Terminal UI renderer\n\n// ── ANSI color codes ──────────────────────────────────────────────────\n\nexport const RESET = \"\\x1b[0m\";\nexport const BOLD = \"\\x1b[1m\";\nexport const DIM = \"\\x1b[2m\"...",
+    "durationMs": 4
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935927239,
+    "turn": 2,
+    "toolName": "bash",
+    "toolCallId": "145069477",
+    "arguments": {
+      "command": "file ~/Downloads/*.pdf ~/Downloads/*.deb ~/Downloads/*.AppImage 2>/dev/null"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935928700,
+    "turn": 2,
+    "toolName": "bash",
+    "toolCallId": "145069477",
+    "isError": false,
+    "contentLength": 975,
+    "contentPreview": "/home/alex/Downloads/vedlikehold.pdf:           PDF document, version 1.4, 6 page(s)\n/home/alex/Downloads/discord-0.0.131(1).deb:    Debian binary package (format 2.0), with control.tar.gz , data comp...",
+    "durationMs": 1461
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775935930107,
+    "turn": 2,
+    "toolName": "bash",
+    "toolCallId": "794770718",
+    "arguments": {
+      "command": "sha256sum ~/Downloads/*.deb ~/Downloads/*.AppImage 2>/dev/null"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775935935176,
+    "turn": 2,
+    "toolName": "bash",
+    "toolCallId": "794770718",
+    "isError": false,
+    "contentLength": 655,
+    "contentPreview": "[REDACTED]  /home/alex/Downloads/discord-0.0.131(1).deb\n[REDACTED]  /home/alex/Downloads/dis...",
+    "durationMs": 5069
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775935964873,
+    "turn": 2,
+    "inputTokensDelta": 89220,
+    "outputTokensDelta": 2478,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 37.268,
+    "stopReason": null
+  }
+]

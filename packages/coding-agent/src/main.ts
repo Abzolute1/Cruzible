@@ -1,0 +1,674 @@
+// Auton — Main dispatch: parse args, create runtime, launch mode
+//
+// Cleaned up: removed all broken imports (kairos-tool-registry, aikit-provider,
+// lmstudio, spinner, coordinator). We use Pi's built-in tools only. Autonomous
+// mode is implemented as a flag on the interactive prompt handler, not a
+// separate entry point.
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
+import type { Api, ImageContent, Model } from "@mariozechner/pi-ai";
+import {
+	AuthStorage,
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+	getAgentDir,
+	InteractiveMode,
+	initTheme,
+	ModelRegistry,
+	runPrintMode,
+	runRpcMode,
+	SessionManager,
+	SettingsManager,
+} from "./index.js";
+import { processFileArguments } from "./cli/file-processor.js";
+import { buildInitialMessage } from "./cli/initial-message.js";
+import { selectSession } from "./cli/session-picker.js";
+import type { DefaultResourceLoaderOptions } from "./core/resource-loader.js";
+import { createAllTools, type Tool, type ToolName } from "./core/tools/index.js";
+import { matchSavedDefaultModel, pickPreferredAvailableModel } from "./core/model-resolver.js";
+import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
+import { getDefaultSessionDir } from "./core/session-manager.js";
+import { APP_NAME, CLI_NAME, VERSION } from "./config.js";
+import type { Args } from "./cli/args.js";
+import { parseArgs } from "./cli/args.js";
+import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+import { getNvidiaModels, NVIDIA_BASE_URL } from "./providers/nvidia-provider.js";
+
+type StartupModelsFile = {
+	providers: Record<string, unknown>;
+};
+
+function printHelp(stream: "stdout" | "stderr" = "stdout"): void {
+	const cliName = basename(process.argv[1] || CLI_NAME);
+	const writer = stream === "stderr" ? console.error : console.log;
+	writer(`
+${APP_NAME} — interactive and autonomous coding harness
+
+Usage: ${cliName} [prompt] [options]
+
+Options:
+  --model <model>        Model to use (default: nvidia/nemotron-3-super-120b-a12b, or qwen3.6-plus, or a local LM Studio model)
+  --thinking [level]     Enable thinking mode (optional level: low, medium, high, xhigh)
+  --session <id|path>    Resume or load a specific session
+  --cwd <dir>            Working directory (default: current directory)
+  --provider <provider>  Force a specific provider (e.g., nvidia, dashscope, local)
+  --max-cost <usd>       Maximum USD cost before auto-stop (default: 0 = unlimited)
+  --max-tokens <n>       Maximum total tokens before auto-stop (default: 0 = unlimited)
+  --max-turns <n>        Maximum turns per session (default: 100)
+  --max-output <n>       Max output tokens per turn (default: 0 = unlimited)
+  --tools <tool>         Enable specific tool (can be repeated)
+  --agent-dir <dir>      Agent config directory (default: ${getAgentDir()})
+
+  --resume               Resume the most recent session
+  --fork <id>            Fork an existing session
+  --no-session           Run without saving a session
+  --print                Print output without TUI
+  --json                 Output in JSON format
+  --list-models          List available models
+
+  --help                 Show this help
+  --version              Show version
+  --auto                 Start the TUI with autonomous mode armed for the first prompt
+
+Local models: Start LM Studio (port 1234) and models appear automatically.
+  Override URL with LM_STUDIO_URL or LM_STUDIO_PORT env vars.
+
+Primary autonomy UX: use Alt+M inside the TUI to arm autonomous mode for the next prompt.
+`);
+}
+
+function printVersion(): void {
+	console.log(`${APP_NAME} v${VERSION}`);
+}
+
+async function resolveModel(
+	modelArg: string | undefined,
+	providerArg: string | undefined,
+	modelRegistry: ModelRegistry,
+	settingsManager: SettingsManager,
+): Promise<{ model: Model<Api> }> {
+	const available = modelRegistry.getAvailable();
+	if (available.length === 0) {
+		throw new Error(
+			"No models available. Set NVIDIA_API_KEY or DASHSCOPE_API_KEY for cloud models, or start LM Studio on port 1234 for local models.",
+		);
+	}
+
+	// If provider is explicitly specified, respect it
+	if (modelArg && providerArg) {
+		const providerMatch = available.find(
+			(m: Model<Api>) =>
+				m.id.toLowerCase() === modelArg.toLowerCase() && m.provider.toLowerCase() === providerArg.toLowerCase(),
+		);
+		if (providerMatch) return { model: providerMatch };
+	}
+
+	// If model is specified, find it
+	if (modelArg) {
+		const exactMatch = available.find((m: Model<Api>) => m.id.toLowerCase() === modelArg.toLowerCase());
+		if (exactMatch) return { model: exactMatch };
+		const partial = available.find((m: Model<Api>) => m.name?.toLowerCase().includes(modelArg.toLowerCase()));
+		if (partial) return { model: partial };
+	}
+
+	// No model specified — prefer explicit saved default, then local, then cloud defaults.
+	const savedModelId = settingsManager.getDefaultModel();
+	if (savedModelId) {
+		const matched = matchSavedDefaultModel(savedModelId, available);
+		if (matched) return { model: matched };
+	}
+
+	return { model: pickPreferredAvailableModel(available) ?? available[0] };
+}
+
+async function listModelsCmd(modelRegistry: ModelRegistry, search?: string | true): Promise<void> {
+	const available = modelRegistry.getAvailable();
+	if (available.length === 0) {
+		console.log("No models configured. Set an API key.");
+		return;
+	}
+	const filtered =
+		typeof search === "string"
+			? available.filter((model) => {
+					const haystack = `${model.provider} ${model.id} ${model.name ?? ""}`.toLowerCase();
+					return haystack.includes(search.toLowerCase());
+				})
+			: available;
+	for (const m of filtered) console.log(`  ${m.id}`);
+}
+
+function resolveRequestedMode(config: Args, stdinIsTTY: boolean): "interactive" | "print" | "json" | "rpc" {
+	if (config.mode === "rpc") return "rpc";
+	if (config.mode === "json") return "json";
+	if (config.print || !stdinIsTTY) return "print";
+	return "interactive";
+}
+
+function emitArgDiagnostics(config: Args): boolean {
+	for (const diagnostic of config.diagnostics) {
+		const writer = diagnostic.type === "error" ? console.error : console.error;
+		writer(diagnostic.message);
+	}
+	return config.diagnostics.some((diagnostic) => diagnostic.type === "error");
+}
+
+export function resolveSessionStorageDir(
+	cwd: string,
+	agentDir: string,
+	settingsManager: SettingsManager,
+	config: Args,
+): string {
+	const configuredDir = config.sessionDir ?? settingsManager.getSessionDir();
+	return configuredDir ? resolve(cwd, configuredDir) : getDefaultSessionDir(cwd, agentDir);
+}
+
+export function validateSessionFlags(config: Args, mode: "interactive" | "print" | "json" | "rpc"): string | null {
+	const selectors = [config.continue, config.resume, Boolean(config.session), Boolean(config.fork)].filter(Boolean).length;
+	if (selectors > 1) {
+		return "Only one of --continue, --resume, --session, or --fork may be used at a time.";
+	}
+	if (config.noSession && selectors > 0) {
+		return "--no-session cannot be combined with --continue, --resume, --session, or --fork.";
+	}
+	if (config.resume && mode !== "interactive") {
+		return "--resume requires interactive mode.";
+	}
+	return null;
+}
+
+export function validateModeFlags(config: Args): string | null {
+	const requestedModes = [config.print, config.mode === "json", config.mode === "rpc"].filter(Boolean).length;
+	if (requestedModes > 1) {
+		return "Only one non-interactive output mode may be selected at a time.";
+	}
+	return null;
+}
+
+export function validateToolFlags(config: Args): string | null {
+	if (config.noTools && config.tools && config.tools.length > 0) {
+		return "--no-tools cannot be combined with --tools.";
+	}
+	return null;
+}
+
+function resolveCliPaths(paths: string[] | undefined, cwd: string): string[] | undefined {
+	return paths?.map((path) => resolve(cwd, path));
+}
+
+function resolvePromptInputPath(value: string | undefined, cwd: string): string | undefined {
+	if (!value) return undefined;
+	const resolved = resolve(cwd, value);
+	return existsSync(resolved) ? resolved : value;
+}
+
+export function resolveSelectedTools(config: Args, cwd: string): Tool[] | undefined {
+	if (config.noTools) {
+		return [];
+	}
+	if (!config.tools) {
+		return undefined;
+	}
+	const tools = createAllTools(cwd);
+	return config.tools.map((name) => tools[name]);
+}
+
+export function buildRuntimeCliOptions(config: Args, cwd: string): {
+	selectedToolNames?: ToolName[];
+	extensionFlagValues?: Map<string, boolean | string>;
+	resourceLoaderOptions: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
+} {
+	return {
+		selectedToolNames: config.noTools ? [] : config.tools,
+		extensionFlagValues: config.unknownFlags.size > 0 ? new Map(config.unknownFlags) : undefined,
+		resourceLoaderOptions: {
+			additionalExtensionPaths: resolveCliPaths(config.extensions, cwd),
+			additionalSkillPaths: resolveCliPaths(config.skills, cwd),
+			additionalPromptTemplatePaths: resolveCliPaths(config.promptTemplates, cwd),
+			additionalThemePaths: resolveCliPaths(config.themes, cwd),
+			noExtensions: config.noExtensions,
+			noSkills: config.noSkills,
+			noPromptTemplates: config.noPromptTemplates,
+			noThemes: config.noThemes,
+			systemPrompt: resolvePromptInputPath(config.systemPrompt, cwd),
+			appendSystemPrompt: resolvePromptInputPath(config.appendSystemPrompt, cwd),
+		},
+	};
+}
+
+function loadStartupModelsFile(modelsPath: string): StartupModelsFile {
+	try {
+		const content = readFileSync(modelsPath, "utf-8");
+		if (!content.trim()) return { providers: {} };
+		const parsed = JSON.parse(content) as Partial<StartupModelsFile>;
+		if (!parsed || typeof parsed !== "object" || !parsed.providers || typeof parsed.providers !== "object") {
+			return { providers: {} };
+		}
+		return { providers: { ...parsed.providers } };
+	} catch {
+		return { providers: {} };
+	}
+}
+
+function buildNvidiaProviderConfig(nvidiaApiKey: string): Record<string, unknown> {
+	const nvidiaModels = getNvidiaModels().map((m) => ({
+		id: m.id,
+		reasoning: m.supportsThinking ?? false,
+		compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: m.contextWindow ?? 128_000,
+		maxTokens: 8192,
+	}));
+
+	return {
+		baseUrl: NVIDIA_BASE_URL,
+		api: "openai-responses",
+		apiKey: nvidiaApiKey,
+		models: nvidiaModels,
+	};
+}
+
+async function detectLmStudioModels(
+	lmStudioUrl: string,
+	fetchImpl: typeof fetch,
+): Promise<string[]> {
+	try {
+		const response = await fetchImpl(`${lmStudioUrl}/v1/models`, { signal: AbortSignal.timeout(2000) });
+		if (!response.ok) return [];
+		const payload = (await response.json()) as { data?: Array<{ id?: string }> };
+		return (payload.data ?? []).flatMap((entry) => (typeof entry?.id === "string" ? [entry.id] : []));
+	} catch {
+		return [];
+	}
+}
+
+function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Record<string, unknown> {
+	return {
+		baseUrl: `${lmStudioUrl}/v1`,
+		api: "openai-completions",
+		apiKey: "local",
+		models: [
+			{
+				id: "local",
+				name: `Local (${modelIds.length} loaded)`,
+				reasoning: false,
+				compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 32_768,
+				maxTokens: 4096,
+			},
+		],
+	};
+}
+
+export async function prepareStartupModelsFile(options: {
+	agentDir: string;
+	startupLog?: (message: string) => void;
+	startupWarn?: (message: string) => void;
+	env?: NodeJS.ProcessEnv;
+	fetchImpl?: typeof fetch;
+}): Promise<{ modelsPath: string; modelsData: StartupModelsFile }> {
+	const startupLog = options.startupLog ?? (() => {});
+	const startupWarn = options.startupWarn ?? (() => {});
+	const env = options.env ?? process.env;
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const modelsPath = resolve(options.agentDir, "models.json");
+
+	if (!existsSync(options.agentDir)) mkdirSync(options.agentDir, { recursive: true });
+
+	const modelsData = loadStartupModelsFile(modelsPath);
+	const preservedProviders = Object.fromEntries(
+		Object.entries(modelsData.providers).filter(([name]) => name !== "nvidia" && name !== "local"),
+	);
+	modelsData.providers = preservedProviders;
+
+	const nvidiaKeyEnv = env.NVIDIA_API_KEY;
+	if (!nvidiaKeyEnv) {
+		startupWarn("[Auton] NVIDIA_API_KEY not set. NVIDIA models will not be available.");
+	} else {
+		modelsData.providers.nvidia = buildNvidiaProviderConfig(nvidiaKeyEnv);
+	}
+
+	const lmStudioUrl = env.LM_STUDIO_URL ?? `http://127.0.0.1:${env.LM_STUDIO_PORT ?? "1234"}`;
+	const lmModels = await detectLmStudioModels(lmStudioUrl, fetchImpl);
+	if (lmModels.length > 0) {
+		modelsData.providers.local = buildLocalProviderConfig(lmStudioUrl, lmModels);
+		startupLog(`[Auton] LM Studio detected: ${lmModels.join(", ")}`);
+	}
+
+	try {
+		const nextContent = JSON.stringify(modelsData, null, 2);
+		const previousContent = existsSync(modelsPath) ? readFileSync(modelsPath, "utf-8") : undefined;
+		if (previousContent !== nextContent) {
+			writeFileSync(modelsPath, nextContent);
+		}
+	} catch (error) {
+		startupWarn(`[Auton] Failed to write models.json: ${(error as Error).message}. Provider config not persisted.`);
+	}
+
+	return { modelsPath, modelsData };
+}
+
+async function readPipedStdin(stdinIsTTY: boolean): Promise<string | undefined> {
+	if (stdinIsTTY) return undefined;
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) {
+		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+	}
+	if (chunks.length === 0) return undefined;
+	return Buffer.concat(chunks).toString("utf-8");
+}
+
+export async function prepareStartupInput(
+	config: Args,
+	stdinContent?: string,
+): Promise<{ initialMessage?: string; initialImages?: ImageContent[]; remainingMessages: string[] }> {
+	const files =
+		config.fileArgs.length > 0
+			? await processFileArguments(config.fileArgs, {
+					autoResizeImages: true,
+				})
+			: { text: "", images: [] as ImageContent[] };
+	const { initialMessage, initialImages } = buildInitialMessage({
+		parsed: config,
+		fileText: files.text || undefined,
+		fileImages: files.images.length > 0 ? files.images : undefined,
+		stdinContent,
+	});
+	return {
+		initialMessage,
+		initialImages,
+		remainingMessages: [...config.messages],
+	};
+}
+
+export async function resolveSessionReference(
+	reference: string,
+	cwd: string,
+	sessionDir: string,
+	searchAllSessions = false,
+): Promise<string> {
+	const resolvedPath = resolve(cwd, reference);
+	if (existsSync(resolvedPath)) {
+		return resolvedPath;
+	}
+
+	const matchSession = (session: { id: string; path: string }) =>
+		session.id === reference || session.id.startsWith(reference) || basename(session.path) === reference;
+	const sessions = await SessionManager.list(cwd, sessionDir);
+	const matches = sessions.filter(matchSession);
+	if (matches.length === 0 && searchAllSessions) {
+		const allSessions = await SessionManager.listAll();
+		const allMatches = allSessions.filter(matchSession);
+		if (allMatches.length === 1) {
+			return allMatches[0]!.path;
+		}
+		if (allMatches.length > 1) {
+			throw new Error(`Session reference "${reference}" is ambiguous. Use a full path or a longer session id.`);
+		}
+	}
+
+	if (matches.length === 1) {
+		return matches[0]!.path;
+	}
+	if (matches.length > 1) {
+		throw new Error(`Session reference "${reference}" is ambiguous. Use a full path or a longer session id.`);
+	}
+	throw new Error(`Session "${reference}" not found.`);
+}
+
+async function createSessionManagerFromConfig(
+	config: Args,
+	cwd: string,
+	sessionDir: string,
+	mode: "interactive" | "print" | "json" | "rpc",
+	useCrossProjectResumePicker: boolean,
+): Promise<SessionManager | null> {
+	if (config.noSession) {
+		return SessionManager.inMemory(cwd);
+	}
+	if (config.session) {
+		const sessionPath = await resolveSessionReference(config.session, cwd, sessionDir, useCrossProjectResumePicker);
+		return SessionManager.open(sessionPath, sessionDir);
+	}
+	if (config.fork) {
+		const sourcePath = await resolveSessionReference(config.fork, cwd, sessionDir, useCrossProjectResumePicker);
+		return SessionManager.forkFrom(sourcePath, cwd, sessionDir);
+	}
+	if (config.resume) {
+		if (mode !== "interactive") {
+			throw new Error("--resume requires interactive mode.");
+		}
+		const currentSessionsLoader = (onProgress?: Parameters<typeof SessionManager.list>[2]) =>
+			SessionManager.list(cwd, sessionDir, onProgress);
+		const allSessionsLoader = useCrossProjectResumePicker
+			? (onProgress?: Parameters<typeof SessionManager.listAll>[0]) => SessionManager.listAll(onProgress)
+			: currentSessionsLoader;
+		const selectedSession = await selectSession(currentSessionsLoader, allSessionsLoader);
+		if (!selectedSession) {
+			return null;
+		}
+		return SessionManager.open(selectedSession, sessionDir);
+	}
+	if (config.continue) {
+		return SessionManager.continueRecent(cwd, sessionDir);
+	}
+	return SessionManager.create(cwd, sessionDir);
+}
+
+function finishMain(deferNonInteractiveHelp: boolean, options?: { exitCode?: number; printDeferredHelp?: boolean }): void {
+	if (options?.exitCode !== undefined) {
+		process.exitCode = options.exitCode;
+	}
+	if (options?.printDeferredHelp) {
+		printHelp("stderr");
+	}
+	if (deferNonInteractiveHelp) {
+		restoreStdout();
+	}
+}
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+	const args = argv;
+	if (await handleConfigCommand(args)) {
+		return;
+	}
+	if (await handlePackageCommand(args)) {
+		return;
+	}
+	const stdinIsTTY = process.stdin.isTTY ?? true;
+	const config = parseArgs(args);
+	const requestedMode = resolveRequestedMode(config, stdinIsTTY);
+	const wantsHelp = config.help === true;
+	const deferNonInteractiveHelp = wantsHelp && requestedMode !== "interactive";
+	const startupLog = requestedMode === "interactive" ? (() => {}) : console.error;
+	const startupWarn = requestedMode === "interactive" ? (() => {}) : console.error;
+
+	if (deferNonInteractiveHelp) {
+		takeOverStdout();
+	}
+
+	if (emitArgDiagnostics(config)) {
+		finishMain(deferNonInteractiveHelp, { exitCode: 1 });
+		return;
+	}
+
+	if (wantsHelp && !deferNonInteractiveHelp) {
+		printHelp("stdout");
+		return;
+	}
+	if (config.version) {
+		printVersion();
+		return;
+	}
+	const modeFlagError = validateModeFlags(config);
+	if (modeFlagError) {
+		console.error(modeFlagError);
+		finishMain(deferNonInteractiveHelp, { exitCode: 1 });
+		return;
+	}
+	const toolFlagError = validateToolFlags(config);
+	if (toolFlagError) {
+		console.error(toolFlagError);
+		finishMain(deferNonInteractiveHelp, { exitCode: 1 });
+		return;
+	}
+	const sessionFlagError = validateSessionFlags(config, requestedMode);
+	if (sessionFlagError) {
+		console.error(sessionFlagError);
+		finishMain(deferNonInteractiveHelp, { exitCode: 1 });
+		return;
+	}
+	if (deferNonInteractiveHelp) {
+		finishMain(true, { printDeferredHelp: true });
+		return;
+	}
+
+	const cwd = config.cwd ? resolve(config.cwd) : process.cwd();
+	const agentDir = config.agentDir ? resolve(config.agentDir) : getAgentDir();
+	const { modelsPath } = await prepareStartupModelsFile({
+		agentDir,
+		startupLog,
+		startupWarn,
+	});
+
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const sessionDir = resolveSessionStorageDir(cwd, agentDir, settingsManager, config);
+	const authStorage = AuthStorage.create(resolve(agentDir, "auth.json"));
+	const modelRegistry = ModelRegistry.create(authStorage, modelsPath);
+	const sessionManager = await createSessionManagerFromConfig(
+		config,
+		cwd,
+		sessionDir,
+		requestedMode,
+		config.sessionDir === undefined && settingsManager.getSessionDir() === undefined,
+	);
+	if (!sessionManager) {
+		finishMain(deferNonInteractiveHelp);
+		return;
+	}
+
+	if (config.listModels) {
+		await listModelsCmd(modelRegistry, config.listModels);
+		return;
+	}
+
+	const { model: resolvedModel } = await resolveModel(config.model, config.provider, modelRegistry, settingsManager);
+	let preferredRuntimeModel: Model<Api> | undefined = resolvedModel;
+	const { selectedToolNames, extensionFlagValues, resourceLoaderOptions } = buildRuntimeCliOptions(config, cwd);
+
+	// Runtime creation: use Pi's built-in tools only. No custom tools for MVP.
+	const createRuntimeFn: CreateAgentSessionRuntimeFactory = async ({
+		cwd: rCwd,
+		agentDir: rAgentDir,
+		sessionManager: rSessionManager,
+		sessionStartEvent,
+	}) => {
+		const services = await createAgentSessionServices({
+			cwd: rCwd,
+			agentDir: rAgentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.create(rCwd, rAgentDir),
+			extensionFlagValues,
+			resourceLoaderOptions,
+		});
+		const existingSession = rSessionManager.buildSessionContext();
+		const shouldUsePreferredModel =
+			existingSession.messages.length === 0 && existingSession.model === undefined;
+		const selectedTools =
+			selectedToolNames === undefined
+				? undefined
+				: (() => {
+						const availableTools = createAllTools(rCwd);
+						return selectedToolNames.map((name) => availableTools[name]);
+					})();
+		const sessionResult = await createAgentSessionFromServices({
+			services,
+			sessionManager: rSessionManager,
+			model: shouldUsePreferredModel ? preferredRuntimeModel : undefined,
+			tools: selectedTools,
+			sessionStartEvent,
+		});
+		preferredRuntimeModel = sessionResult.session.model;
+		return {
+			session: sessionResult.session,
+			services,
+			diagnostics: [...services.diagnostics],
+			modelFallbackMessage: sessionResult.modelFallbackMessage,
+			extensionsResult: sessionResult.extensionsResult,
+		};
+	};
+
+	const runtime = await createAgentSessionRuntime(createRuntimeFn, { cwd, agentDir, sessionManager });
+
+	// Determine mode: interactive (default), print, json, or rpc
+	// Autonomous execution is primarily a keyboard-toggled TUI mode. The
+	// optional --auto flag only changes the startup state for the first prompt.
+	const mode = requestedMode;
+
+	// Headless modes cannot surface interactive approvals, so mutating tool calls
+	// are blocked there by default. Interactive mode rebinds the policy after the
+	// TUI starts so it can ask the user before write/edit/bash execution.
+	if (mode !== "interactive") {
+		runtime.session.setToolSafetyPolicy({
+			mode: "headless",
+			cwd: runtime.session.sessionManager.getCwd(),
+		});
+	}
+
+	const startupInput = await prepareStartupInput(config, await readPipedStdin(stdinIsTTY));
+
+	if (mode === "interactive") {
+		initTheme(settingsManager.getTheme(), false);
+		const interactiveMode = new InteractiveMode(runtime, {
+			initialMessage: startupInput.initialMessage,
+			migratedProviders: [],
+			modelFallbackMessage: runtime.modelFallbackMessage,
+			autonomousConfig: {
+				startInAutonomousMode: config.auto ?? false,
+				maxCostUsd: config.maxCost ?? 0,
+				maxTokens: config.maxTokens ?? 0,
+				maxTurns: config.maxTurns ?? 100,
+				maxOutputPerTurn: config.maxOutput ?? 0,
+				enableNudges: config.enableNudges,
+				enableBehavioralPrompt: config.enableBehavioralPrompt,
+				verbose: config.verbose,
+			},
+		});
+
+		// Override terminal title: π → Auton
+		const origUpdateTitle = (interactiveMode as any).updateTerminalTitle?.bind(interactiveMode);
+		if (origUpdateTitle) {
+			(interactiveMode as any).updateTerminalTitle = function () {
+				const session = this.sessionManager;
+				const cwdBasename = basename(session.getCwd());
+				const sessionName = session.getSessionName();
+				this.ui.terminal.setTitle(
+					sessionName ? `Auton - ${sessionName} - ${cwdBasename}` : `Auton - ${cwdBasename}`,
+				);
+			};
+			(interactiveMode as any).updateTerminalTitle();
+		}
+
+		await interactiveMode.run();
+	} else if (mode === "print") {
+		await runPrintMode(runtime, {
+			mode: "text",
+			initialMessage: startupInput.initialMessage,
+			initialImages: startupInput.initialImages,
+			messages: startupInput.remainingMessages,
+		});
+	} else if (mode === "json") {
+		await runPrintMode(runtime, {
+			mode: "json",
+			initialMessage: startupInput.initialMessage,
+			initialImages: startupInput.initialImages,
+			messages: startupInput.remainingMessages,
+		});
+	} else if (mode === "rpc") {
+		await runRpcMode(runtime);
+	}
+}

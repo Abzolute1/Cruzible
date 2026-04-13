@@ -1,0 +1,100 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1776078641215,
+    "model": {
+      "provider": "nvidia",
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "Nemotron 3 Super 120B A12B"
+    },
+    "contextWindow": 1000000,
+    "cwd": "/home/alex/.ag1/agent/autonomous-workspaces/home__alex__Desktop__Tests__Website/2026-04-13T11-10-41-089Z-f1c1f6c1",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "webSearch",
+      "webFetch"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1776078641216,
+    "turn": 1,
+    "inputLength": 257,
+    "inputPreview": "Looks like there’s a problem with this site\n\nFirefox can’t connect to the server..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1776078664408,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "chatcmpl-tool-a585bef30153e988",
+    "arguments": {
+      "command": "pkill -f \"http.server\" || true"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1776078664441,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "chatcmpl-tool-a585bef30153e988",
+    "isError": false,
+    "contentLength": 11,
+    "contentPreview": "(no output)",
+    "durationMs": 33
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1776078695074,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "chatcmpl-tool-bea55e2f19ce8fb1",
+    "arguments": {
+      "command": "cd /home/alex/Desktop/Tests/Website && python3 -m http.server 8000 &",
+      "timeout": 5
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1776078695074,
+    "turn": 1,
+    "toolName": "bash",
+    "toolCallId": "chatcmpl-tool-bea55e2f19ce8fb1",
+    "isError": true,
+    "contentLength": 103,
+    "contentPreview": "Blocking bash access outside the session workspace in autonomous mode: /home/alex/Desktop/Tests/Website",
+    "durationMs": 0
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1776078746954,
+    "turn": 1,
+    "inputTokensDelta": 4439157,
+    "outputTokensDelta": 42032,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 7.011000000000001,
+    "stopReason": null
+  },
+  {
+    "type": "session_end",
+    "timestamp": 1776078746959,
+    "totalTurns": 1,
+    "totalInputTokens": 4439157,
+    "totalOutputTokens": 42032,
+    "totalCost": 0,
+    "peakContextPercent": 7.011000000000001,
+    "compactions": 0,
+    "toolFailures": 1,
+    "nudges": 0,
+    "xmlFallbacks": 0,
+    "durationMs": 105744
+  }
+]

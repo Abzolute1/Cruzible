@@ -1,0 +1,231 @@
+[
+  {
+    "type": "session_start",
+    "timestamp": 1775944056835,
+    "model": {
+      "provider": "local",
+      "id": "lm-studio",
+      "name": "Local (LM Studio)"
+    },
+    "contextWindow": 50000,
+    "cwd": "/home/alex",
+    "thinkingLevel": "off",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "webSearch",
+      "webFetch"
+    ]
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775944087457,
+    "turn": 1,
+    "inputLength": 79,
+    "inputPreview": "Can you research online of the latest claude code leak and sumamrize it for me?"
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775944089895,
+    "turn": 1,
+    "toolName": "webSearch",
+    "toolCallId": "101062608",
+    "arguments": {
+      "query": "Claude code leak 2024 2025"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775944090725,
+    "turn": 1,
+    "toolName": "webSearch",
+    "toolCallId": "101062608",
+    "isError": false,
+    "contentLength": 2805,
+    "contentPreview": "Search results for: Claude code leak 2024 2025\n\n1. Anthropic Claude Code Source Code Leak: Full Analysis (2026)\n   URL: //duckduckgo.com/l/?uddg=https%3A%2F%2Ftech%2Dinsider.org%2Fanthropic%2Dclaude%2...",
+    "durationMs": 830
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775944093270,
+    "turn": 1,
+    "toolName": "webFetch",
+    "toolCallId": "440911953",
+    "arguments": {
+      "url": "https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775944093556,
+    "turn": 1,
+    "toolName": "webFetch",
+    "toolCallId": "440911953",
+    "isError": false,
+    "contentLength": 50139,
+    "contentPreview": "Fetched: https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/\n\n- \n\n\t\nvar _paq=window._paq=window._paq||[];\n_paq.push(['trackPageView']);\n_paq.push(['enableLinkTracking']);\n(functi...",
+    "durationMs": 286
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775944098554,
+    "turn": 1,
+    "toolName": "webFetch",
+    "toolCallId": "934203844",
+    "arguments": {
+      "url": "https://dev.to/vibehackers/i-analyzed-all-512000-lines-of-claude-codes-leaked-source-heres-what-anthropic-was-hiding-4gg8"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775944099392,
+    "turn": 1,
+    "toolName": "webFetch",
+    "toolCallId": "934203844",
+    "isError": false,
+    "contentLength": 50184,
+    "contentPreview": "Fetched: https://dev.to/vibehackers/i-analyzed-all-512000-lines-of-claude-codes-leaked-source-heres-what-anthropic-was-hiding-4gg8\n\nI Analyzed All 512,000 Lines of Claude Code&#39;s Leaked Source — He...",
+    "durationMs": 838
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775944123829,
+    "turn": 1,
+    "inputTokensDelta": 65384,
+    "outputTokensDelta": 1369,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 85.566,
+    "stopReason": null
+  },
+  {
+    "type": "compaction_start",
+    "timestamp": 1775944123830,
+    "reason": "threshold",
+    "tokensBefore": 0
+  },
+  {
+    "type": "compaction_end",
+    "timestamp": 1775944133399,
+    "reason": "threshold",
+    "tokensBefore": 42783,
+    "tokensAfter": 42783,
+    "aborted": false
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775944151497,
+    "turn": 2,
+    "inputLength": 82,
+    "inputPreview": "can you also do a websearch of the suppsoed 'mythos' model they had in their lea..."
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775944158527,
+    "turn": 2,
+    "toolName": "webSearch",
+    "toolCallId": "407387584",
+    "arguments": {
+      "query": "Anthropic Mythos model leak 2026 Capybara"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775944159390,
+    "turn": 2,
+    "toolName": "webSearch",
+    "toolCallId": "407387584",
+    "isError": false,
+    "contentLength": 2549,
+    "contentPreview": "Search results for: Anthropic Mythos model leak 2026 Capybara\n\n1. Anthropic Claude Mythos Leak 2026: What We Know\n   URL: //duckduckgo.com/l/?uddg=https%3A%2F%2Fnerdleveltech.com%2Fanthropic%2Dclaude%...",
+    "durationMs": 863
+  },
+  {
+    "type": "tool_call",
+    "timestamp": 1775944161480,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "506869064",
+    "arguments": {
+      "url": "https://nerdleveltech.com/anthropic-claude-mythos-leak-capybara-cybersecurity"
+    },
+    "source": "structured"
+  },
+  {
+    "type": "tool_result",
+    "timestamp": 1775944162392,
+    "turn": 2,
+    "toolName": "webFetch",
+    "toolCallId": "506869064",
+    "isError": false,
+    "contentLength": 50256,
+    "contentPreview": "Fetched: https://nerdleveltech.com/anthropic-claude-mythos-leak-capybara-cybersecurity\n\n- Anthropic Claude Mythos Leak 2026: What We Know | Nerd Level Tech(() => {\n  var t = localStorage.getItem('them...",
+    "durationMs": 912
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775944179095,
+    "turn": 2,
+    "inputTokensDelta": 95067,
+    "outputTokensDelta": 842,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 86.516,
+    "stopReason": null
+  },
+  {
+    "type": "compaction_start",
+    "timestamp": 1775944179095,
+    "reason": "threshold",
+    "tokensBefore": 0
+  },
+  {
+    "type": "compaction_end",
+    "timestamp": 1775944179096,
+    "reason": "threshold",
+    "tokensBefore": 0,
+    "tokensAfter": 0,
+    "aborted": false
+  },
+  {
+    "type": "compaction_start",
+    "timestamp": 1775944205944,
+    "reason": "threshold",
+    "tokensBefore": 0
+  },
+  {
+    "type": "compaction_end",
+    "timestamp": 1775944217876,
+    "reason": "threshold",
+    "tokensBefore": 43258,
+    "tokensAfter": 43258,
+    "aborted": false
+  },
+  {
+    "type": "turn_start",
+    "timestamp": 1775944217883,
+    "turn": 3,
+    "inputLength": 36,
+    "inputPreview": "what is your own assessment of this?"
+  },
+  {
+    "type": "turn_end",
+    "timestamp": 1775944240695,
+    "turn": 3,
+    "inputTokensDelta": 20505,
+    "outputTokensDelta": 1371,
+    "cacheReadDelta": 0,
+    "cacheWriteDelta": 0,
+    "costDelta": 0,
+    "contextPercent": 43.752,
+    "stopReason": null
+  }
+]

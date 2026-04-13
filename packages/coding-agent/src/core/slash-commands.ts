@@ -1,0 +1,42 @@
+import type { SourceInfo } from "./source-info.js";
+
+export type SlashCommandSource = "extension" | "prompt" | "skill";
+
+export interface SlashCommandInfo {
+	name: string;
+	description?: string;
+	source: SlashCommandSource;
+	sourceInfo: SourceInfo;
+}
+
+export interface BuiltinSlashCommand {
+	name: string;
+	description: string;
+}
+
+export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
+	{ name: "settings", description: "Open settings menu" },
+	{ name: "model", description: "Select model (opens selector UI)" },
+	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling" },
+	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
+	{ name: "import", description: "Import and resume a session from a JSONL file" },
+	{ name: "share", description: "Share session as a secret GitHub gist" },
+	{ name: "copy", description: "Copy last agent message to clipboard" },
+	{ name: "name", description: "Set session display name" },
+	{ name: "session", description: "Show session info and stats" },
+	{ name: "research", description: "Show recent off-context research artifacts" },
+	{ name: "debug", description: "Show runtime-health, stabilization, and debug artifact details" },
+	{ name: "workspace", description: "Show, diff, promote, or discard autonomous workspace state" },
+	{ name: "changelog", description: "Show changelog entries" },
+	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
+	{ name: "fork", description: "Create a new fork from a previous message" },
+	{ name: "tree", description: "Navigate session tree (switch branches)" },
+	{ name: "login", description: "Login with OAuth provider" },
+	{ name: "logout", description: "Logout from OAuth provider" },
+	{ name: "new", description: "Start a new session" },
+	{ name: "compact", description: "Manually compact the session context" },
+	{ name: "set-context", description: "Set custom context window (overrides model default)" },
+	{ name: "resume", description: "Resume a different session" },
+	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+	{ name: "quit", description: "Quit pi" },
+];
