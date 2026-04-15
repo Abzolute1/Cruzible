@@ -8,7 +8,7 @@ import path from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveContainedPath } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
@@ -54,6 +54,17 @@ const defaultFindOperations: FindOperations = {
 export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
 	operations?: FindOperations;
+}
+
+function formatFindFollowupNotice(
+	results: string[],
+	options: { resultLimitReached?: boolean; byteTruncated?: boolean },
+): string | undefined {
+	if (results.length !== 1 || options.resultLimitReached || options.byteTruncated) return undefined;
+	const [result] = results;
+	if (!result) return undefined;
+	if (result.endsWith("/")) return `[1 directory match; next: ls ${result}]`;
+	return `[1 match; next: read ${result} or grep inside it]`;
 }
 
 function formatFindCall(
@@ -109,6 +120,13 @@ function formatFindResult(
 	return text;
 }
 
+function formatFindNotice(limit: number, options: { resultLimitReached?: boolean; byteTruncated?: boolean }): string {
+	const parts: string[] = [];
+	if (options.resultLimitReached) parts.push(`${limit} results limit; next limit=${limit * 2}`);
+	if (options.byteTruncated) parts.push(`${formatSize(DEFAULT_MAX_BYTES)} byte limit`);
+	return `[${parts.join("; ")}]`;
+}
+
 export function createFindToolDefinition(
 	cwd: string,
 	options?: FindToolOptions,
@@ -119,6 +137,11 @@ export function createFindToolDefinition(
 		label: "find",
 		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: "Find files by glob pattern (respects .gitignore)",
+		promptGuidelines: [
+			"Use find when the filename or path is uncertain instead of guessing where a file lives.",
+			"After a path-not-found error from read, switch to find or ls before retrying.",
+			"Use find to narrow candidate files, then read or grep the matches.",
+		],
 		parameters: findSchema,
 		async execute(
 			_toolCallId,
@@ -138,7 +161,7 @@ export function createFindToolDefinition(
 
 				(async () => {
 					try {
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const searchPath = resolveContainedPath(searchDir || ".", cwd);
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
 						const ops = customOps ?? defaultFindOperations;
 
@@ -155,7 +178,7 @@ export function createFindToolDefinition(
 							signal?.removeEventListener("abort", onAbort);
 							if (results.length === 0) {
 								resolve({
-									content: [{ type: "text", text: "No files found matching pattern" }],
+									content: [{ type: "text", text: "(no matches)" }],
 									details: undefined,
 								});
 								return;
@@ -171,18 +194,23 @@ export function createFindToolDefinition(
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};
-							const notices: string[] = [];
 							if (resultLimitReached) {
-								notices.push(`${effectiveLimit} results limit reached`);
 								details.resultLimitReached = effectiveLimit;
 							}
 							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 								details.truncation = truncation;
 							}
-							if (notices.length > 0) {
-								resultOutput += `\n\n[${notices.join(". ")}]`;
+							if (resultLimitReached || truncation.truncated) {
+								resultOutput += `\n\n${formatFindNotice(effectiveLimit, {
+									resultLimitReached,
+									byteTruncated: truncation.truncated,
+								})}`;
 							}
+							const followupNotice = formatFindFollowupNotice(relativized, {
+								resultLimitReached,
+								byteTruncated: truncation.truncated,
+							});
+							if (followupNotice) resultOutput += `\n\n${followupNotice}`;
 							resolve({
 								content: [{ type: "text", text: resultOutput }],
 								details: Object.keys(details).length > 0 ? details : undefined,
@@ -240,7 +268,7 @@ export function createFindToolDefinition(
 						}
 						if (!output) {
 							resolve({
-								content: [{ type: "text", text: "No files found matching pattern" }],
+								content: [{ type: "text", text: "(no matches)" }],
 								details: undefined,
 							});
 							return;
@@ -267,20 +295,23 @@ export function createFindToolDefinition(
 						const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 						let resultOutput = truncation.content;
 						const details: FindToolDetails = {};
-						const notices: string[] = [];
 						if (resultLimitReached) {
-							notices.push(
-								`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-							);
 							details.resultLimitReached = effectiveLimit;
 						}
 						if (truncation.truncated) {
-							notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 							details.truncation = truncation;
 						}
-						if (notices.length > 0) {
-							resultOutput += `\n\n[${notices.join(". ")}]`;
+						if (resultLimitReached || truncation.truncated) {
+							resultOutput += `\n\n${formatFindNotice(effectiveLimit, {
+								resultLimitReached,
+								byteTruncated: truncation.truncated,
+							})}`;
 						}
+						const followupNotice = formatFindFollowupNotice(relativized, {
+							resultLimitReached,
+							byteTruncated: truncation.truncated,
+						});
+						if (followupNotice) resultOutput += `\n\n${followupNotice}`;
 						resolve({
 							content: [{ type: "text", text: resultOutput }],
 							details: Object.keys(details).length > 0 ? details : undefined,

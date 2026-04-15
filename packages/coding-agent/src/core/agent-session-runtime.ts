@@ -175,6 +175,8 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
+		const currentModel = this.session.model;
+		const currentThinkingLevel = this.session.thinkingLevel;
 		const sessionDir = this.session.sessionManager.getSessionDir();
 		const sessionManager = SessionManager.create(this.cwd, sessionDir);
 		if (options?.parentSession) {
@@ -189,6 +191,12 @@ export class AgentSessionRuntime {
 				sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
 			}),
 		);
+		if (currentModel) {
+			await this.session.setModel(currentModel);
+			if (this.session.thinkingLevel !== currentThinkingLevel) {
+				this.session.setThinkingLevel(currentThinkingLevel);
+			}
+		}
 		if (options?.setup) {
 			await options.setup(this.session.sessionManager);
 			this.session.agent.state.messages = this.session.sessionManager.buildSessionContext().messages;

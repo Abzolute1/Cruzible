@@ -3,6 +3,7 @@ import {
 	analyzeXmlFallbackTurn,
 	buildXmlFallbackRecoveryPrompt,
 	parseXmlToolCalls,
+	stripXmlToolCallArtifacts,
 } from "../src/core/xml-tool-parser.js";
 
 describe("xml tool parser", () => {
@@ -18,6 +19,78 @@ describe("xml tool parser", () => {
 				arguments: { command: "npm test" },
 			}),
 		]);
+	});
+
+	test("parses wrapped tool_call XML with function and parameter tags", () => {
+		const calls = parseXmlToolCalls(
+			[
+				"<tool_call>",
+				"<function-bash>",
+				"<parameter-command>ls -lh /home/alex/Downloads/</parameter-command>",
+				"</function-bash>",
+				"</tool_call>",
+			].join(""),
+			["bash", "read"],
+		);
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				name: "bash",
+				arguments: { command: "ls -lh /home/alex/Downloads/" },
+			}),
+		]);
+	});
+
+	test("parses wrapped tool_call XML with equals-style function and parameter tags", () => {
+		const calls = parseXmlToolCalls(
+			[
+				"<tool_call>",
+				"<function=webFetch>",
+				"<parameter=url>https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/</parameter>",
+				"</function>",
+				"</tool_call>",
+			].join(""),
+			["bash", "read", "webFetch"],
+		);
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				name: "webFetch",
+				arguments: { url: "https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/" },
+			}),
+		]);
+	});
+
+	test("strips wrapped XML tool-call artifacts from assistant text", () => {
+		const stripped = stripXmlToolCallArtifacts(
+			[
+				"I found the folder. Let me check it.",
+				"",
+				"<tool_call>",
+				"<function-bash>",
+				"<parameter-command>ls -lh /home/alex/Downloads/</parameter-command>",
+				"</function-bash>",
+				"</tool_call>",
+			].join("\n"),
+		);
+
+		expect(stripped).toBe("I found the folder. Let me check it.");
+	});
+
+	test("strips equals-style wrapped XML tool-call artifacts from assistant text", () => {
+		const stripped = stripXmlToolCallArtifacts(
+			[
+				"I found relevant results. Let me fetch the first URL.",
+				"",
+				"<tool_call>",
+				"<function=webFetch>",
+				"<parameter=url>https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/</parameter>",
+				"</function>",
+				"</tool_call>",
+			].join("\n"),
+		);
+
+		expect(stripped).toBe("I found relevant results. Let me fetch the first URL.");
 	});
 
 	test("classifies long truncated XML fallback turns as critical", () => {

@@ -1,4 +1,5 @@
 import { visibleWidth } from "@mariozechner/pi-tui";
+import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.js";
@@ -50,7 +51,7 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
+		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3, tokens: 24_600 }),
 		modelRegistry: {
 			isUsingOAuth: () => false,
 		},
@@ -111,5 +112,55 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("labels input and output tokens with directional arrows", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: {
+				input: 12_345,
+				output: 6_789,
+				cacheRead: 4_321,
+				cacheWrite: 987,
+				cost: { total: 1.234 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		const lines = footer.render(160);
+		const footerLine = stripAnsi(lines[0] ?? "");
+		expect(lines).toHaveLength(1);
+		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("Σ↓ 12k");
+		expect(footerLine).toContain("Σ↑ 6.8k");
+		expect(footerLine).toContain("context 12.3%/200k");
+		expect(footerLine).toContain("api $1.234");
+	});
+
+	it("renders model information on the right side of a single compact footer rail", () => {
+		const session = createSession({
+			sessionName: "alpha",
+			modelId: "lm-studio",
+			provider: "local",
+			usage: {
+				input: 6200,
+				output: 621,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(2));
+
+		const lines = footer.render(200);
+		const footerLine = stripAnsi(lines[0] ?? "");
+		expect(lines).toHaveLength(1);
+		expect(footerLine).toContain("context 12.3%/200k");
+		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("Σ↓ 6.2k");
+		expect(footerLine).toContain("Σ↑ 621");
+		expect(footerLine).toContain("api $0.000");
+		expect(footerLine).toContain("Local");
+		expect(footerLine).toContain("lm-studio");
 	});
 });

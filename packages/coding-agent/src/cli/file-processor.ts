@@ -18,17 +18,20 @@ export interface ProcessedFiles {
 export interface ProcessFileOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
+	/** Base cwd used for workspace-relative resolution. Defaults to process.cwd(). */
+	cwd?: string;
 }
 
 /** Process @file arguments into text content and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	const cwd = options?.cwd ?? process.cwd();
 	let text = "";
 	const images: ImageContent[] = [];
 
 	for (const fileArg of fileArgs) {
 		// Expand and resolve path (handles ~ expansion and macOS screenshot Unicode spaces)
-		const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
+		const absolutePath = resolve(resolveReadPath(fileArg, cwd));
 
 		// Check if file exists
 		try {

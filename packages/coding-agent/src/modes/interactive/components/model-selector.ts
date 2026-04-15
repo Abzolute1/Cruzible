@@ -14,6 +14,7 @@ import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint } from "./keybinding-hints.js";
+import { formatCompactModelPricing, formatModelPricingDetails } from "./model-metrics.js";
 
 interface ModelItem {
 	provider: string;
@@ -243,19 +244,22 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
+			const pricingBadge = formatCompactModelPricing(item.model);
 
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
 				const modelText = `${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
+				const pricingText = pricingBadge ? ` ${theme.fg("muted", pricingBadge)}` : "";
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${pricingText}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
+				const pricingText = pricingBadge ? ` ${theme.fg("muted", pricingBadge)}` : "";
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
+				line = `${modelText} ${providerBadge}${pricingText}${checkmark}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));
@@ -280,6 +284,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const selected = this.filteredModels[this.selectedIndex];
 			this.listContainer.addChild(new Spacer(1));
 			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+			for (const pricingLine of formatModelPricingDetails(selected.model)) {
+				this.listContainer.addChild(new Text(theme.fg("muted", `  ${pricingLine}`), 0, 0));
+			}
 		}
 	}
 

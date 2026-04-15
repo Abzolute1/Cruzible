@@ -5,7 +5,7 @@ import { existsSync, readdirSync, statSync } from "fs";
 import nodePath from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveContainedPath } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
@@ -96,6 +96,13 @@ function formatLsResult(
 	return text;
 }
 
+function formatLsNotice(limit: number, options: { entryLimitReached?: boolean; byteTruncated?: boolean }): string {
+	const parts: string[] = [];
+	if (options.entryLimitReached) parts.push(`${limit} entries limit; next limit=${limit * 2}`);
+	if (options.byteTruncated) parts.push(`${formatSize(DEFAULT_MAX_BYTES)} byte limit`);
+	return `[${parts.join("; ")}]`;
+}
+
 export function createLsToolDefinition(
 	cwd: string,
 	options?: LsToolOptions,
@@ -106,6 +113,11 @@ export function createLsToolDefinition(
 		label: "ls",
 		description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: "List directory contents",
+		promptGuidelines: [
+			"Use ls to inspect unfamiliar directories before reading files inside them.",
+			"After read says a path is a directory or a path is uncertain, use ls before retrying.",
+			"Use ls to confirm the project structure, then switch to find, grep, or read for specifics.",
+		],
 		parameters: lsSchema,
 		async execute(
 			_toolCallId,
@@ -125,7 +137,7 @@ export function createLsToolDefinition(
 
 				(async () => {
 					try {
-						const dirPath = resolveToCwd(path || ".", cwd);
+						const dirPath = resolveContainedPath(path || ".", cwd);
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
 						// Check if path exists.
@@ -177,7 +189,7 @@ export function createLsToolDefinition(
 						signal?.removeEventListener("abort", onAbort);
 
 						if (results.length === 0) {
-							resolve({ content: [{ type: "text", text: "(empty directory)" }], details: undefined });
+							resolve({ content: [{ type: "text", text: "(empty)" }], details: undefined });
 							return;
 						}
 
@@ -187,17 +199,17 @@ export function createLsToolDefinition(
 						let output = truncation.content;
 						const details: LsToolDetails = {};
 						// Build actionable notices for truncation and entry limits.
-						const notices: string[] = [];
 						if (entryLimitReached) {
-							notices.push(`${effectiveLimit} entries limit reached. Use limit=${effectiveLimit * 2} for more`);
 							details.entryLimitReached = effectiveLimit;
 						}
 						if (truncation.truncated) {
-							notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 							details.truncation = truncation;
 						}
-						if (notices.length > 0) {
-							output += `\n\n[${notices.join(". ")}]`;
+						if (entryLimitReached || truncation.truncated) {
+							output += `\n\n${formatLsNotice(effectiveLimit, {
+								entryLimitReached,
+								byteTruncated: truncation.truncated,
+							})}`;
 						}
 
 						resolve({

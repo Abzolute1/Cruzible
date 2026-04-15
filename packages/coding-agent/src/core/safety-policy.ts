@@ -1,7 +1,7 @@
-import { isAbsolute, relative } from "node:path";
 import { resolveToCwd } from "./tools/path-utils.js";
+import { isContainedPath } from "./tools/path-utils.js";
 
-export type SafetyMode = "disabled" | "interactive" | "autonomous" | "headless";
+export type SafetyMode = "disabled" | "interactive" | "planning" | "autonomous" | "headless";
 export type SafetyRisk = "low" | "medium" | "high" | "critical";
 
 export interface ToolApprovalRequest {
@@ -18,6 +18,7 @@ export interface ToolSafetyPolicy {
 	mode: SafetyMode;
 	cwd: string;
 	approvalHandler?: ToolApprovalHandler;
+	planningReadOnlyTools?: "allow" | "block";
 }
 
 export interface ToolSafetyDecision {
@@ -27,6 +28,7 @@ export interface ToolSafetyDecision {
 }
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const PLANNING_EXPLORATION_TOOLS = new Set(["read", "grep", "find", "ls", "webSearch", "webFetch"]);
 const FILE_MUTATION_TOOLS = new Set(["write", "edit", "notebook_edit", "NotebookEdit"]);
 
 const FORBIDDEN_SHELL_RULES: Array<{ pattern: RegExp; reason: string }> = [
@@ -64,6 +66,7 @@ const FORBIDDEN_SHELL_RULES: Array<{ pattern: RegExp; reason: string }> = [
 	},
 ];
 const ALLOWED_SYSTEM_PATH_PREFIXES = ["/bin/", "/usr/bin/", "/usr/local/bin/", "/nix/store/", "/opt/homebrew/bin/", "/snap/bin/"];
+const HEADLESS_READ_ONLY_GUIDANCE = "Use read, grep, find, ls, webSearch, or webFetch instead.";
 
 function trimForDisplay(value: string, max = 240): string {
 	const trimmed = value.trim();
@@ -71,11 +74,6 @@ function trimForDisplay(value: string, max = 240): string {
 		return trimmed;
 	}
 	return `${trimmed.slice(0, max - 3)}...`;
-}
-
-function isPathInsideRoot(targetPath: string, rootPath: string): boolean {
-	const rel = relative(rootPath, targetPath);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function getToolPath(args: unknown): string | undefined {
@@ -128,15 +126,14 @@ function findOutOfWorkspaceShellPath(command: string, cwd: string): string | und
 			if (ALLOWED_SYSTEM_PATH_PREFIXES.some((prefix) => token.startsWith(prefix))) {
 				continue;
 			}
-			if (!isPathInsideRoot(token, cwd)) {
+			if (!isContainedPath(token, cwd, { allowMissing: true })) {
 				return token;
 			}
 			continue;
 		}
 
 		if (token.startsWith("../")) {
-			const resolved = resolveToCwd(token, cwd);
-			if (!isPathInsideRoot(resolved, cwd)) {
+			if (!isContainedPath(token, cwd, { allowMissing: true })) {
 				return token;
 			}
 		}
@@ -148,7 +145,7 @@ function findOutOfWorkspaceShellPath(command: string, cwd: string): string | und
 function evaluateFileMutationTool(toolName: string, args: unknown, policy: ToolSafetyPolicy): ToolSafetyDecision {
 	const targetPath = getToolPath(args);
 	const absolutePath = targetPath ? resolveToCwd(targetPath, policy.cwd) : undefined;
-	const outsideWorkspace = absolutePath ? !isPathInsideRoot(absolutePath, policy.cwd) : false;
+	const outsideWorkspace = targetPath ? !isContainedPath(targetPath, policy.cwd, { allowMissing: true }) : false;
 
 	if (outsideWorkspace) {
 		if (policy.mode === "interactive") {
@@ -187,9 +184,16 @@ function evaluateFileMutationTool(toolName: string, args: unknown, policy: ToolS
 		};
 	}
 
+	if (policy.mode === "planning") {
+		return {
+			allow: false,
+			reason: `${toolName} is blocked in planning mode. Planning mode is read-only and does not allow file edits.`,
+		};
+	}
+
 	return {
 		allow: false,
-		reason: `${toolName} requires interactive approval and is blocked in headless mode.`,
+		reason: `${toolName} requires interactive approval and is blocked in headless mode. ${HEADLESS_READ_ONLY_GUIDANCE}`,
 	};
 }
 
@@ -232,9 +236,16 @@ function evaluateBashTool(args: unknown, policy: ToolSafetyPolicy): ToolSafetyDe
 		};
 	}
 
+	if (policy.mode === "planning") {
+		return {
+			allow: false,
+			reason: "Bash execution is blocked in planning mode. Planning mode is read-only and should produce a plan, not execute commands.",
+		};
+	}
+
 	return {
 		allow: false,
-		reason: "Bash execution requires interactive approval and is blocked in headless mode.",
+		reason: `Bash execution requires interactive approval and is blocked in headless mode. ${HEADLESS_READ_ONLY_GUIDANCE}`,
 	};
 }
 
@@ -251,6 +262,17 @@ function evaluateBashTool(args: unknown, policy: ToolSafetyPolicy): ToolSafetyDe
 export function evaluateToolSafety(toolName: string, args: unknown, policy: ToolSafetyPolicy): ToolSafetyDecision {
 	if (policy.mode === "disabled") {
 		return { allow: true };
+	}
+
+	if (
+		policy.mode === "planning" &&
+		policy.planningReadOnlyTools === "block" &&
+		PLANNING_EXPLORATION_TOOLS.has(toolName)
+	) {
+		return {
+			allow: false,
+			reason: `${toolName} is blocked for this planning turn. Planning must clarify or plan first before exploring files or the web.`,
+		};
 	}
 
 	if (READ_ONLY_TOOLS.has(toolName)) {

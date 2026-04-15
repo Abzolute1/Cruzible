@@ -4,7 +4,17 @@
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "../../extensions/types.js";
-import { deriveResearchCompressionProfile, formatFetchTranscriptContent } from "../../tools/research-output.js";
+import { getEffectiveFetchCompressionProfile, getResearchUrlHint } from "../../tools/research-intent.js";
+import {
+	assessResearchFetchContent,
+	buildResearchPreview,
+	deriveResearchCompressionProfile,
+	extractResearchDocumentTitle,
+	extractResearchFacts,
+	extractResearchMetaDescription,
+	extractResearchPrimaryHtml,
+	formatFetchTranscriptContent,
+} from "../../tools/research-output.js";
 
 const MAX_CHARS = 4000;
 const MAX_PREVIEW_LINES = 12;
@@ -98,13 +108,7 @@ function htmlToMarkdown(html: string): string {
 }
 
 function buildPreview(markdown: string): string {
-	return markdown
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.slice(0, MAX_PREVIEW_LINES)
-		.map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS - 1)}...` : line))
-		.join("\n");
+	return buildResearchPreview(markdown, MAX_PREVIEW_LINES, MAX_LINE_CHARS);
 }
 
 const webFetchParamsSchema = Type.Object({
@@ -229,44 +233,76 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 				fetchCache.set(fetchUrl, { content, contentType, timestamp: Date.now() });
 			}
 
-			// Convert HTML to markdown if it looks like HTML
-			let markdown: string;
-			if (content.trim().startsWith("<") || contentType.includes("html")) {
-				markdown = htmlToMarkdown(content);
-			} else {
-				markdown = content;
-			}
+				// Convert HTML to markdown if it looks like HTML
+				let markdown: string;
+				if (content.trim().startsWith("<") || contentType.includes("html")) {
+					markdown = htmlToMarkdown(extractResearchPrimaryHtml(content));
+				} else {
+					markdown = content;
+				}
 
-			// Truncate to max chars
-			const truncated = markdown.length > MAX_CHARS;
-			const titleMatch = markdown.match(/^#\s+(.+)$/m);
-			const preview = buildPreview(markdown);
-			const compression = deriveResearchCompressionProfile(ctx?.getContextUsage?.() as any);
-			const title = titleMatch?.[1]?.trim();
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: formatFetchTranscriptContent({
-							url: fetchUrl,
-							title,
-							preview,
-							profile: compression,
-							truncated,
-						}),
-					},
-				],
-				details: {
-					url: fetchUrl,
-					contentType,
-					title,
+				// Truncate to max chars
+				const truncated = markdown.length > MAX_CHARS;
+				const htmlTitle = extractResearchDocumentTitle(content);
+				const metaDescription = extractResearchMetaDescription(content);
+				const titleMatch = markdown.match(/^#\s+(.+)$/m);
+				const hint = getResearchUrlHint(fetchUrl);
+				const preview = buildPreview(markdown);
+				const compression = getEffectiveFetchCompressionProfile(
+					deriveResearchCompressionProfile(ctx?.getContextUsage?.() as any),
+					hint,
+				);
+				const title = htmlTitle ?? titleMatch?.[1]?.trim();
+				const facts = extractResearchFacts(markdown, compression.fetchTranscriptFacts + 1, compression.fetchTranscriptLineChars);
+				const enrichedFacts = [...facts];
+				if (
+					metaDescription &&
+					metaDescription.length >= 40 &&
+					hint?.intent !== "docs_reference" &&
+					!enrichedFacts.some((fact) => fact.toLowerCase() === metaDescription.toLowerCase())
+				) {
+					enrichedFacts.unshift(metaDescription);
+				}
+				const selectedFacts = enrichedFacts.slice(0, compression.fetchTranscriptFacts);
+				const assessment = assessResearchFetchContent({
+					markdown,
+					facts: selectedFacts,
 					preview,
-					truncated,
-					compressionMode: compression.mode,
-					cacheHit,
-				},
-			};
+					title,
+					metaDescription,
+				});
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: formatFetchTranscriptContent({
+								url: fetchUrl,
+								title,
+								facts: selectedFacts,
+								preview,
+								profile: compression,
+								truncated,
+								metaDescription,
+								status: assessment.status,
+								statusReason: assessment.reason,
+							}),
+						},
+					],
+					details: {
+						url: fetchUrl,
+						contentType,
+						title,
+						facts: selectedFacts,
+						preview,
+						truncated,
+						compressionMode: compression.mode,
+						cacheHit,
+						metaDescription,
+						status: assessment.status,
+						statusReason: assessment.reason,
+					},
+				};
 		} catch (err: any) {
 			if (err.name === "AbortError") {
 				return {

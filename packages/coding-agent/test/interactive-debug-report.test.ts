@@ -10,7 +10,7 @@ describe("interactive-debug-report", () => {
 			renderedLines: ["hello", "world"],
 			messages: [{ role: "user", content: [{ type: "text", text: "test" }] }],
 			modelId: "provider/model",
-			autonomousMode: true,
+			mode: "autonomous",
 			stabilization: {
 				level: "guarded",
 				reasons: ["recent degradation"],

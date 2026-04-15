@@ -14,6 +14,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
+import { buildTaggedPromptBundle, buildTaggedPromptSection } from "../prompt-sections.js";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
 import { MAX_PTL_RETRIES, truncateHeadForPTLRetry } from "./ptl-retry.js";
 import {
@@ -454,6 +455,8 @@ export function findCutPoint(
 
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
+If <additional-focus> is present, prioritize it while preserving the required format.
+
 Use this EXACT format:
 
 ## Goal
@@ -493,6 +496,7 @@ Update the existing structured summary with new information. RULES:
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
+- If <additional-focus> is present, prioritize it while preserving the required format
 - If something is no longer relevant, you may remove it
 
 Use this EXACT format:
@@ -524,6 +528,20 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
+function buildSummarizationPrompt(options: {
+	conversationText: string;
+	basePrompt: string;
+	previousSummary?: string;
+	additionalFocus?: string;
+}): string {
+	const promptSections = buildTaggedPromptBundle([
+		{ tag: "conversation", content: options.conversationText },
+		{ tag: "previous-summary", content: options.previousSummary },
+		{ tag: "additional-focus", content: options.additionalFocus },
+	]);
+	return `${promptSections}\n\n${options.basePrompt}`;
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
@@ -541,22 +559,19 @@ export async function generateSummary(
 	const maxTokens = Math.floor(0.8 * reserveTokens);
 
 	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
-	}
+	const basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
 
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
 	const llmMessages = convertToLlm(_currentMessages);
 	const conversationText = serializeConversation(llmMessages);
 
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
+	const promptText = buildSummarizationPrompt({
+		conversationText,
+		basePrompt,
+		previousSummary,
+		additionalFocus: customInstructions,
+	});
 
 	const summarizationMessages = [
 		{
@@ -840,7 +855,10 @@ async function generateTurnPrefixSummary(
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const promptText = buildSummarizationPrompt({
+		conversationText,
+		basePrompt: TURN_PREFIX_SUMMARIZATION_PROMPT,
+	});
 	const summarizationMessages = [
 		{
 			role: "user" as const,

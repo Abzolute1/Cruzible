@@ -8,7 +8,7 @@ import path from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveContainedPath } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import {
@@ -62,6 +62,12 @@ const defaultGrepOperations: GrepOperations = {
 export interface GrepToolOptions {
 	/** Custom operations for grep. Default: local filesystem plus ripgrep */
 	operations?: GrepOperations;
+}
+
+function toToolPath(filePath: string, cwd: string): string {
+	const relative = path.relative(cwd, filePath).replace(/\\/g, "/");
+	if (relative && !relative.startsWith("..")) return relative;
+	return filePath.replace(/\\/g, "/");
 }
 
 function formatGrepCall(
@@ -119,6 +125,30 @@ function formatGrepResult(
 	return text;
 }
 
+function formatGrepNotice(
+	limit: number,
+	options: { matchLimitReached?: boolean; byteTruncated?: boolean; linesTruncated?: boolean },
+): string {
+	const parts: string[] = [];
+	if (options.matchLimitReached) parts.push(`${limit} matches limit; next limit=${limit * 2}`);
+	if (options.byteTruncated) parts.push(`${formatSize(DEFAULT_MAX_BYTES)} byte limit`);
+	if (options.linesTruncated) parts.push(`line clips at ${GREP_MAX_LINE_LENGTH} chars; use read`);
+	return `[${parts.join("; ")}]`;
+}
+
+function formatGrepFollowupNotice(
+	matches: Array<{ filePath: string; lineNumber: number }>,
+	cwd: string,
+	options: { matchLimitReached?: boolean; byteTruncated?: boolean },
+): string | undefined {
+	if (matches.length !== 1 || options.matchLimitReached || options.byteTruncated) return undefined;
+	const match = matches[0];
+	if (!match) return undefined;
+	const target = toToolPath(match.filePath, cwd);
+	const offset = Math.max(1, match.lineNumber - 5);
+	return `[1 match in ${target}:${match.lineNumber}; next: read ${target} offset=${offset}]`;
+}
+
 export function createGrepToolDefinition(
 	cwd: string,
 	options?: GrepToolOptions,
@@ -129,6 +159,11 @@ export function createGrepToolDefinition(
 		label: "grep",
 		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
 		promptSnippet: "Search file contents for patterns (respects .gitignore)",
+		promptGuidelines: [
+			"Use grep to locate symbols, functions, error strings, or identifiers before reading files.",
+			"Prefer grep over guessing file paths when you know text that should appear in the code.",
+			"After grep finds a candidate file and line, use read on that file or nearby range for detail.",
+		],
 		parameters: grepSchema,
 		async execute(
 			_toolCallId,
@@ -174,7 +209,7 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const searchPath = resolveContainedPath(searchDir || ".", cwd);
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
 						try {
@@ -304,9 +339,7 @@ export function createGrepToolDefinition(
 								return;
 							}
 							if (matchCount === 0) {
-								settle(() =>
-									resolve({ content: [{ type: "text", text: "No matches found" }], details: undefined }),
-								);
+								settle(() => resolve({ content: [{ type: "text", text: "(no matches)" }], details: undefined }));
 								return;
 							}
 
@@ -321,25 +354,27 @@ export function createGrepToolDefinition(
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let output = truncation.content;
 							const details: GrepToolDetails = {};
-							// Build actionable notices for truncation and match limits.
-							const notices: string[] = [];
 							if (matchLimitReached) {
-								notices.push(
-									`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-								);
 								details.matchLimitReached = effectiveLimit;
 							}
 							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 								details.truncation = truncation;
 							}
 							if (linesTruncated) {
-								notices.push(
-									`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
-								);
 								details.linesTruncated = true;
 							}
-							if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+							if (matchLimitReached || truncation.truncated || linesTruncated) {
+								output += `\n\n${formatGrepNotice(effectiveLimit, {
+									matchLimitReached,
+									byteTruncated: truncation.truncated,
+									linesTruncated,
+								})}`;
+							}
+							const followupNotice = formatGrepFollowupNotice(matches, cwd, {
+								matchLimitReached,
+								byteTruncated: truncation.truncated,
+							});
+							if (followupNotice) output += `\n\n${followupNotice}`;
 							settle(() =>
 								resolve({
 									content: [{ type: "text", text: output }],

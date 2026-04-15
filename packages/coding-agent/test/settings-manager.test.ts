@@ -109,6 +109,22 @@ describe("SettingsManager", () => {
 			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 			expect(savedSettings.defaultThinkingLevel).toBe("high");
 		});
+
+		it("should persist separate planning and execution model routes", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setPlanningModel("openai/gpt-5.4");
+			manager.setExecutionModel("anthropic/claude-opus-4-5");
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.planningModel).toBe("openai/gpt-5.4");
+			expect(savedSettings.executionModel).toBe("anthropic/claude-opus-4-5");
+			expect(manager.getPlanningModel()).toBe("openai/gpt-5.4");
+			expect(manager.getExecutionModel()).toBe("anthropic/claude-opus-4-5");
+		});
 	});
 
 	describe("packages migration", () => {

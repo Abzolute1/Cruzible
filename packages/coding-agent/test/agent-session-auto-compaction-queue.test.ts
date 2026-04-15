@@ -126,6 +126,137 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("should not resume a stale queued turn after auto-compaction when session messages changed", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		session.agent.state.messages.push({
+			role: "user",
+			content: [{ type: "text", text: "newer prompt" }],
+			timestamp: Date.now() + 1,
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
+	it("emits a replay-skipped event when auto-compaction queue replay becomes stale", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+
+		const events: any[] = [];
+		session.subscribe((event) => {
+			events.push(event as any);
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		session.agent.state.model = { ...session.model!, id: "different-model" };
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(events).toContainEqual({
+			type: "recovery_replay_skipped",
+			owner: "compaction",
+			reason: "state_changed",
+			message: "Auto-continue skipped because the session changed before replay.",
+		});
+	});
+
+	it("should not resume a stale queued turn after auto-compaction when thinking level changed", async () => {
+		session.agent.state.thinkingLevel = "medium";
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		session.agent.state.thinkingLevel = "high";
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
+	it("should not resume a stale queued turn after auto-compaction when model changed", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		session.agent.state.model = { ...session.model!, id: "different-model" };
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
+	it("cancels pending auto-compaction replay when the session is disposed", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		session.dispose();
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
 	it("should not compact repeatedly after overflow recovery already attempted", async () => {
 		const model = session.model!;
 		const overflowMessage: AssistantMessage = {

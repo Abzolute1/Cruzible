@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import { getDocsPath } from "../config.js";
+import { appendTaggedPromptSection } from "./prompt-sections.js";
 import type { AgentSessionEvent } from "./agent-session.js";
 import type { ExtensionRunner, InputSource } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.js";
@@ -11,6 +12,7 @@ export interface AgentSessionPromptOptions {
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
 	source?: InputSource;
+	systemPromptAddendum?: string;
 }
 
 export interface AgentSessionPromptCoordinatorOptions {
@@ -39,6 +41,7 @@ export interface AgentSessionPromptCoordinatorOptions {
 	queueFollowUp: (text: string, images?: ImageContent[]) => Promise<void>;
 	resetXmlPromptState: () => void;
 	waitForRetry: () => Promise<void>;
+	waitForEventLoop: () => Promise<void>;
 	processXmlToolCalls: () => Promise<void>;
 }
 
@@ -98,11 +101,12 @@ export class AgentSessionPromptCoordinator {
 		}
 
 		const messages = this.buildPromptMessages(expandedText, currentImages);
-		await this.applyBeforeAgentStart(messages, expandedText, currentImages);
+		await this.applyBeforeAgentStart(messages, expandedText, currentImages, promptOptions?.systemPromptAddendum);
 
 		this.options.resetXmlPromptState();
 		await this.options.agentState.prompt(messages);
 		await this.options.waitForRetry();
+		await this.options.waitForEventLoop();
 		await this.options.processXmlToolCalls();
 	}
 
@@ -170,13 +174,21 @@ export class AgentSessionPromptCoordinator {
 		messages: AgentMessage[],
 		text: string,
 		images?: ImageContent[],
+		systemPromptAddendum?: string,
 	): Promise<void> {
 		const extensionRunner = this.options.getExtensionRunner();
+		const baseSystemPrompt = this.options.getBaseSystemPrompt();
+		const effectiveSystemPrompt = appendTaggedPromptSection(
+			baseSystemPrompt,
+			"session-runtime-addendum",
+			systemPromptAddendum,
+		);
 		if (!extensionRunner) {
+			this.options.agentState.setSystemPrompt(effectiveSystemPrompt);
 			return;
 		}
 
-		const result = await extensionRunner.emitBeforeAgentStart(text, images, this.options.getBaseSystemPrompt());
+		const result = await extensionRunner.emitBeforeAgentStart(text, images, effectiveSystemPrompt);
 		if (result?.messages) {
 			for (const message of result.messages) {
 				messages.push({
@@ -190,6 +202,6 @@ export class AgentSessionPromptCoordinator {
 			}
 		}
 
-		this.options.agentState.setSystemPrompt(result?.systemPrompt ?? this.options.getBaseSystemPrompt());
+		this.options.agentState.setSystemPrompt(result?.systemPrompt ?? effectiveSystemPrompt);
 	}
 }

@@ -1,13 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { evaluateToolSafety, type ToolSafetyPolicy } from "../src/core/safety-policy.js";
 
-const cwd = "/workspace/project";
+let cwd = "";
 
 function policy(mode: ToolSafetyPolicy["mode"]): ToolSafetyPolicy {
 	return { mode, cwd };
 }
 
 describe("tool safety policy", () => {
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "crucible-safety-policy-"));
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		mkdirSync(join(cwd, "dist"), { recursive: true });
+		writeFileSync(join(cwd, "src", "app.ts"), "export const app = true;\n");
+	});
+
+	afterEach(() => {
+		if (cwd) {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("requires approval for bash commands in interactive mode", () => {
 		const result = evaluateToolSafety("bash", { command: "npm test" }, policy("interactive"));
 
@@ -21,6 +37,34 @@ describe("tool safety policy", () => {
 
 		expect(result.allow).toBe(false);
 		expect(result.reason).toContain("headless mode");
+		expect(result.reason).toContain("Use read, grep, find, ls, webSearch, or webFetch instead.");
+	});
+
+	it("blocks bash commands in planning mode", () => {
+		const result = evaluateToolSafety("bash", { command: "npm test" }, policy("planning"));
+
+		expect(result.allow).toBe(false);
+		expect(result.reason).toContain("planning mode");
+	});
+
+	it("blocks read-only exploration tools in planning mode when inspection is disabled for the turn", () => {
+		const result = evaluateToolSafety("read", { path: "src/app.ts" }, {
+			...policy("planning"),
+			planningReadOnlyTools: "block",
+		});
+
+		expect(result.allow).toBe(false);
+		expect(result.reason).toContain("blocked for this planning turn");
+	});
+
+	it("blocks web research tools in planning mode when inspection is disabled for the turn", () => {
+		const result = evaluateToolSafety("webSearch", { query: "snake game tutorial" }, {
+			...policy("planning"),
+			planningReadOnlyTools: "block",
+		});
+
+		expect(result.allow).toBe(false);
+		expect(result.reason).toContain("blocked for this planning turn");
 	});
 
 	it("requires approval for workspace file writes in interactive mode", () => {
@@ -35,6 +79,13 @@ describe("tool safety policy", () => {
 		const result = evaluateToolSafety("edit", { path: "src/app.ts", edits: [] }, policy("autonomous"));
 
 		expect(result).toEqual({ allow: true });
+	});
+
+	it("blocks workspace file edits in planning mode", () => {
+		const result = evaluateToolSafety("edit", { path: "src/app.ts", edits: [] }, policy("planning"));
+
+		expect(result.allow).toBe(false);
+		expect(result.reason).toContain("planning mode");
 	});
 
 	it("blocks file mutations outside the workspace in autonomous mode", () => {
@@ -79,10 +130,24 @@ describe("tool safety policy", () => {
 	it("allows autonomous bash commands that stay within the workspace", () => {
 		const result = evaluateToolSafety(
 			"bash",
-			{ command: "cp /workspace/project/src/app.ts /workspace/project/dist/app.ts" },
+			{ command: `cp ${join(cwd, "src", "app.ts")} ${join(cwd, "dist", "app.ts")}` },
 			policy("autonomous"),
 		);
 
 		expect(result).toEqual({ allow: true });
+	});
+
+	it("blocks file mutations that traverse a symlink outside the workspace", () => {
+		const outsideDir = mkdtempSync(join(tmpdir(), "crucible-safety-policy-outside-"));
+		symlinkSync(outsideDir, join(cwd, "linked-outside"));
+
+		const result = evaluateToolSafety(
+			"write",
+			{ path: "linked-outside/secret.txt", content: "x" },
+			policy("autonomous"),
+		);
+
+		expect(result.allow).toBe(false);
+		expect(result.reason).toContain("outside the session workspace");
 	});
 });

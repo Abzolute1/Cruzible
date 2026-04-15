@@ -218,6 +218,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
 			modelRegistry,
 		});
+		if (result.error) {
+			throw new Error(result.error);
+		}
 		model = result.model;
 		if (!model) {
 			modelFallbackMessage = `No models available. Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}. Then use /model to select a model.`;

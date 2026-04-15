@@ -3,16 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Args } from "../src/cli/args.js";
+import { ModelRegistry } from "../src/index.js";
 import { getDefaultSessionDir, SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import {
+	enforceExplicitRuntimeModel,
 	buildRuntimeCliOptions,
+	enforceRequestedStartupModel,
 	main,
 	prepareStartupModelsFile,
 	prepareStartupInput,
+	resolveModel,
 	resolveSessionReference,
 	resolveSelectedTools,
 	resolveSessionStorageDir,
+	shouldUseRequestedStartupModel,
 	validateModeFlags,
 	validateToolFlags,
 	validateSessionFlags,
@@ -81,7 +86,7 @@ describe("main CLI contract", () => {
 		const parsed = createArgs(["Explain this", "Second message"]);
 		parsed.fileArgs = [textFile];
 
-		const result = await prepareStartupInput(parsed, "stdin\n");
+		const result = await prepareStartupInput(parsed, "stdin\n", cwd);
 
 		expect(result.initialMessage).toContain("stdin\n");
 		expect(result.initialMessage).toContain(`<file name="${textFile}">`);
@@ -167,7 +172,9 @@ describe("main CLI contract", () => {
 
 	it("rejects conflicting non-interactive mode flags", () => {
 		expect(validateModeFlags({ ...createArgs(), print: true, mode: "json" })).toContain("Only one");
+		expect(validateModeFlags({ ...createArgs(), print: true, autonomous: true })).toContain("Only one");
 		expect(validateModeFlags({ ...createArgs(), mode: "json" })).toBeNull();
+		expect(validateModeFlags({ ...createArgs(), autonomous: true })).toBeNull();
 	});
 
 	it("rejects conflicting tool selection flags", () => {
@@ -247,10 +254,11 @@ describe("main CLI contract", () => {
 
 	it("prepares startup models by preserving custom providers and replacing managed ones", async () => {
 		const agentDir = createTempDir("main-cli-models-agent");
-		const modelsPath = join(agentDir, "models.json");
+		const userModelsPath = join(agentDir, "models.json");
+		const runtimeModelsPath = join(agentDir, "models.runtime.json");
 		cleanupPaths.push(agentDir);
 		writeFileSync(
-			modelsPath,
+			userModelsPath,
 			JSON.stringify(
 				{
 					providers: {
@@ -270,15 +278,20 @@ describe("main CLI contract", () => {
 			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
 		});
 
-		const saved = JSON.parse(readFileSync(modelsPath, "utf-8")) as {
+		const userSaved = JSON.parse(readFileSync(userModelsPath, "utf-8")) as {
 			providers: Record<string, unknown>;
 		};
-		expect(saved.providers.custom).toEqual({ api: "custom" });
-		expect(saved.providers.nvidia).toBeUndefined();
-		expect(saved.providers.local).toBeUndefined();
+		const runtimeSaved = JSON.parse(readFileSync(runtimeModelsPath, "utf-8")) as {
+			providers: Record<string, unknown>;
+		};
+		expect(userSaved.providers.nvidia).toEqual({ stale: true });
+		expect(userSaved.providers.local).toEqual({ stale: true });
+		expect(runtimeSaved.providers.custom).toEqual({ api: "custom" });
+		expect(runtimeSaved.providers.nvidia).toBeUndefined();
+		expect(runtimeSaved.providers.local).toBeUndefined();
 	});
 
-	it("adds detected local provider and survives malformed LM Studio payloads", async () => {
+	it("adds detected local provider using real LM Studio model ids and survives malformed payloads", async () => {
 		const agentDir = createTempDir("main-cli-local-provider");
 		cleanupPaths.push(agentDir);
 
@@ -299,6 +312,9 @@ describe("main CLI contract", () => {
 			fetchImpl: fetchImpl as typeof fetch,
 		});
 		expect(first.modelsData.providers.local).toBeDefined();
+		expect((first.modelsData.providers.local as any).models).toEqual([
+			expect.objectContaining({ id: "qwen-local", name: "qwen-local" }),
+		]);
 
 		const second = await prepareStartupModelsFile({
 			agentDir,
@@ -306,6 +322,181 @@ describe("main CLI contract", () => {
 			fetchImpl: fetchImpl as typeof fetch,
 		});
 		expect(second.modelsData.providers.local).toBeUndefined();
+	});
+
+	it("stores NVIDIA api key as an env reference instead of persisting the secret value", async () => {
+		const agentDir = createTempDir("main-cli-nvidia-models");
+		cleanupPaths.push(agentDir);
+
+		const result = await prepareStartupModelsFile({
+			agentDir,
+			env: { NVIDIA_API_KEY: "super-secret-token" },
+			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+		});
+
+		expect((result.modelsData.providers.nvidia as any).apiKey).toBe("NVIDIA_API_KEY");
+		expect(readFileSync(join(agentDir, "models.runtime.json"), "utf-8")).not.toContain("super-secret-token");
+	});
+
+	it("hydrates NVIDIA model pricing into the runtime registry", async () => {
+		const agentDir = createTempDir("main-cli-nvidia-pricing");
+		cleanupPaths.push(agentDir);
+
+		const result = await prepareStartupModelsFile({
+			agentDir,
+			env: { NVIDIA_API_KEY: "super-secret-token" },
+			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+		});
+
+		const models = ((result.modelsData.providers.nvidia as any).models ?? []) as Array<{
+			id: string;
+			cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		}>;
+		expect(models).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "nvidia/nemotron-3-super-120b-a12b",
+					cost: { input: 0.2, output: 0.8, cacheRead: 0, cacheWrite: 0 },
+				}),
+				expect.objectContaining({
+					id: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+					cost: { input: 0.6, output: 1.8, cacheRead: 0, cacheWrite: 0 },
+				}),
+			]),
+		);
+	});
+
+	it("prefers the requested provider when only --provider is supplied", async () => {
+		const settings = SettingsManager.inMemory({ defaultModel: "nvidia/default" });
+		const modelRegistry = {
+			getAvailable: () => [
+				{ id: "nvidia/default", provider: "nvidia", name: "NVIDIA Default" },
+				{ id: "local/qwen", provider: "local", name: "Qwen Local" },
+			],
+		} as unknown as ModelRegistry;
+
+		const resolved = await resolveModel(undefined, "local", modelRegistry, settings);
+		expect(resolved.model.id).toBe("local/qwen");
+	});
+
+	it("fails clearly when an explicit model is unavailable", async () => {
+		const settings = SettingsManager.inMemory({});
+		const modelRegistry = {
+			getAvailable: () => [{ id: "local/qwen", provider: "local", name: "Qwen Local" }],
+		} as unknown as ModelRegistry;
+
+		await expect(resolveModel("missing-model", undefined, modelRegistry, settings)).rejects.toThrow(
+			'No model matching "missing-model" is available.',
+		);
+	});
+
+	it("fails clearly when a requested provider/model pair is impossible", async () => {
+		const settings = SettingsManager.inMemory({});
+		const modelRegistry = {
+			getAvailable: () => [
+				{ id: "local/qwen", provider: "local", name: "Qwen Local" },
+				{ id: "openai/gpt-5.4", provider: "openai", name: "GPT-5.4" },
+			],
+		} as unknown as ModelRegistry;
+
+		await expect(resolveModel("gpt-5.4", "local", modelRegistry, settings)).rejects.toThrow(
+			'No model matching "gpt-5.4" found for provider "local".',
+		);
+	});
+
+	it("fails clearly when a requested provider has no available models", async () => {
+		const settings = SettingsManager.inMemory({});
+		const modelRegistry = {
+			getAvailable: () => [{ id: "local/qwen", provider: "local", name: "Qwen Local" }],
+		} as unknown as ModelRegistry;
+
+		await expect(resolveModel(undefined, "openai", modelRegistry, settings)).rejects.toThrow(
+			'No models available for provider "openai".',
+		);
+	});
+
+	it("reapplies an explicit startup model when runtime bootstrap drifts to another model", () => {
+		const requestedModel = {
+			provider: "openai",
+			id: "gpt-5.4-mini",
+			name: "GPT-5.4 mini",
+		} as any;
+		const appendModelChange = vi.fn(() => "entry-1");
+		const session = {
+			agent: {
+				state: {
+					model: {
+						provider: "local",
+						id: "lm-studio",
+						name: "LM Studio",
+					},
+				},
+			},
+			sessionManager: {
+				appendModelChange,
+			},
+		};
+
+		const corrected = enforceRequestedStartupModel(session as any, requestedModel);
+
+		expect(corrected).toBe(true);
+		expect(session.agent.state.model).toBe(requestedModel);
+		expect(appendModelChange).toHaveBeenCalledWith("openai", "gpt-5.4-mini");
+	});
+
+	it("reapplies an explicit runtime model before execution when the live session drifted", async () => {
+		const requestedModel = {
+			provider: "openai",
+			id: "gpt-5.4-mini",
+			name: "GPT-5.4 mini",
+		} as any;
+		const setModel = vi.fn().mockResolvedValue(undefined);
+		const session = {
+			model: {
+				provider: "local",
+				id: "lm-studio",
+				name: "LM Studio",
+			},
+			setModel,
+		};
+
+		const corrected = await enforceExplicitRuntimeModel(session as any, requestedModel, true);
+
+		expect(corrected).toBe(true);
+		expect(setModel).toHaveBeenCalledWith(requestedModel);
+	});
+
+	it("does not reapply the runtime model when there was no explicit CLI request", async () => {
+		const requestedModel = {
+			provider: "openai",
+			id: "gpt-5.4-mini",
+			name: "GPT-5.4 mini",
+		} as any;
+		const setModel = vi.fn().mockResolvedValue(undefined);
+		const session = {
+			model: {
+				provider: "local",
+				id: "lm-studio",
+				name: "LM Studio",
+			},
+			setModel,
+		};
+
+		const corrected = await enforceExplicitRuntimeModel(session as any, requestedModel, false);
+
+		expect(corrected).toBe(false);
+		expect(setModel).not.toHaveBeenCalled();
+	});
+
+	it("treats a null session model as an empty startup session", () => {
+		expect(shouldUseRequestedStartupModel({ messages: [], model: null })).toBe(true);
+		expect(shouldUseRequestedStartupModel({ messages: [], model: undefined })).toBe(true);
+		expect(
+			shouldUseRequestedStartupModel({
+				messages: [],
+				model: { provider: "local", modelId: "lm-studio" },
+			}),
+		).toBe(false);
 	});
 
 	it("does not probe providers or write models.json for invalid mode flags", async () => {
@@ -317,6 +508,38 @@ describe("main CLI contract", () => {
 			await main(["--agent-dir", agentDir, "--mode", "json", "-p"]);
 			expect(process.exitCode).toBe(1);
 			expect(existsSync(join(agentDir, "models.json"))).toBe(false);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("lists models without creating session state", async () => {
+		const agentDir = createTempDir("main-cli-list-models-agent");
+		const cwd = createTempDir("main-cli-list-models-cwd");
+		cleanupPaths.push(agentDir, cwd);
+		const listSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const createSessionSpy = vi.spyOn(SessionManager, "create");
+
+		try {
+			await main(["--agent-dir", agentDir, "--cwd", cwd, "--list-models"]);
+			expect(createSessionSpy).not.toHaveBeenCalled();
+			expect(listSpy).toHaveBeenCalled();
+		} finally {
+			listSpy.mockRestore();
+			createSessionSpy.mockRestore();
+		}
+	});
+
+	it("fails cleanly for an explicit unavailable model request", async () => {
+		const agentDir = createTempDir("main-cli-invalid-model-agent");
+		const cwd = createTempDir("main-cli-invalid-model-cwd");
+		cleanupPaths.push(agentDir, cwd);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await main(["--agent-dir", agentDir, "--cwd", cwd, "--model", "missing-model", "--print", "hello"]);
+			expect(process.exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith('No model matching "missing-model" is available.');
 		} finally {
 			errorSpy.mockRestore();
 		}

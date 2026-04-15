@@ -2,6 +2,8 @@ import type { Agent } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Model } from "@mariozechner/pi-ai";
 import { isContextOverflow } from "@mariozechner/pi-ai";
 import { getAutoCompactTrigger, selectCompactionPolicy } from "./auton/compaction-policy.js";
+import type { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
+import { AgentSessionRecoveryReplayScheduler } from "./agent-session-recovery-replay-scheduler.js";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -40,14 +42,28 @@ export interface AgentSessionCompactionCoordinatorOptions {
 	disconnectFromAgent: () => void;
 	reconnectToAgent: () => void;
 	abortAgent: () => Promise<void>;
+	recoveryArbiter: AgentSessionRecoveryArbiter;
 }
 
 export class AgentSessionCompactionCoordinator {
 	private manualAbortController: AbortController | undefined = undefined;
 	private autoAbortController: AbortController | undefined = undefined;
 	private overflowRecoveryAttempted = false;
+	private readonly replayScheduler: AgentSessionRecoveryReplayScheduler;
 
-	constructor(private readonly options: AgentSessionCompactionCoordinatorOptions) {}
+	constructor(private readonly options: AgentSessionCompactionCoordinatorOptions) {
+		this.replayScheduler = new AgentSessionRecoveryReplayScheduler({
+			owner: "compaction",
+			recoveryArbiter: this.options.recoveryArbiter,
+			getState: () => ({
+				messages: this.options.agent.state.messages,
+				isStreaming: this.options.agent.state.isStreaming === true,
+				model: this.options.agent.state.model,
+				thinkingLevel: this.options.agent.state.thinkingLevel,
+			}),
+			emit: this.options.emit,
+		});
+	}
 
 	get isCompacting(): boolean {
 		return this.manualAbortController !== undefined || this.autoAbortController !== undefined;
@@ -68,6 +84,7 @@ export class AgentSessionCompactionCoordinator {
 	abort(): void {
 		this.manualAbortController?.abort();
 		this.autoAbortController?.abort();
+		this.replayScheduler.cancel();
 	}
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {
@@ -359,14 +376,9 @@ export class AgentSessionCompactionCoordinator {
 				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
 					this.options.agent.state.messages = messages.slice(0, -1);
 				}
-
-				setTimeout(() => {
-					this.options.agent.continue().catch(() => {});
-				}, 100);
+				this.scheduleAutoContinue(100);
 			} else if (this.options.agent.hasQueuedMessages()) {
-				setTimeout(() => {
-					this.options.agent.continue().catch(() => {});
-				}, 100);
+				this.scheduleAutoContinue(100);
 			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
@@ -419,5 +431,19 @@ export class AgentSessionCompactionCoordinator {
 				fromExtension,
 			});
 		}
+	}
+
+	private clearScheduledAutoContinue(): void {
+		this.replayScheduler.cancel();
+	}
+
+	private scheduleAutoContinue(delayMs: number): void {
+		this.clearScheduledAutoContinue();
+		this.replayScheduler.schedule({
+			delayMs,
+			alreadyScheduledMessage: "Auto-continue skipped because another recovery path is already scheduled.",
+			stateChangedMessage: "Auto-continue skipped because the session changed before replay.",
+			run: () => this.options.agent.continue(),
+		});
 	}
 }

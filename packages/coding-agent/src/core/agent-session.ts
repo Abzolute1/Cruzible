@@ -44,6 +44,7 @@ import {
 	AgentSessionPromptCoordinator,
 	type AgentSessionPromptOptions,
 } from "./agent-session-prompt-coordinator.js";
+import { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
 import { AgentSessionRetryCoordinator } from "./agent-session-retry-coordinator.js";
 import { AgentSessionRuntimeBootstrapCoordinator } from "./agent-session-runtime-bootstrap-coordinator.js";
 import { AgentSessionToolRegistryCoordinator } from "./agent-session-tool-registry-coordinator.js";
@@ -137,6 +138,12 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| {
+			type: "recovery_replay_skipped";
+			owner: "retry" | "compaction";
+			reason: "already_scheduled" | "state_changed";
+			message: string;
+	  }
+	| {
 			type: "xml_tool_call";
 			toolName: string;
 			arguments: Record<string, unknown>;
@@ -215,6 +222,8 @@ export interface PromptOptions {
 	streamingBehavior?: "steer" | "followUp";
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
+	/** Per-turn system prompt addendum. Not shown in the visible transcript. */
+	systemPromptAddendum?: string;
 }
 
 export type ModelCycleResult = AgentSessionModelCycleResult;
@@ -271,6 +280,7 @@ export class AgentSession {
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
 	// Retry state
+	private readonly _recoveryArbiter: AgentSessionRecoveryArbiter;
 	private readonly _retryCoordinator: AgentSessionRetryCoordinator;
 	private readonly _promptCoordinator: AgentSessionPromptCoordinator;
 	private readonly _toolRegistryCoordinator: AgentSessionToolRegistryCoordinator;
@@ -330,6 +340,7 @@ export class AgentSession {
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._toolSafety = config.toolSafety;
 		this._eventDispatcher = new AgentSessionEventDispatcher(this.sessionManager, () => this._extensionRunner);
+		this._recoveryArbiter = new AgentSessionRecoveryArbiter();
 		this._compactionCoordinator = new AgentSessionCompactionCoordinator({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -343,12 +354,14 @@ export class AgentSession {
 			disconnectFromAgent: () => this._disconnectFromAgent(),
 			reconnectToAgent: () => this._reconnectToAgent(),
 			abortAgent: () => this.abort(),
+			recoveryArbiter: this._recoveryArbiter,
 		});
 		this._retryCoordinator = new AgentSessionRetryCoordinator({
 			agent: this.agent,
 			settingsManager: this.settingsManager,
 			getContextWindow: () => this.contextWindow,
 			emit: (event) => this._emit(event),
+			recoveryArbiter: this._recoveryArbiter,
 		});
 		this._eventLoopCoordinator = new AgentSessionEventLoopCoordinator({
 			removeQueuedUserMessage: (text) => {
@@ -434,6 +447,7 @@ export class AgentSession {
 			queueFollowUp: (text, images) => this._queueFollowUp(text, images),
 			resetXmlPromptState: () => this._xmlCoordinator.resetForPrompt(),
 			waitForRetry: () => this.waitForRetry(),
+			waitForEventLoop: () => this._eventLoopCoordinator.wait(),
 			processXmlToolCalls: () => this._xmlCoordinator.process(),
 		});
 		this._extensionLifecycleCoordinator = new AgentSessionExtensionLifecycleCoordinator({
@@ -804,6 +818,11 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._retryCoordinator.abort();
+		this._compactionCoordinator.abort();
+		this._treeCoordinator.abort();
+		this._bashCoordinator.abort();
+		this.agent.abort();
 		this._disconnectFromAgent();
 		this._eventDispatcher.clearListeners();
 	}

@@ -11,6 +11,7 @@ import {
 	buildAutonomousCompactionInstructions,
 	createAutonomousRunSnapshotFromState,
 	createAutonomousRunLedger,
+	formatAutonomousContinuationLedger,
 	formatAutonomousPromptLedger,
 	formatAutonomousRunLedger,
 	hasSufficientResearchEvidence,
@@ -163,6 +164,8 @@ const IMPLEMENTATION_TASK_PATTERNS = [
 	/\b(fix|improve|update|change|modify|edit|implement|build|add|create|refactor|tighten|rewrite|replace)\b/i,
 ];
 
+const BUDGET_EXCEEDED_ERROR_PATTERNS = [/\b(?:cost|token|turn)\s+budget exceeded\b/i, /\bbudget limit reached\b/i];
+
 export async function runAutonomousSession(options: AutonomousRunOptions): Promise<AutonomousRunResult> {
 	const {
 		runtimeHost,
@@ -283,6 +286,11 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 
 		while (iterations < MAX_AUTON_ITERATIONS) {
 			const budget = autonHook.getBudgetStatus();
+			if (!budget.costAuthoritative && (config.maxCostUsd ?? 0) > 0 && budget.costUsed >= (config.maxCostUsd ?? 0)) {
+				process.stderr.write(
+					`[Auton] Cost estimate crossed configured budget ($${budget.costUsed.toFixed(2)} used), but pricing is non-authoritative so execution continues.\n`,
+				);
+			}
 			if (budget.exceeded.cost || budget.exceeded.tokens || budget.exceeded.turns) {
 				const reasons: string[] = [];
 				if (budget.exceeded.cost) reasons.push(`cost $${budget.costUsed.toFixed(2)}`);
@@ -673,7 +681,7 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 		onStatus?.("Autonomous mode complete");
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		if (message.includes("budget exceeded") || message.includes("exceeded")) {
+		if (isBudgetExceededError(message)) {
 			process.stderr.write(`[Auton] ${message}\n`);
 			ledger = { ...ledger, status: "budget" };
 			stopReason = "budget";
@@ -708,6 +716,10 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 	appendAutonomousRunSnapshotState(session.sessionManager, finalSnapshot);
 	onCheckpoint?.(finalSnapshot);
 	return result;
+}
+
+function isBudgetExceededError(message: string): boolean {
+	return BUDGET_EXCEEDED_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 function buildAutonomousNudgeContext(options: {
@@ -1199,8 +1211,12 @@ function buildContinuationPrompt(
 	return appendLedgerContext(prompt, promptLedger);
 }
 
-function appendLedgerContext(prompt: string, ledger: AutonomousRunLedger): string {
-	return `${prompt}\n\n${formatAutonomousPromptLedger(ledger)}`;
+function appendLedgerContext(
+	prompt: string,
+	ledger: AutonomousRunLedger,
+	mode: "continuation" | "full" = "continuation",
+): string {
+	return `${prompt}\n\n${mode === "full" ? formatAutonomousPromptLedger(ledger) : formatAutonomousContinuationLedger(ledger)}`;
 }
 
 function buildTurnIntent(
@@ -1601,7 +1617,7 @@ function buildResumeAutonomousPrompt(
 		checkpoint,
 		"Do not restart from scratch or repeat already completed research or verification unless the saved state says it is still required.",
 	];
-	return appendLedgerContext(lines.join("\n"), ledger);
+	return appendLedgerContext(lines.join("\n"), ledger, "full");
 }
 
 function getBudgetPressure(
@@ -1609,7 +1625,7 @@ function getBudgetPressure(
 	config: AutonomousRunConfig,
 ): { level: BudgetPressureLevel; ratio: number } {
 	const ratios: number[] = [];
-	if ((config.maxCostUsd ?? 0) > 0) ratios.push(status.costUsed / (config.maxCostUsd ?? 1));
+	if (status.costAuthoritative && (config.maxCostUsd ?? 0) > 0) ratios.push(status.costUsed / (config.maxCostUsd ?? 1));
 	if ((config.maxTokens ?? 0) > 0) ratios.push(status.tokensUsed / (config.maxTokens ?? 1));
 	if ((config.maxTurns ?? 0) > 0) ratios.push(status.turnsUsed / (config.maxTurns ?? 1));
 	const ratio = ratios.length > 0 ? Math.max(...ratios) : 0;

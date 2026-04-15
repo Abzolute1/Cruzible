@@ -12,6 +12,7 @@ export interface InteractiveBuiltinCommandActions {
 	handleCopyCommand: () => Promise<void>;
 	handleNameCommand: (text: string) => void;
 	handleSessionCommand: () => void;
+	handlePlanCommand: (command: Extract<InteractiveBuiltinCommand, { kind: "plan" }>) => Promise<void> | void;
 	handleResearchCommand: (text: string) => void;
 	handleDebugCommand: () => void;
 	handleWorkspaceCommand: (text: string) => void;
@@ -71,6 +72,10 @@ export async function dispatchInteractiveBuiltinCommand(
 			return;
 		case "session":
 			actions.handleSessionCommand();
+			actions.clearEditor();
+			return;
+		case "plan":
+			await actions.handlePlanCommand(command);
 			actions.clearEditor();
 			return;
 		case "research":

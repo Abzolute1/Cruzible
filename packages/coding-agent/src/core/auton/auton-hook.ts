@@ -32,6 +32,7 @@ export interface AutonConfig {
 
 export interface BudgetStatus {
 	costUsed: number;
+	costAuthoritative: boolean;
 	tokensUsed: number;
 	turnsUsed: number;
 	exceeded: {
@@ -67,7 +68,7 @@ export class AutonHook {
 
 		const pricing = config.pricing ?? QWEN_PRICING;
 		const modelId = config.modelId ?? "";
-		this.costTracker = new CostTracker(pricing, modelId, MODEL_PRICING_MAP);
+		this.costTracker = new CostTracker(pricing, modelId, MODEL_PRICING_MAP, pricing.authoritative === true);
 
 		// Select compaction policy based on context window
 		if (config.contextWindow) {
@@ -87,7 +88,12 @@ export class AutonHook {
 			) {
 				const msg = (event as { message: AssistantMessage }).message;
 				if (msg.usage) {
-					this.costTracker.recordUsage(msg.usage.input, msg.usage.output);
+					this.costTracker.recordUsage(
+						msg.usage.input,
+						msg.usage.output,
+						msg.usage.cacheRead ?? 0,
+						msg.usage.cacheWrite ?? 0,
+					);
 					if (this.verbose) {
 						process.stderr.write(`[Auton] Cost: ${this.costTracker.getSummary()}\n`);
 					}
@@ -109,7 +115,12 @@ export class AutonHook {
 			if (event.message.role === "assistant") {
 				const msg = event.message;
 				if (msg.usage) {
-					this.costTracker.recordUsage(msg.usage.input, msg.usage.output);
+					this.costTracker.recordUsage(
+						msg.usage.input,
+						msg.usage.output,
+						msg.usage.cacheRead ?? 0,
+						msg.usage.cacheWrite ?? 0,
+					);
 					if (this.verbose) {
 						process.stderr.write(`[Auton] Cost: ${this.costTracker.getSummary()}\n`);
 					}
@@ -122,8 +133,8 @@ export class AutonHook {
 	/**
 	 * Public method to record token usage. Used by attachAutonHook's inline handler.
 	 */
-	recordUsage(input: number, output: number): void {
-		this.costTracker.recordUsage(input, output);
+	recordUsage(input: number, output: number, cacheRead = 0, cacheWrite = 0): void {
+		this.costTracker.recordUsage(input, output, cacheRead, cacheWrite);
 		if (this.verbose) {
 			process.stderr.write(`[Auton] Cost: ${this.costTracker.getSummary()}\n`);
 		}
@@ -141,14 +152,25 @@ export class AutonHook {
 	 * Get current budget status.
 	 */
 	getBudgetStatus(): BudgetStatus {
-		const costExceeded = this.maxCost > 0 && this.costTracker.getTotalCost() >= this.maxCost;
+		const costSummary = this.costTracker.getCostSummary();
+		const costExceeded = costSummary.authoritative && this.maxCost > 0 && costSummary.totalCost >= this.maxCost;
 		const tokensExceeded =
-			this.maxTokens > 0 && this.costTracker.totalInputTokens + this.costTracker.totalOutputTokens >= this.maxTokens;
+			this.maxTokens > 0 &&
+			this.costTracker.totalInputTokens +
+				this.costTracker.totalOutputTokens +
+				this.costTracker.totalCacheReadTokens +
+				this.costTracker.totalCacheWriteTokens >=
+				this.maxTokens;
 		const turnsExceeded = this.maxTurns > 0 && this.turnCount >= this.maxTurns;
 
 		return {
-			costUsed: this.costTracker.getTotalCost(),
-			tokensUsed: this.costTracker.totalInputTokens + this.costTracker.totalOutputTokens,
+			costUsed: costSummary.totalCost,
+			costAuthoritative: costSummary.authoritative,
+			tokensUsed:
+				this.costTracker.totalInputTokens +
+				this.costTracker.totalOutputTokens +
+				this.costTracker.totalCacheReadTokens +
+				this.costTracker.totalCacheWriteTokens,
 			turnsUsed: this.turnCount,
 			exceeded: {
 				cost: costExceeded,
@@ -278,7 +300,12 @@ export function attachAutonHook(
 		) {
 			const msg = (event as { message: AssistantMessage }).message;
 			if (msg.usage) {
-				hook.recordUsage(msg.usage.input, msg.usage.output);
+				hook.recordUsage(
+					msg.usage.input,
+					msg.usage.output,
+					msg.usage.cacheRead ?? 0,
+					msg.usage.cacheWrite ?? 0,
+				);
 			}
 		}
 	};
@@ -295,7 +322,13 @@ export function attachAutonHook(
 	// Log budget configuration on attach
 	if (hook.verbose) {
 		const limits: string[] = [];
-		if (hook.maxCost > 0) limits.push(`cost=$${hook.maxCost.toFixed(2)}`);
+		if (hook.maxCost > 0) {
+			limits.push(
+				hook.getBudgetStatus().costAuthoritative
+					? `cost=$${hook.maxCost.toFixed(2)}`
+					: `cost~$${hook.maxCost.toFixed(2)} (estimate-only)`,
+			);
+		}
 		if (hook.maxTokens > 0) limits.push(`tokens=${hook.maxTokens.toLocaleString()}`);
 		if (hook.maxTurns > 0) limits.push(`turns=${hook.maxTurns}`);
 		if (limits.length > 0) {

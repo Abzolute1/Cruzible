@@ -128,13 +128,13 @@ describe("autonomous workspace isolation", () => {
 		expect(existsSync(join(prepared.workspaceRoot, ".ag1"))).toBe(false);
 	});
 
-	test("does not follow symlink loops while preparing a copy-based workspace", async () => {
+	test("copies safe in-tree file symlinks as regular files", async () => {
 		const sourceRoot = join(tempDir, "home", "alex");
 		const agentDir = join(tempDir, "agent");
 		mkdirSync(sourceRoot, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(sourceRoot, "README.md"), "hello");
-		symlinkSync(sourceRoot, join(sourceRoot, "loop"));
+		symlinkSync(join(sourceRoot, "README.md"), join(sourceRoot, "README-link.md"));
 
 		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
 
@@ -144,7 +144,45 @@ describe("autonomous workspace isolation", () => {
 		});
 
 		expect(readFileSync(join(prepared.workspaceRoot, "README.md"), "utf8")).toBe("hello");
-		expect(lstatSync(join(prepared.workspaceRoot, "loop")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(prepared.workspaceRoot, "README-link.md"), "utf8")).toBe("hello");
+		expect(lstatSync(join(prepared.workspaceRoot, "README-link.md")).isSymbolicLink()).toBe(false);
+	});
+
+	test("rejects symlinks that resolve outside the source tree", async () => {
+		const sourceRoot = join(tempDir, "home", "alex");
+		const agentDir = join(tempDir, "agent");
+		const outsideDir = join(tempDir, "outside");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(outsideDir, { recursive: true });
+		writeFileSync(join(outsideDir, "secret.txt"), "secret");
+		symlinkSync(join(outsideDir, "secret.txt"), join(sourceRoot, "secret-link.txt"));
+
+		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
+
+		await expect(
+			prepareAutonomousWorkspace({
+				sourceCwd: sourceRoot,
+				agentDir,
+			}),
+		).rejects.toThrow(/resolves outside the source tree/i);
+	});
+
+	test("rejects directory symlinks during copy-based workspace preparation", async () => {
+		const sourceRoot = join(tempDir, "home", "alex");
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		symlinkSync(sourceRoot, join(sourceRoot, "loop"));
+
+		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
+
+		await expect(
+			prepareAutonomousWorkspace({
+				sourceCwd: sourceRoot,
+				agentDir,
+			}),
+		).rejects.toThrow(/directory symlink/i);
 	});
 
 	test("activates the isolated workspace through the runtime and restores it afterward", async () => {
@@ -224,6 +262,28 @@ describe("autonomous workspace isolation", () => {
 		expect(diff.added).toEqual(["new.txt"]);
 		expect(diff.modified).toEqual(["mod.txt"]);
 		expect(diff.deleted).toEqual(["gone.txt"]);
+	});
+
+	test("refuses to diff workspaces that contain symlinked entries", () => {
+		const sourceRoot = join(tempDir, "source");
+		const workspaceRoot = join(tempDir, "sandbox");
+		const activeCwd = join(workspaceRoot, "app");
+		const outsideDir = join(tempDir, "outside");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(activeCwd, { recursive: true });
+		mkdirSync(outsideDir, { recursive: true });
+		writeFileSync(join(outsideDir, "secret.txt"), "secret");
+		symlinkSync(join(outsideDir, "secret.txt"), join(sourceRoot, "secret-link.txt"));
+
+		expect(() =>
+			diffAutonomousWorkspace({
+				sourceCwd: sourceRoot,
+				workspaceRoot,
+				activeCwd,
+				strategy: "copy",
+				description: "filesystem copy fallback",
+			}),
+		).toThrow(/symlinked entries/i);
 	});
 
 	test("promote can delete entries missing from the sandbox when requested", () => {

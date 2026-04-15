@@ -87,7 +87,7 @@ describe("ToolExecutionComponent parity", () => {
 			createFakeTui(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("READ");
 		expect(rendered).toContain("README.md");
 	});
 
@@ -122,7 +122,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered.match(/\bread\b/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/\bREAD\b/g)?.length ?? 0).toBe(1);
 	});
 
 	test("inherits missing built-in result renderer slot from the built-in tool", () => {
@@ -278,12 +278,13 @@ describe("ToolExecutionComponent parity", () => {
 			createFakeTui(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("one");
-		expect(rendered).toContain("two");
-		expect(rendered).not.toContain("two\n\n");
+		expect(rendered).toContain("README.md");
+		expect(rendered).toContain("3 lines staged");
+		expect(rendered).not.toContain("one");
+		expect(rendered).not.toContain("two");
 	});
 
-	test("trims trailing blank display lines from read results", () => {
+	test("summarizes read results without dumping file content by default", () => {
 		const component = new ToolExecutionComponent(
 			"read",
 			"tool-8",
@@ -297,8 +298,117 @@ describe("ToolExecutionComponent parity", () => {
 			false,
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("one");
-		expect(rendered).toContain("two");
-		expect(rendered).not.toContain("two\n\n");
+		expect(rendered).toContain("READ");
+		expect(rendered).toContain("Loaded README.md · 2 lines");
+		expect(rendered).toContain("README.md");
+		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("one");
+		expect(rendered).not.toContain("two");
+		expect(rendered).not.toContain("DONE");
+	});
+
+	test("keeps read summaries compact by default", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-9",
+			{ path: "README.md" },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+		);
+		component.updateResult(
+			{
+				content: [
+					{
+						type: "text",
+						text: "l1\nl2\nl3\nl4\nl5\nl6",
+					},
+				],
+				details: undefined,
+				isError: false,
+			},
+			false,
+		);
+		const rendered = stripAnsi(component.render(160).join("\n"));
+		expect(rendered).toContain("Loaded README.md · 6 lines");
+		expect(rendered).toContain("README.md");
+		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("l1");
+		expect(rendered).not.toContain("l2");
+		expect(rendered).not.toContain("l6");
+	});
+
+	test("keeps web fetch results summarized by default", () => {
+		const component = new ToolExecutionComponent("webFetch", "tool-10", { url: "https://example.com" }, {}, undefined, createFakeTui());
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "full body that should not dominate the transcript" }],
+				details: {
+					title: "Example Domain",
+					facts: ["Static example page", "Often used for tests", "Extra fact"],
+					preview: "Preview line 1\nPreview line 2\nPreview line 3",
+					truncated: true,
+				},
+				isError: false,
+			},
+			false,
+		);
+		const rendered = stripAnsi(component.render(160).join("\n"));
+		expect(rendered).toContain("WEBFETCH");
+		expect(rendered).toContain("Fetched Example Domain");
+		expect(rendered).toContain("https://example.com");
+		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("Static example page");
+		expect(rendered).not.toContain("Preview line 1");
+		expect(rendered).not.toContain("Preview line 3");
+	});
+
+	test("keeps bash results as a compact execution log by default", () => {
+		const component = new ToolExecutionComponent(
+			"bash",
+			"tool-11",
+			{ command: "ls -la ~/Downloads" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
+		component.markExecutionStarted();
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "file1\nfile2\nfile3" }],
+				details: undefined,
+				isError: false,
+			},
+			false,
+		);
+		const rendered = stripAnsi(component.render(160).join("\n"));
+		expect(rendered).toContain("BASH");
+		expect(rendered).toContain("directory listing · 3 lines available");
+		expect(rendered).toContain("ls -la ~/Downloads");
+		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("file1");
+		expect(rendered).not.toContain("file2");
+	});
+
+	test("uses a dot indicator instead of text status badges in tool headers", () => {
+		const running = new ToolExecutionComponent("bash", "tool-12", { command: "ls -la" }, {}, undefined, createFakeTui());
+		running.markExecutionStarted();
+		const runningRendered = stripAnsi(running.render(160).join("\n"));
+		expect(runningRendered).toContain("● BASH");
+		expect(runningRendered).not.toContain("RUNNING");
+
+		const success = new ToolExecutionComponent("webFetch", "tool-13", { url: "https://example.com" }, {}, undefined, createFakeTui());
+		success.markExecutionStarted();
+		success.updateResult({ content: [], details: {}, isError: false }, false);
+		const successRendered = stripAnsi(success.render(160).join("\n"));
+		expect(successRendered).toContain("● WEBFETCH");
+		expect(successRendered).not.toContain("DONE");
+
+		const failure = new ToolExecutionComponent("bash", "tool-14", { command: "exit 1" }, {}, undefined, createFakeTui());
+		failure.markExecutionStarted();
+		failure.updateResult({ content: [], details: {}, isError: true }, false);
+		const failureRendered = stripAnsi(failure.render(160).join("\n"));
+		expect(failureRendered).toContain("● BASH");
+		expect(failureRendered).not.toContain("ERROR");
 	});
 });

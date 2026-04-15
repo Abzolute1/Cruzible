@@ -5,12 +5,14 @@
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
+import { buildConsoleHeader } from "./console-chrome.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint } from "./keybinding-hints.js";
 
 export interface ExtensionInputOptions {
 	tui?: TUI;
 	timeout?: number;
+	initialValue?: string;
 }
 
 export class ExtensionInputComponent extends Container implements Focusable {
@@ -47,7 +49,15 @@ export class ExtensionInputComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 
-		this.titleText = new Text(theme.fg("accent", title), 1, 0);
+		this.titleText = new Text(
+			buildConsoleHeader({
+				badge: "input",
+				badgeColor: "accent",
+				title,
+			}),
+			1,
+			0,
+		);
 		this.addChild(this.titleText);
 		this.addChild(new Spacer(1));
 
@@ -55,12 +65,23 @@ export class ExtensionInputComponent extends Container implements Focusable {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", `${this.baseTitle} (${s}s)`)),
+				(s) =>
+					this.titleText.setText(
+						buildConsoleHeader({
+							badge: "input",
+							badgeColor: "accent",
+							title: this.baseTitle,
+							meta: [`${s}s left`],
+						}),
+					),
 				() => this.onCancelCallback(),
 			);
 		}
 
 		this.input = new Input();
+		if (opts?.initialValue) {
+			this.input.setValue(opts.initialValue);
+		}
 		this.addChild(this.input);
 		this.addChild(new Spacer(1));
 		this.addChild(

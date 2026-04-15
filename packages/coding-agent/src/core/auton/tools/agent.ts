@@ -2,17 +2,34 @@
 // Spawns a child agent process to handle sub-tasks.
 
 import { spawn } from "node:child_process";
+import { basename } from "node:path";
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
+import { APP_SLUG, CLI_NAME, LEGACY_CLI_NAMES } from "../../../config.js";
 import type { ToolDefinition } from "../../extensions/types.js";
 
 const MAX_OUTPUT_CHARS = 30000;
 let activeChildAgents = 0;
 const MAX_ACTIVE_CHILD_AGENTS = 3;
+const ALLOWED_AGENT_BIN_NAMES = new Set([
+	CLI_NAME,
+	APP_SLUG,
+	"cruzible",
+	...LEGACY_CLI_NAMES,
+	"auton",
+	"coding-agent",
+	"index.js",
+	"cli.js",
+]);
 
 function truncateOutput(output: string): string {
 	if (output.length <= MAX_OUTPUT_CHARS) return output;
 	return `${output.slice(0, MAX_OUTPUT_CHARS)}\n\n[Output truncated: ${output.length - MAX_OUTPUT_CHARS} more characters omitted]`;
+}
+
+function resolveAgentBinaryPath(argv1 = process.argv[1] || ""): string {
+	const invokedName = basename(argv1);
+	return argv1 && ALLOWED_AGENT_BIN_NAMES.has(invokedName) ? argv1 : CLI_NAME;
 }
 
 const agentParamsSchema = Type.Object({
@@ -55,12 +72,9 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 			};
 		}
 
-		// Resolve the pi binary path — use an allowlist of known entry point names
+		// Resolve the current CLI binary path — use an allowlist of known entry point names
 		// rather than trusting arbitrary process.argv[1] values.
-		const argv1 = process.argv[1] || "";
-		const allowedBinNames = ["pi", "auton", "coding-agent", "index.js", "cli.js"];
-		const isAllowedBin = allowedBinNames.some((name) => argv1.endsWith(name) || argv1.includes(name));
-		const piBin = isAllowedBin ? argv1 : "pi";
+		const agentBin = resolveAgentBinaryPath();
 
 		// Concurrency guard
 		if (activeChildAgents >= MAX_ACTIVE_CHILD_AGENTS) {
@@ -74,6 +88,7 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 				details: undefined,
 			};
 		}
+		activeChildAgents++;
 
 		// Build the child agent command
 		const args = [
@@ -97,20 +112,61 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 				// ignore
 			}
 		}
+		if (signal?.aborted) {
+			activeChildAgents = Math.max(0, activeChildAgents - 1);
+			return {
+				content: [{ type: "text", text: "Child Agent Cancelled before launch." }],
+				details: undefined,
+			};
+		}
 
 		return new Promise((resolve) => {
 			let stdout = "";
 			let stderr = "";
 			let killed = false;
 			let timedOut = false;
+			let finished = false;
 			let abortHandler: (() => void) | null = null;
+			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-			const child = spawn(piBin, args, {
-				cwd,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, PI_NON_INTERACTIVE: "1" },
-			});
-			activeChildAgents++;
+			const finish = (
+				result:
+					| {
+							content: Array<{ type: "text"; text: string }>;
+							details: undefined;
+					  }
+					| undefined,
+			): void => {
+				if (finished) return;
+				finished = true;
+				activeChildAgents = Math.max(0, activeChildAgents - 1);
+				if (timeoutId) clearTimeout(timeoutId);
+				if (signal && abortHandler) {
+					signal.removeEventListener("abort", abortHandler);
+				}
+				if (result) resolve(result);
+			};
+
+			let child: ReturnType<typeof spawn>;
+			try {
+				child = spawn(agentBin, args, {
+					cwd,
+					stdio: ["ignore", "pipe", "pipe"],
+					env: { ...process.env, PI_NON_INTERACTIVE: "1" },
+				});
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				finish({
+					content: [
+						{
+							type: "text",
+							text: `Child Agent Error: Failed to spawn process. ${message}\n\nAttempted command: ${agentBin} ${args.join(" ")}\n\nMake sure the CLI launcher is installed and available in PATH.`,
+						},
+					],
+					details: undefined,
+				});
+				return;
+			}
 
 			// Handle abort signal
 			if (signal) {
@@ -131,7 +187,7 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 			}
 
 			// Set a configurable timeout (default 5 minutes)
-			const timeoutId = setTimeout(() => {
+			timeoutId = setTimeout(() => {
 				if (!killed) {
 					timedOut = true;
 					killed = true;
@@ -164,12 +220,6 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 			});
 
 			child.on("close", (code) => {
-				activeChildAgents--;
-				if (timeoutId) clearTimeout(timeoutId);
-				if (signal && abortHandler) {
-					signal.removeEventListener("abort", abortHandler);
-				}
-
 				const output = [
 					`## Child Agent Result`,
 					"",
@@ -187,20 +237,18 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 					output.push("### Stderr", "", truncateOutput(stderr));
 				}
 
-				resolve({
+				finish({
 					content: [{ type: "text", text: output.join("\n") }],
 					details: undefined,
 				});
 			});
 
 			child.on("error", (err) => {
-				activeChildAgents--;
-				if (timeoutId) clearTimeout(timeoutId);
-				resolve({
+				finish({
 					content: [
 						{
 							type: "text",
-							text: `Child Agent Error: Failed to spawn process. ${err.message}\n\nAttempted command: ${piBin} ${args.join(" ")}\n\nMake sure 'pi' is installed and available in PATH.`,
+							text: `Child Agent Error: Failed to spawn process. ${err.message}\n\nAttempted command: ${agentBin} ${args.join(" ")}\n\nMake sure the CLI launcher is installed and available in PATH.`,
 						},
 					],
 					details: undefined,

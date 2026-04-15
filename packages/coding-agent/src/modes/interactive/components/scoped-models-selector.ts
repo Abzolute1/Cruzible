@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
+import { formatCompactModelPricing, formatModelPricingDetails } from "./model-metrics.js";
 
 // EnabledIds: null = all enabled (no filter), string[] = explicit ordered list
 type EnabledIds = string[] | null;
@@ -205,8 +206,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const modelText = isSelected ? theme.fg("accent", item.model.id) : item.model.id;
 			const providerBadge = theme.fg("muted", ` [${item.model.provider}]`);
+			const pricingBadge = formatCompactModelPricing(item.model);
+			const pricingText = pricingBadge ? theme.fg("muted", ` ${pricingBadge}`) : "";
 			const status = allEnabled ? "" : item.enabled ? theme.fg("success", " ✓") : theme.fg("dim", " ✗");
-			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${status}`, 0, 0));
+			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${pricingText}${status}`, 0, 0));
 		}
 
 		// Add scroll indicator if needed
@@ -220,6 +223,9 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const selected = this.filteredItems[this.selectedIndex];
 			this.listContainer.addChild(new Spacer(1));
 			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+			for (const pricingLine of formatModelPricingDetails(selected.model)) {
+				this.listContainer.addChild(new Text(theme.fg("muted", `  ${pricingLine}`), 0, 0));
+			}
 		}
 	}
 

@@ -2,18 +2,16 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
 import { randomUUID } from "crypto";
 import {
-	appendFileSync,
-	closeSync,
 	existsSync,
 	mkdirSync,
-	openSync,
 	readdirSync,
 	readFileSync,
-	readSync,
+	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "fs";
-import { readdir, readFile, stat } from "fs/promises";
+import { readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
@@ -431,11 +429,25 @@ export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultA
 
 /** Exported for testing */
 export function loadEntriesFromFile(filePath: string): FileEntry[] {
-	if (!existsSync(filePath)) return [];
+	const { entries, hasValidHeader, malformedLines } = parseSessionFile(filePath);
+	return hasValidHeader && malformedLines === 0 ? entries : [];
+}
+
+interface ParsedSessionFile {
+	entries: FileEntry[];
+	hasValidHeader: boolean;
+	malformedLines: number;
+}
+
+function parseSessionFile(filePath: string): ParsedSessionFile {
+	if (!existsSync(filePath)) {
+		return { entries: [], hasValidHeader: false, malformedLines: 0 };
+	}
 
 	const content = readFileSync(filePath, "utf8");
 	const entries: FileEntry[] = [];
-	const lines = content.trim().split("\n");
+	let malformedLines = 0;
+	const lines = content.split("\n");
 
 	for (const line of lines) {
 		if (!line.trim()) continue;
@@ -443,33 +455,31 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 			const entry = JSON.parse(line) as FileEntry;
 			entries.push(entry);
 		} catch {
-			// Skip malformed lines
+			malformedLines++;
 		}
 	}
 
-	// Validate session header
-	if (entries.length === 0) return entries;
-	const header = entries[0];
-	if (header.type !== "session" || typeof (header as any).id !== "string") {
-		return [];
+	if (entries.length === 0) {
+		return { entries, hasValidHeader: false, malformedLines };
 	}
-
-	return entries;
+	const header = entries[0];
+	const hasValidHeader = header.type === "session" && typeof (header as any).id === "string";
+	return { entries, hasValidHeader, malformedLines };
 }
 
 function isValidSessionFile(filePath: string): boolean {
 	try {
-		const fd = openSync(filePath, "r");
-		const buffer = Buffer.alloc(512);
-		const bytesRead = readSync(fd, buffer, 0, 512, 0);
-		closeSync(fd);
-		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
-		if (!firstLine) return false;
-		const header = JSON.parse(firstLine);
-		return header.type === "session" && typeof header.id === "string";
+		const parsed = parseSessionFile(filePath);
+		return parsed.hasValidHeader && parsed.malformedLines === 0;
 	} catch {
 		return false;
 	}
+}
+
+function quarantineCorruptedSessionFile(filePath: string): string {
+	const quarantinePath = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+	renameSync(filePath, quarantinePath);
+	return quarantinePath;
 }
 
 /** Exported for testing */
@@ -543,22 +553,9 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
-		const content = await readFile(filePath, "utf8");
-		const entries: FileEntry[] = [];
-		const lines = content.trim().split("\n");
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			try {
-				entries.push(JSON.parse(line) as FileEntry);
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		if (entries.length === 0) return null;
+		const { entries, hasValidHeader, malformedLines } = parseSessionFile(filePath);
+		if (!hasValidHeader || malformedLines > 0 || entries.length === 0) return null;
 		const header = entries[0];
-		if (header.type !== "session") return null;
 
 		const stats = await stat(filePath);
 		let messageCount = 0;
@@ -667,7 +664,6 @@ export class SessionManager {
 	private sessionDir: string;
 	private cwd: string;
 	private persist: boolean;
-	private flushed: boolean = false;
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
@@ -693,16 +689,18 @@ export class SessionManager {
 	setSessionFile(sessionFile: string): void {
 		this.sessionFile = resolve(sessionFile);
 		if (existsSync(this.sessionFile)) {
-			this.fileEntries = loadEntriesFromFile(this.sessionFile);
+			const parsed = parseSessionFile(this.sessionFile);
+			this.fileEntries = parsed.hasValidHeader && parsed.malformedLines === 0 ? parsed.entries : [];
 
-			// If file was empty or corrupted (no valid header), truncate and start fresh
-			// to avoid appending messages without a session header (which breaks the session)
+			// If file was empty or corrupted (no valid header or malformed lines), quarantine it and start fresh.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
+				if (existsSync(explicitPath)) {
+					quarantineCorruptedSessionFile(explicitPath);
+				}
 				this.newSession();
 				this.sessionFile = explicitPath;
 				this._rewriteFile();
-				this.flushed = true;
 				return;
 			}
 
@@ -714,7 +712,6 @@ export class SessionManager {
 			}
 
 			this._buildIndex();
-			this.flushed = true;
 		} else {
 			const explicitPath = this.sessionFile;
 			this.newSession();
@@ -737,11 +734,11 @@ export class SessionManager {
 		this.byId.clear();
 		this.labelsById.clear();
 		this.leafId = null;
-		this.flushed = false;
 
 		if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+			this._rewriteFile();
 		}
 		return this.sessionFile;
 	}
@@ -770,7 +767,15 @@ export class SessionManager {
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		writeFileSync(this.sessionFile, content);
+		const tempPath = `${this.sessionFile}.${randomUUID()}.tmp`;
+		try {
+			writeFileSync(tempPath, content);
+			renameSync(tempPath, this.sessionFile);
+		} finally {
+			if (existsSync(tempPath)) {
+				unlinkSync(tempPath);
+			}
+		}
 	}
 
 	isPersisted(): boolean {
@@ -793,24 +798,9 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
-	_persist(entry: SessionEntry): void {
+	_persist(_entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
-
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
-			// Mark as not flushed so when assistant arrives, all entries get written
-			this.flushed = false;
-			return;
-		}
-
-		if (!this.flushed) {
-			for (const e of this.fileEntries) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
-			}
-			this.flushed = true;
-		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
-		}
+		this._rewriteFile();
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
@@ -1219,18 +1209,7 @@ export class SessionManager {
 			this.sessionFile = newSessionFile;
 			this._buildIndex();
 
-			// Only write the file now if it contains an assistant message.
-			// Otherwise defer to _persist(), which creates the file on the
-			// first assistant response, matching the newSession() contract
-			// and avoiding the duplicate-header bug when _persist()'s
-			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-			if (hasAssistant) {
-				this._rewriteFile();
-				this.flushed = true;
-			} else {
-				this.flushed = false;
-			}
+			this._rewriteFile();
 
 			return newSessionFile;
 		}
@@ -1339,12 +1318,16 @@ export class SessionManager {
 			cwd: targetCwd,
 			parentSession: sourcePath,
 		};
-		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
-
-		// Copy all non-header entries from source
-		for (const entry of sourceEntries) {
-			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+		const content = `${[newHeader, ...sourceEntries.filter((entry) => entry.type !== "session")]
+			.map((entry) => JSON.stringify(entry))
+			.join("\n")}\n`;
+		const tempPath = `${newSessionFile}.${randomUUID()}.tmp`;
+		try {
+			writeFileSync(tempPath, content);
+			renameSync(tempPath, newSessionFile);
+		} finally {
+			if (existsSync(tempPath)) {
+				unlinkSync(tempPath);
 			}
 		}
 

@@ -526,6 +526,58 @@ export function formatAutonomousPromptLedger(ledger: AutonomousRunLedger): strin
 	return lines.join("\n");
 }
 
+export function formatAutonomousContinuationLedger(ledger: AutonomousRunLedger): string {
+	const lines = ["Run ledger:"];
+	lines.push(`Goal: ${ledger.goal}`);
+	if (ledger.taskJournal.activeSubtask) lines.push(`Active subtask: ${ledger.taskJournal.activeSubtask}`);
+	if (ledger.currentFocus) lines.push(`Focus: ${ledger.currentFocus}`);
+	if (ledger.taskJournal.plannedNextStep) {
+		lines.push(`Planned next step: ${ledger.taskJournal.plannedNextStep}`);
+	} else if (ledger.taskJournal.nextAction) {
+		lines.push(`Next action: ${ledger.taskJournal.nextAction}`);
+	}
+	if (ledger.taskJournal.stepRationale) lines.push(`Why: ${ledger.taskJournal.stepRationale}`);
+	if (ledger.taskJournal.expectedVerification) lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
+	if (ledger.taskJournal.intentStatus && ledger.taskJournal.intentStatus !== "on_track") {
+		lines.push(`Intent status: ${ledger.taskJournal.intentStatus}`);
+	}
+	if (ledger.taskJournal.lastIntentOutcome) lines.push(`Intent outcome: ${ledger.taskJournal.lastIntentOutcome}`);
+	if (ledger.research?.evidence) {
+		const researchSummary = [
+			ledger.research.evidence.status,
+			ledger.research.preferredSourceUrls[0] ? `source ${ledger.research.preferredSourceUrls[0]}` : undefined,
+			ledger.research.evidence.gaps[0] ? `gap ${ledger.research.evidence.gaps[0]}` : undefined,
+		]
+			.filter((part): part is string => Boolean(part))
+			.join(" | ");
+		lines.push(`Research: ${researchSummary}`);
+	}
+	if (ledger.visualAssessment) {
+		lines.push(`Visual assessment: ${ledger.visualAssessment.latestJudgment} - ${ledger.visualAssessment.summary}`);
+	}
+	if (ledger.visualTarget?.surface) lines.push(`Visual surface: ${ledger.visualTarget.surface}`);
+	if (ledger.visualTarget?.interactionHint) lines.push(`Visual interaction: ${ledger.visualTarget.interactionHint}`);
+	if (ledger.visualTarget?.actionRecipe && ledger.visualTarget.actionRecipe.length > 0) {
+		lines.push(`Visual recipe: ${formatVisualActionRecipe(ledger.visualTarget.actionRecipe)}`);
+	}
+	if (ledger.lastActionType && ledger.lastActionDetail) {
+		lines.push(`Last action: ${ledger.lastActionType} - ${ledger.lastActionDetail}`);
+	} else if (ledger.recentMutations.length > 0) {
+		lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
+	}
+	if (ledger.verificationSatisfied) {
+		lines.push(`Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`);
+	} else if (ledger.verificationFailures.length > 0) {
+		lines.push(`Verification failures: ${summarizeList(ledger.verificationFailures, 1)}`);
+	} else {
+		lines.push("Verification: pending");
+	}
+	if (ledger.taskJournal.blockedReasons.length > 0) lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
+	if (ledger.residualRisks.length > 0) lines.push(`Risks: ${summarizeList(ledger.residualRisks, 2)}`);
+	lines.push("Continue from this state only. Do not restate older transcript.");
+	return lines.join("\n");
+}
+
 export function buildAutonomousCompactionInstructions(ledger: AutonomousRunLedger): string {
 	return [
 		"Preserve the autonomous run state precisely in the summary.",

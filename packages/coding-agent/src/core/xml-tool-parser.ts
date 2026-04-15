@@ -37,6 +37,18 @@ export function stripCodeBlocks(text: string): string {
 	return text.replace(/```[\s\S]*?```/g, "");
 }
 
+export function stripXmlToolCallArtifacts(text: string): string {
+	return text
+		.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+		.replace(/<function-[^>\s/]+(?:\s[^>]*)?>[\s\S]*?<\/function-[^>\s/]+>/gi, "")
+		.replace(/<function=[^>\s/]+(?:\s[^>]*)?>[\s\S]*?<\/function>/gi, "")
+		.replace(/<parameter-[^>\s/]+(?:\s[^>]*)?>[\s\S]*?<\/parameter-[^>\s/]+>/gi, "")
+		.replace(/<parameter=[^>\s/]+(?:\s[^>]*)?>[\s\S]*?<\/parameter>/gi, "")
+		.replace(/^\s*\n/gm, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlToolCall[] {
 	const strippedText = stripCodeBlocks(text);
 	const calls: XmlToolCall[] = [];
@@ -47,6 +59,78 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 	if (escapedNames.length === 0) return [];
 
 	const namePattern = escapedNames.join("|");
+
+	// Format 0: Wrapped tool call — <tool_call><function-bash>...</function-bash></tool_call>
+	const wrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+	let wrappedMatch: RegExpExecArray | null;
+	while ((wrappedMatch = wrappedRegex.exec(strippedText)) !== null) {
+		const wrappedBody = wrappedMatch[1];
+		const rawXml = wrappedMatch[0];
+		const functionRegex = new RegExp(`<function-(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</function-\\1>`, "i");
+		const functionMatch = functionRegex.exec(wrappedBody);
+		if (!functionMatch) continue;
+
+		const toolName = functionMatch[1];
+		const functionBody = functionMatch[2];
+		const args: Record<string, string> = {};
+
+		const parameterRegex = /<parameter-([^>\s/]+)[^>]*>([\s\S]*?)<\/parameter-\1>/gi;
+		let parameterMatch: RegExpExecArray | null;
+		while ((parameterMatch = parameterRegex.exec(functionBody)) !== null) {
+			args[parameterMatch[1]] = parameterMatch[2].trim();
+		}
+
+		if (Object.keys(args).length === 0) {
+			const paramRegex = /<param\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/param>/gi;
+			let paramMatch: RegExpExecArray | null;
+			while ((paramMatch = paramRegex.exec(functionBody)) !== null) {
+				args[paramMatch[1]] = paramMatch[2].trim();
+			}
+		}
+
+		calls.push({
+			name: toolName,
+			id: `xml-call-${callIndex++}`,
+			arguments: args,
+			rawXml,
+		});
+	}
+
+	// Format 0b: Wrapped tool call — <tool_call><function=bash>...</function></tool_call>
+	const equalsWrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+	let equalsWrappedMatch: RegExpExecArray | null;
+	while ((equalsWrappedMatch = equalsWrappedRegex.exec(strippedText)) !== null) {
+		const wrappedBody = equalsWrappedMatch[1];
+		const rawXml = equalsWrappedMatch[0];
+		const functionRegex = new RegExp(`<function=(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</function>`, "i");
+		const functionMatch = functionRegex.exec(wrappedBody);
+		if (!functionMatch) continue;
+
+		const toolName = functionMatch[1];
+		const functionBody = functionMatch[2];
+		const args: Record<string, string> = {};
+
+		const parameterRegex = /<parameter=([^>\s/]+)[^>]*>([\s\S]*?)<\/parameter>/gi;
+		let parameterMatch: RegExpExecArray | null;
+		while ((parameterMatch = parameterRegex.exec(functionBody)) !== null) {
+			args[parameterMatch[1]] = parameterMatch[2].trim();
+		}
+
+		if (Object.keys(args).length === 0) {
+			const paramRegex = /<param\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/param>/gi;
+			let paramMatch: RegExpExecArray | null;
+			while ((paramMatch = paramRegex.exec(functionBody)) !== null) {
+				args[paramMatch[1]] = paramMatch[2].trim();
+			}
+		}
+
+		calls.push({
+			name: toolName,
+			id: `xml-call-${callIndex++}`,
+			arguments: args,
+			rawXml,
+		});
+	}
 
 	// Format 1: Bare tool name — <read>...</read>, <bash>...</bash>
 	const bareRegex = new RegExp(`<(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</\\1>`, "gi");

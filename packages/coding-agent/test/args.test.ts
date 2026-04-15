@@ -260,6 +260,13 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--autonomous flag", () => {
+		test("parses --autonomous flag", () => {
+			const result = parseArgs(["--autonomous"]);
+			expect(result.autonomous).toBe(true);
+		});
+	});
+
 	describe("--no-tools flag", () => {
 		test("parses --no-tools flag", () => {
 			const result = parseArgs(["--no-tools"]);

@@ -52,6 +52,20 @@ export interface ReadToolOptions {
 	operations?: ReadOperations;
 }
 
+function formatReadError(error: unknown, requestedPath: string): Error {
+	const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: string }).code : undefined;
+	if (code === "ENOENT") {
+		return new Error(`Path not found: ${requestedPath}. Use find to locate files or ls to inspect directories before retrying read.`);
+	}
+	if (code === "EISDIR") {
+		return new Error(`Path is a directory: ${requestedPath}. Use ls to inspect it, then read a specific file.`);
+	}
+	if (code === "EACCES" || code === "EPERM") {
+		return new Error(`Permission denied: ${requestedPath}`);
+	}
+	return error instanceof Error ? error : new Error(String(error));
+}
+
 function formatReadCall(
 	args: { path?: string; file_path?: string; offset?: number; limit?: number } | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
@@ -76,6 +90,22 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 		end--;
 	}
 	return lines.slice(0, end);
+}
+
+function formatReadContinuationNotice(options: {
+	startLine: number;
+	endLine: number;
+	totalLines: number;
+	nextOffset: number;
+	truncatedBy?: "lines" | "bytes";
+}): string {
+	if (options.truncatedBy === "lines") {
+		return `[lines ${options.startLine}-${options.endLine}/${options.totalLines}; next offset=${options.nextOffset}]`;
+	}
+	if (options.truncatedBy === "bytes") {
+		return `[lines ${options.startLine}-${options.endLine}/${options.totalLines}; byte limit hit; next offset=${options.nextOffset}]`;
+	}
+	return `[${options.totalLines - options.endLine} more lines; next offset=${options.nextOffset}]`;
 }
 
 function formatReadResult(
@@ -122,7 +152,12 @@ export function createReadToolDefinition(
 		label: "read",
 		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
 		promptSnippet: "Read file contents",
-		promptGuidelines: ["Use read to examine files instead of cat or sed."],
+		promptGuidelines: [
+			"Use read to examine files instead of cat or sed.",
+			"Use find to locate files when the path is uncertain before retrying read.",
+			"Use grep to locate symbols or strings before opening candidate files with read.",
+			"Use ls to inspect directories before reading files inside them.",
+		],
 		parameters: readSchema,
 		async execute(
 			_toolCallId,
@@ -208,28 +243,34 @@ export function createReadToolDefinition(
 								// Apply truncation, respecting both line and byte limits.
 								const truncation = truncateHead(selectedContent);
 								let outputText: string;
-								if (truncation.firstLineExceedsLimit) {
-									// First line alone exceeds the byte limit. Point the model at a bash fallback.
-									const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
-									outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
-									details = { truncation };
-								} else if (truncation.truncated) {
-									// Truncation occurred. Build an actionable continuation notice.
-									const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
-									const nextOffset = endLineDisplay + 1;
-									outputText = truncation.content;
-									if (truncation.truncatedBy === "lines") {
-										outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Use offset=${nextOffset} to continue.]`;
+									if (truncation.firstLineExceedsLimit) {
+										// First line alone exceeds the byte limit. Point the model at a bash fallback.
+										const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
+										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
+										details = { truncation };
+									} else if (truncation.truncated) {
+										// Truncation occurred. Build an actionable continuation notice.
+										const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
+										const nextOffset = endLineDisplay + 1;
+										outputText = truncation.content;
+										outputText += `\n\n${formatReadContinuationNotice({
+											startLine: startLineDisplay,
+											endLine: endLineDisplay,
+											totalLines: totalFileLines,
+											nextOffset,
+											truncatedBy: truncation.truncatedBy === "lines" ? "lines" : "bytes",
+										})}`;
+										details = { truncation };
+									} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
+										// User-specified limit stopped early, but the file still has more content.
+										const nextOffset = startLine + userLimitedLines + 1;
+										outputText = `${truncation.content}\n\n${formatReadContinuationNotice({
+											startLine: startLineDisplay,
+											endLine: startLine + userLimitedLines,
+											totalLines: allLines.length,
+											nextOffset,
+										})}`;
 									} else {
-										outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
-									}
-									details = { truncation };
-								} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
-									// User-specified limit stopped early, but the file still has more content.
-									const remaining = allLines.length - (startLine + userLimitedLines);
-									const nextOffset = startLine + userLimitedLines + 1;
-									outputText = `${truncation.content}\n\n[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
-								} else {
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
 								}
@@ -241,7 +282,7 @@ export function createReadToolDefinition(
 							resolve({ content, details });
 						} catch (error: any) {
 							signal?.removeEventListener("abort", onAbort);
-							if (!aborted) reject(error);
+							if (!aborted) reject(formatReadError(error, path));
 						}
 					})();
 				},

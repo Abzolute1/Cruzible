@@ -84,4 +84,72 @@ describe("AgentSession degraded turn events", () => {
 		expect(xmlEvents[0]?.reasons).toEqual(expect.arrayContaining(["truncated_turn", "very_long_output"]));
 		expect(harness.session.systemPrompt).toBe(previousSystemPrompt);
 	});
+
+	test("executes XML fallback calls even after an earlier structured tool call in the same prompt", async () => {
+		let searchExecuted = false;
+		let fetchExecuted = false;
+
+		const webSearchTool: AgentTool = {
+			name: "webSearch",
+			label: "Web Search",
+			description: "Search the web",
+			parameters: Type.Object({ query: Type.String() }),
+			execute: async () => {
+				searchExecuted = true;
+				return { content: [{ type: "text", text: "search results" }], details: { resultCount: 4 } };
+			},
+		};
+
+		const webFetchTool: AgentTool = {
+			name: "webFetch",
+			label: "Web Fetch",
+			description: "Fetch a URL",
+			parameters: Type.Object({ url: Type.String() }),
+			execute: async (_toolCallId, params) => {
+				fetchExecuted = true;
+				return {
+					content: [{ type: "text", text: `fetched ${(params as { url: string }).url}` }],
+					details: { title: "Fetched page" },
+				};
+			},
+		};
+
+		const harness = createHarness({
+			responses: [
+				{
+					toolCalls: [{ name: "webSearch", args: { query: "claude code leak 2026" } }],
+					stopReason: "toolUse",
+				},
+				{
+					text: [
+						"I found relevant sources. Let me fetch the first one.",
+						"",
+						"<tool_call>",
+						"<function=webFetch>",
+						"<parameter=url>https://example.com/claude-code-leak</parameter>",
+						"</function>",
+						"</tool_call>",
+					].join("\n"),
+				},
+				"done after structured tool and xml fallback",
+			],
+			tools: [webSearchTool, webFetchTool],
+			baseToolsOverride: { webSearch: webSearchTool, webFetch: webFetchTool },
+		});
+		cleanups.push(harness.cleanup);
+
+		await harness.session.prompt("research the latest claude code leak");
+
+		expect(searchExecuted).toBe(true);
+		expect(fetchExecuted).toBe(true);
+		expect(harness.faux.callCount).toBe(3);
+		const xmlEvents = harness.eventsOfType("xml_tool_call");
+		expect(xmlEvents).toHaveLength(1);
+		expect(xmlEvents[0]).toEqual(
+			expect.objectContaining({
+				toolName: "webFetch",
+				arguments: { url: "https://example.com/claude-code-leak" },
+			}),
+		);
+	});
 });

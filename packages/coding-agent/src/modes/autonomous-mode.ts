@@ -2,6 +2,7 @@ import * as path from "node:path";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
 import { runAutonomousSession } from "../core/auton/runner.js";
 import type { AutonConfig } from "../core/auton/auton-hook.js";
+import type { AutonomousRunSnapshot } from "../core/auton/ledger.js";
 
 // Legacy note:
 // The shipping harness now owns autonomous execution through the shared
@@ -36,6 +37,9 @@ export async function runAutonomousMode(
 		onStatus: (status) => {
 			process.stderr.write(`[Autonomous] ${status}\n`);
 		},
+		onCheckpoint: (snapshot) => {
+			process.stderr.write(`${formatAutonomousCheckpoint(snapshot)}\n`);
+		},
 		onError: (message) => {
 			process.stderr.write(`[Autonomous] ${message}\n`);
 		},
@@ -47,4 +51,21 @@ export async function runAutonomousMode(
 function resolveRepoRootFromModuleUrl(moduleUrl: string): string {
 	const thisFileDir = path.dirname(new URL(moduleUrl).pathname);
 	return path.resolve(thisFileDir, "../../../..");
+}
+
+function formatAutonomousCheckpoint(snapshot: AutonomousRunSnapshot): string {
+	const activeSubtask = snapshot.ledger.taskJournal.activeSubtask?.trim();
+	const nextAction = snapshot.ledger.taskJournal.nextAction?.trim();
+	const checkpoint =
+		snapshot.ledger.resume?.lastStableCheckpoint?.trim() ||
+		snapshot.ledger.taskJournal.completedCheckpoints.at(-1)?.trim();
+	const parts = [
+		`[Autonomous] checkpoint phase=${snapshot.phase}`,
+		`status=${snapshot.ledger.status}`,
+		`turns=${snapshot.budgetStatus.turnsUsed}`,
+	];
+	if (activeSubtask) parts.push(`active=${activeSubtask}`);
+	if (nextAction) parts.push(`next=${nextAction}`);
+	if (checkpoint) parts.push(`stable=${checkpoint}`);
+	return parts.join(" | ");
 }

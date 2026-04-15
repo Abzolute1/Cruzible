@@ -5,7 +5,7 @@ export type OutputTrend = "stable" | "diminishing" | "erratic";
 export type NudgeType = "continue" | "wrap_up" | "break_loop" | "pivot" | "none";
 
 export interface ToolOutcome {
-	/** Tool name, e.g. "Read", "Verify", "Bash" */
+	/** Tool name, recorded in canonical lowercase form, e.g. "read", "verify", "bash" */
 	tool: string;
 	/** Whether the tool execution succeeded (isError === false) */
 	success: boolean;
@@ -15,8 +15,25 @@ export interface ToolOutcome {
 	file?: string;
 	/** Concise command or operation detail, when available. */
 	detail?: string;
+	/** Stable fingerprint for duplicate-call detection when available. */
+	fingerprint?: string;
 	/** Structured tool metadata when available, e.g. screenshot details. */
 	metadata?: Record<string, unknown>;
+}
+
+export function normalizeToolName(tool: string): string {
+	return tool.trim().toLowerCase();
+}
+
+export function buildToolOutcomeFingerprint(outcome: ToolOutcome): string {
+	if (typeof outcome.fingerprint === "string" && outcome.fingerprint.trim().length > 0) {
+		return outcome.fingerprint.trim();
+	}
+
+	const normalizedTool = normalizeToolName(outcome.tool);
+	const normalizedFile = outcome.file?.trim().toLowerCase() ?? "";
+	const normalizedDetail = outcome.detail?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+	return `${normalizedTool}|${normalizedFile}|${normalizedDetail}`;
 }
 
 export interface NudgeEvaluation {

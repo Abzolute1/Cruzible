@@ -202,6 +202,28 @@ describe("runAutonomousSession", () => {
 		expect(result.stopReason).toBe("complete");
 	});
 
+	test("does not misclassify generic exceeded errors as budget failures", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([]);
+		session.prompt = vi.fn(async () => {
+			throw new Error("Provider output size exceeded hard limit");
+		});
+		const onError = vi.fn();
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix it",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+			onError,
+		});
+
+		expect(result.stopReason).toBe("error");
+		expect(result.ledger.status).toBe("error");
+		expect(onError).toHaveBeenCalledWith("Autonomous mode error: Provider output size exceeded hard limit");
+	});
+
 	test("asks for explicit completion evidence on ambiguous no-tool turns", async () => {
 		const { runtimeHost, session, toolHistory } = createRuntime([
 			{

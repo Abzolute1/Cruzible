@@ -406,6 +406,24 @@ describe("default model selection", () => {
 
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
+		expect(result.error).toBeUndefined();
+	});
+
+	test("findInitialModel returns a structured error instead of exiting on invalid explicit CLI provider selection", async () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+
+		const result = await findInitialModel({
+			cliProvider: "definitely-not-a-real-provider",
+			cliModel: "gpt-5.4",
+			scopedModels: [],
+			isContinuing: false,
+			modelRegistry: registry,
+		});
+
+		expect(result.model).toBeUndefined();
+		expect(result.error).toContain('Unknown provider "definitely-not-a-real-provider".');
 	});
 
 	test("findInitialModel selects ai-gateway default when available", async () => {
@@ -479,8 +497,8 @@ describe("default model selection", () => {
 
 	test("pickPreferredAvailableModel prefers nvidia before generic cloud fallbacks when local is unavailable", () => {
 		const nvidiaModel: Model<"anthropic-messages"> = {
-			id: "nvidia/nemotron-3-super-120b-a12b",
-			name: "Nemotron 3 Super",
+			id: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+			name: "Llama 3.1 Nemotron Ultra",
 			api: "anthropic-messages",
 			provider: "nvidia",
 			baseUrl: "https://integrate.api.nvidia.com/v1",
@@ -506,7 +524,7 @@ describe("default model selection", () => {
 
 		const picked = pickPreferredAvailableModel([openaiModel, nvidiaModel]);
 		expect(picked?.provider).toBe("nvidia");
-		expect(picked?.id).toBe("nvidia/nemotron-3-super-120b-a12b");
+		expect(picked?.id).toBe("nvidia/llama-3.1-nemotron-ultra-253b-v1");
 	});
 
 	test("matchSavedDefaultModel matches both bare ids and provider-qualified ids", () => {

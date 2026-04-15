@@ -35,7 +35,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	opencode: "claude-opus-4-6",
 	"opencode-go": "kimi-k2.5",
 	"kimi-coding": "kimi-k2-thinking",
-	nvidia: "nvidia/nemotron-3-super-120b-a12b",
+	nvidia: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
 	local: "lm-studio",
 };
 
@@ -503,6 +503,7 @@ export interface InitialModelResult {
 	model: Model<Api> | undefined;
 	thinkingLevel: ThinkingLevel;
 	fallbackMessage: string | undefined;
+	error: string | undefined;
 }
 
 /**
@@ -545,11 +546,20 @@ export async function findInitialModel(options: {
 			modelRegistry,
 		});
 		if (resolved.error) {
-			console.error(chalk.red(resolved.error));
-			process.exit(1);
+			return {
+				model: undefined,
+				thinkingLevel: DEFAULT_THINKING_LEVEL,
+				fallbackMessage: undefined,
+				error: resolved.error,
+			};
 		}
 		if (resolved.model) {
-			return { model: resolved.model, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+			return {
+				model: resolved.model,
+				thinkingLevel: DEFAULT_THINKING_LEVEL,
+				fallbackMessage: undefined,
+				error: undefined,
+			};
 		}
 	}
 
@@ -559,6 +569,7 @@ export async function findInitialModel(options: {
 			model: scopedModels[0].model,
 			thinkingLevel: scopedModels[0].thinkingLevel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
 			fallbackMessage: undefined,
+			error: undefined,
 		};
 	}
 
@@ -570,7 +581,7 @@ export async function findInitialModel(options: {
 			if (defaultThinkingLevel) {
 				thinkingLevel = defaultThinkingLevel;
 			}
-			return { model, thinkingLevel, fallbackMessage: undefined };
+			return { model, thinkingLevel, fallbackMessage: undefined, error: undefined };
 		}
 	}
 
@@ -582,11 +593,12 @@ export async function findInitialModel(options: {
 			model: pickPreferredAvailableModel(availableModels),
 			thinkingLevel: DEFAULT_THINKING_LEVEL,
 			fallbackMessage: undefined,
+			error: undefined,
 		};
 	}
 
 	// 5. No model found
-	return { model: undefined, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+	return { model: undefined, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined, error: undefined };
 }
 
 /**

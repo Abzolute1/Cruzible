@@ -4,6 +4,7 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@mar
 import type { MessageRenderer } from "../../../core/extensions/types.js";
 import type { CustomMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { buildConsoleHeader } from "./console-chrome.js";
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -75,8 +76,17 @@ export class CustomMessageComponent extends Container {
 		this.box.clear();
 
 		// Default rendering: label + content
-		const label = theme.fg("customMessageLabel", `\x1b[1m[${this.message.customType}]\x1b[22m`);
-		this.box.addChild(new Text(label, 0, 0));
+		this.box.addChild(
+			new Text(
+				buildConsoleHeader({
+					badge: this.message.customType,
+					badgeColor: "accent",
+					meta: ["extension message"],
+				}),
+				0,
+				0,
+			),
+		);
 		this.box.addChild(new Spacer(1));
 
 		// Extract text content

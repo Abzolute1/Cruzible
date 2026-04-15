@@ -44,7 +44,6 @@ export class AgentSessionXmlCoordinator {
 	}
 
 	async process(): Promise<void> {
-		if (this.structuredToolCallCountThisPrompt > 0) return;
 		if (this.xmlToolCallIteration >= this.maxXmlToolCallIterations) return;
 
 		const messages = this.options.agentState.getMessages();

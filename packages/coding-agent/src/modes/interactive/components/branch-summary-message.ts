@@ -2,6 +2,7 @@ import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@mariozechner/p
 import type { BranchSummaryMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
+import { buildConsoleBadge, buildConsoleHeader } from "./console-chrome.js";
 
 /**
  * Component that renders a branch summary message with collapsed/expanded state.
@@ -32,11 +33,22 @@ export class BranchSummaryMessageComponent extends Box {
 	private updateDisplay(): void {
 		this.clear();
 
-		const label = theme.fg("customMessageLabel", `\x1b[1m[branch]\x1b[22m`);
-		this.addChild(new Text(label, 0, 0));
+		this.addChild(
+			new Text(
+				buildConsoleHeader({
+					badge: "branch",
+					badgeColor: "accent",
+					meta: [this.expanded ? "expanded" : "collapsed"],
+				}),
+				0,
+				0,
+			),
+		);
 		this.addChild(new Spacer(1));
 
 		if (this.expanded) {
+			this.addChild(new Text(buildConsoleBadge("summary", "accent"), 0, 0));
+			this.addChild(new Spacer(1));
 			const header = "**Branch Summary**\n\n";
 			this.addChild(
 				new Markdown(header + this.message.summary, 0, 0, this.markdownTheme, {
@@ -46,9 +58,11 @@ export class BranchSummaryMessageComponent extends Box {
 		} else {
 			this.addChild(
 				new Text(
-					theme.fg("customMessageText", "Branch summary (") +
-						theme.fg("dim", keyText("app.tools.expand")) +
-						theme.fg("customMessageText", " to expand)"),
+					theme.fg("customMessageText", "Branch summary ready.") +
+						" " +
+						buildConsoleBadge(keyText("app.tools.expand"), "muted") +
+						" " +
+						theme.fg("dim", "to expand"),
 					0,
 					0,
 				),

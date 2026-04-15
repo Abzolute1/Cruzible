@@ -3,6 +3,12 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { ContextUsage, ExtensionContext, ToolRenderResultOptions } from "../extensions/types.js";
 import {
+	detectResearchQueryIntent,
+	rememberResearchUrlHints,
+	type ResearchQueryIntent,
+	shouldUseRichResearchFetch,
+} from "./research-intent.js";
+import {
 	deriveResearchCompressionProfile,
 	formatSearchTranscriptContent,
 	truncateResearchSnippet,
@@ -14,8 +20,42 @@ const COLLAPSED_RESULTS = 2;
 const EXPANDED_RESULTS = 4;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const searchCache = new Map<string, { results: Array<{ title: string; url: string; snippet: string }>; timestamp: number }>();
+const DOCS_QUERY_STOPWORDS = new Set([
+	"a",
+	"an",
+	"and",
+	"api",
+	"brief",
+	"briefly",
+	"current",
+	"doc",
+	"docs",
+	"documentation",
+	"find",
+	"for",
+	"guide",
+	"help",
+	"how",
+	"latest",
+	"look",
+	"lookup",
+	"manual",
+	"on",
+	"overview",
+	"quickly",
+	"react",
+	"reference",
+	"summarize",
+	"summary",
+	"the",
+	"to",
+	"tutorial",
+	"up",
+	"use",
+	"what",
+]);
 
-function scoreResearchSource(url: string): number {
+function scoreResearchSource(url: string, intent: ResearchQueryIntent): number {
 	try {
 		const parsed = new URL(url);
 		const host = parsed.hostname.toLowerCase();
@@ -36,29 +76,136 @@ function scoreResearchSource(url: string): number {
 		if (/(duckduckgo\.com|google\.com|bing\.com)/.test(host)) {
 			score -= 6;
 		}
+		if (intent === "code_lookup") {
+			if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
+				score += 8;
+			}
+			if (/(\/blob\/|\/raw\/|\/tree\/|\/src\/|\/packages\/|\/commits?\/|\/pull\/)/.test(path)) {
+				score += 4;
+			}
+			if (host.startsWith("docs.") || host.startsWith("learn.") || host.startsWith("developer.")) {
+				score -= 3;
+			}
+			if (/(microsoft\.com|learn\.microsoft\.com|answers\.microsoft\.com)/.test(host)) {
+				score -= 4;
+			}
+		}
+		if (intent === "current_events") {
+			if (/(\/news\/|\/blog\/|\/release|\/releases\/|\/announcement|\/announcements\/|\/press\/|\/security\/|\/incident|\/advisory)/.test(path)) {
+				score += 4;
+			}
+			if (/(leak|incident|breach|outage|security|advisory|analysis|report|202\d)/.test(path)) {
+				score += 4;
+			}
+			if (/(\bnews\b|\bblog\b|\bpress\b|\bsecurity\b|\bincident\b|\badvisory\b)/.test(host)) {
+				score += 2;
+			}
+			if (host.startsWith("docs.") || host.startsWith("learn.") || host.startsWith("developer.") || /(docs|reference|manual|guide|api|spec)/.test(path)) {
+				score -= 4;
+			}
+			if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
+				score -= 5;
+			}
+		}
+		if (intent === "docs_reference") {
+			if (/(\/news\/|\/blog\/|\/announcement|\/press\/)/.test(path)) {
+				score -= 3;
+			}
+			if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
+				score -= 2;
+			}
+		}
 		return score;
 	} catch {
 		return -10;
 	}
 }
 
-function isLikelyAuthoritativeSource(url: string): boolean {
-	return scoreResearchSource(url) >= 3;
+function isLikelyAuthoritativeSource(url: string, intent: ResearchQueryIntent): boolean {
+	return scoreResearchSource(url, intent) >= 3;
 }
 
-function rankResearchResults(results: Array<{ title: string; url: string; snippet: string }>): Array<{
+function normalizeDocsToken(token: string): string {
+	return token.endsWith("s") && token.length > 4 ? token.slice(0, -1) : token;
+}
+
+function extractDocsQueryTerms(query: string): string[] {
+	const terms = query
+		.toLowerCase()
+		.match(/[a-z][a-z0-9]*/g)
+		?.map((term) => normalizeDocsToken(term))
+		.filter((term) => term.length >= 4 && !DOCS_QUERY_STOPWORDS.has(term));
+	return Array.from(new Set(terms ?? []));
+}
+
+function scoreDocsReferenceResultContent(
+	result: { title: string; url: string; snippet: string },
+	query: string,
+): number {
+	const queryTerms = extractDocsQueryTerms(query);
+	if (queryTerms.length === 0) return 0;
+	const title = result.title.toLowerCase();
+	const snippet = result.snippet.toLowerCase();
+	const url = result.url.toLowerCase();
+	let score = 0;
+	for (const term of queryTerms) {
+		if (title.includes(term)) {
+			score += 5;
+			continue;
+		}
+		if (url.includes(term)) {
+			score += 4;
+			continue;
+		}
+		if (snippet.includes(term)) {
+			score += 3;
+		}
+	}
+	if (/\b(hook|hooks|api|reference|action|actions)\b/.test(title)) {
+		score += 1;
+	}
+	return score;
+}
+
+function scoreResearchResultContent(
+	result: { title: string; url: string; snippet: string },
+	intent: ResearchQueryIntent,
+	query: string,
+): number {
+	const text = `${result.title}\n${result.snippet}`.toLowerCase();
+	let score = 0;
+	if (intent === "current_events") {
+		if (/\b(leak|incident|breach|outage|analysis|security|advisory|exposed|published|coverage|report)\b/.test(text)) {
+			score += 4;
+		}
+		if (/\b(202\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/.test(text)) {
+			score += 2;
+		}
+		if (/\b(docs?|reference|manual|guide|tutorial)\b/.test(text)) {
+			score -= 3;
+		}
+		return score;
+	}
+	if (intent === "docs_reference") {
+		return scoreDocsReferenceResultContent(result, query);
+	}
+	return 0;
+}
+
+function rankResearchResults(query: string, results: Array<{ title: string; url: string; snippet: string }>): Array<{
 	title: string;
 	url: string;
 	snippet: string;
 	authoritative: boolean;
 	score: number;
 }> {
+	const intent = detectResearchQueryIntent(query);
 	return results
 		.map((result, index) => {
-			const score = scoreResearchSource(result.url);
+			const score = scoreResearchSource(result.url, intent) + scoreResearchResultContent(result, intent, query);
 			return {
 				...result,
-				authoritative: score >= 3,
+				authoritative: isLikelyAuthoritativeSource(result.url, intent),
 				score,
 				index,
 			};
@@ -198,15 +345,17 @@ async function executeWebSearch(
 	const cachedBefore = searchCache.get(cacheKey);
 	const cacheHit = Boolean(cachedBefore && Date.now() - cachedBefore.timestamp < CACHE_TTL_MS);
 	const rawResults = await duckDuckGoSearch(query, Math.min(maxResults, EXPANDED_RESULTS));
-	const rankedResults = rankResearchResults(rawResults);
+	const rankedResults = rankResearchResults(query, rawResults);
+	const intent = detectResearchQueryIntent(query);
 	const compression = getResearchCompressionProfile(ctx);
 	const details = {
 		query,
+		intent,
 		resultCount: rankedResults.length,
 		compressionMode: compression.mode,
 		cacheHit,
 		sourceUrls: rankedResults.map((result) => result.url),
-		preferredSourceUrls: rankedResults.filter((result) => result.authoritative).map((result) => result.url),
+		preferredSourceUrls: rankedResults.filter((result) => result.authoritative || result.score >= 4).map((result) => result.url),
 		results: rankedResults.map((result) => ({
 			title: result.title,
 			url: result.url,
@@ -221,6 +370,11 @@ async function executeWebSearch(
 			content: [{ type: "text" as const, text: `No results found for: ${query}` }],
 		};
 	}
+
+	rememberResearchUrlHints(
+		rankedResults.map((result) => result.url),
+		{ intent, richFetch: shouldUseRichResearchFetch(query, intent) },
+	);
 
 	return {
 		details,

@@ -1,0 +1,92 @@
+import { describe, expect, test } from "vitest";
+import {
+	buildAutonomousStabilizedUserMessage,
+	buildPlanningGuidanceMessage,
+	buildInteractiveStabilizedUserMessage,
+	buildPlanningUserMessage,
+	getInteractiveAutonomousResumeSnapshot,
+	isInteractiveAutonomousResumeRequest,
+	resolveInteractiveAutonomousRunConfig,
+	type AutonomousExecutionConfig,
+} from "../src/modes/interactive/interactive-autonomous-stabilization.js";
+import type { AutonomousRunSnapshot } from "../src/core/auton/ledger.js";
+import type { RuntimeStabilizationProfile } from "../src/core/runtime-health.js";
+
+function createProfile(overrides: Partial<RuntimeStabilizationProfile> = {}): RuntimeStabilizationProfile {
+	return {
+		level: "guarded",
+		reasons: ["recent degradation"],
+		recommendedMaxOutputPerTurn: 4000,
+		forceBehavioralPrompt: true,
+		forceNudges: true,
+		...overrides,
+	};
+}
+
+function createSnapshot(overrides: Partial<AutonomousRunSnapshot> = {}): AutonomousRunSnapshot {
+	return {
+		phase: "final",
+		stopReason: "blocked",
+		iterations: 2,
+		budgetStatus: "ok",
+		costSummary: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalCostUsd: 0 },
+		checkpointState: { controlState: "blocked_stop" },
+		ledger: {
+			goal: "fix the failing tests",
+		},
+		...overrides,
+	} as AutonomousRunSnapshot;
+}
+
+describe("interactive-autonomous-stabilization", () => {
+	test("tightens autonomous run config based on stabilization profile", () => {
+		const config: AutonomousExecutionConfig = {
+			maxOutputPerTurn: 8000,
+			enableBehavioralPrompt: false,
+			enableNudges: false,
+		};
+
+		const resolved = resolveInteractiveAutonomousRunConfig(config, createProfile());
+
+		expect(resolved.maxOutputPerTurn).toBe(4000);
+		expect(resolved.enableBehavioralPrompt).toBe(true);
+		expect(resolved.enableNudges).toBe(true);
+	});
+
+	test("builds stabilized autonomous and interactive prompts", () => {
+		const profile = createProfile();
+
+		const autonomous = buildAutonomousStabilizedUserMessage("fix it", profile);
+		const interactive = buildInteractiveStabilizedUserMessage("fix it", profile);
+		const planning = buildPlanningUserMessage("fix it", profile);
+		const planningGuidance = buildPlanningGuidanceMessage(profile);
+
+		expect(autonomous).toContain("Autonomous stabilization for this run:");
+		expect(autonomous).toContain("4,000");
+		expect(interactive).toContain("Runtime stabilization for this turn:");
+		expect(interactive).toContain("do not emit XML fallback");
+		expect(planning).toBe("fix it");
+		expect(planningGuidance).toContain("Planning mode guidance:");
+		expect(planningGuidance).toContain("do not edit files");
+		expect(planningGuidance).toContain("do not invent the language, framework, platform, or library");
+		expect(planningGuidance).toContain("do not inspect files or search the web before asking the clarifying questions");
+		expect(planningGuidance).toContain("use a numbered list like `1. ...`, `2. ...`");
+	});
+
+	test("recognizes autonomous resume requests by continuation wording or exact goal", () => {
+		const snapshot = createSnapshot();
+
+		expect(isInteractiveAutonomousResumeRequest("continue", snapshot)).toBe(true);
+		expect(isInteractiveAutonomousResumeRequest("fix the failing tests", snapshot)).toBe(true);
+		expect(isInteractiveAutonomousResumeRequest("start a new frontend redesign", snapshot)).toBe(false);
+	});
+
+	test("returns only resumable snapshots", () => {
+		const resumable = createSnapshot();
+		const complete = createSnapshot({ stopReason: "complete" });
+
+		expect(getInteractiveAutonomousResumeSnapshot("continue", resumable)).toBe(resumable);
+		expect(getInteractiveAutonomousResumeSnapshot("continue", complete)).toBeUndefined();
+		expect(getInteractiveAutonomousResumeSnapshot("new task", resumable)).toBeUndefined();
+	});
+});

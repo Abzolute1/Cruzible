@@ -24,6 +24,25 @@ export interface BuildSystemPromptOptions {
 	skills?: Skill[];
 }
 
+function appendContextFiles(prompt: string, contextFiles: Array<{ path: string; content: string }>): string {
+	if (contextFiles.length === 0) return prompt;
+	let next = `${prompt}\n\n# Project Context\n\nLoaded context files:\n\n`;
+	for (const { path: filePath, content } of contextFiles) {
+		next += `## ${filePath}\n\n${content}\n\n`;
+	}
+	return next;
+}
+
+function buildPiDocsSection(readmePath: string, docsPath: string, examplesPath: string): string {
+	return [
+		"Pi docs: only for pi-specific work.",
+		`README ${readmePath}`,
+		`Docs ${docsPath}`,
+		`Examples ${examplesPath}`,
+		"Follow markdown cross-references before implementing.",
+	].join("\n");
+}
+
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): string {
 	const {
@@ -53,14 +72,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			prompt += appendSection;
 		}
 
-		// Append project context files
-		if (contextFiles.length > 0) {
-			prompt += "\n\n# Project Context\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
-			for (const { path: filePath, content } of contextFiles) {
-				prompt += `## ${filePath}\n\n${content}\n\n`;
-			}
-		}
+		prompt = appendContextFiles(prompt, contextFiles);
 
 		// Append skills section (only if read tool is available)
 		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
@@ -105,18 +117,19 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const hasRead = tools.includes("read");
 	const hasWebSearch = tools.includes("webSearch");
 	const hasWebFetch = tools.includes("webFetch");
+	const hasMutatingTools = hasBash || tools.includes("edit") || tools.includes("write");
+	const hasReadOnlyExploration = hasRead || hasGrep || hasFind || hasLs || hasWebSearch || hasWebFetch;
 
 	// File exploration guidelines
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+		addGuideline("Use bash for file operations such as ls, rg, and find");
 	} else if (hasBash && (hasGrep || hasFind || hasLs)) {
 		addGuideline("Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)");
 	}
 	if (hasWebSearch && hasWebFetch) {
-		addGuideline("For online research, use webSearch to find candidate sources and webFetch to read the most relevant URL");
-		addGuideline("Treat webSearch as a compact source index, not a document reader; do not repeat the same search to read omitted results when webFetch can read a returned URL");
-		addGuideline("Prefer authoritative sources such as official docs, vendor docs, specs, and release notes over forums or blog posts when possible");
-		addGuideline("When online information affects the result, keep the source URLs available in your notes and final summary");
+		addGuideline("For online research, use webSearch for candidate sources and webFetch for the best URL");
+		addGuideline("Prefer authoritative sources such as official docs, vendor docs, specs, and release notes");
+		addGuideline("Keep source URLs available when online information affects the answer");
 	} else if (hasWebSearch) {
 		addGuideline("Use webSearch when the task depends on current online information instead of guessing");
 	}
@@ -134,36 +147,27 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	const roleLine = hasMutatingTools
+		? "You are an expert coding assistant inside pi. Use the available tools to inspect code, run commands, edit files, and answer precisely."
+		: hasReadOnlyExploration
+			? "You are an expert coding assistant inside pi. Use the available read-only and research tools to inspect evidence and answer precisely."
+			: "You are an expert coding assistant inside pi. Answer precisely using only the available context."
+
+	let prompt = `${roleLine}
 
 Available tools:
 ${toolsList}
 
-In addition to the tools above, you may have access to other custom tools depending on the project.
-
 Guidelines:
 ${guidelines}
 
-Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
-- Main documentation: ${readmePath}
-- Additional docs: ${docsPath}
-- Examples: ${examplesPath} (extensions, custom tools, SDK)
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
-- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+${buildPiDocsSection(readmePath, docsPath, examplesPath)}`;
 
 	if (appendSection) {
 		prompt += appendSection;
 	}
 
-	// Append project context files
-	if (contextFiles.length > 0) {
-		prompt += "\n\n# Project Context\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
-		for (const { path: filePath, content } of contextFiles) {
-			prompt += `## ${filePath}\n\n${content}\n\n`;
-		}
-	}
+	prompt = appendContextFiles(prompt, contextFiles);
 
 	// Append skills section (only if read tool is available)
 	if (hasRead && skills.length > 0) {

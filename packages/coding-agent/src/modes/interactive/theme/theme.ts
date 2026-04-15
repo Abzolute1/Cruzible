@@ -31,12 +31,15 @@ const ThemeJsonSchema = Type.Object({
 		borderMuted: ColorValueSchema,
 		success: ColorValueSchema,
 		error: ColorValueSchema,
-		warning: ColorValueSchema,
-		muted: ColorValueSchema,
-		dim: ColorValueSchema,
-		text: ColorValueSchema,
-		thinkingText: ColorValueSchema,
-		// Backgrounds & Content Text (11 colors)
+			warning: ColorValueSchema,
+			muted: ColorValueSchema,
+			dim: ColorValueSchema,
+			text: ColorValueSchema,
+			thinkingText: ColorValueSchema,
+			accentShimmer: ColorValueSchema,
+			successShimmer: ColorValueSchema,
+			bashModeShimmer: ColorValueSchema,
+			// Backgrounds & Content Text (11 colors)
 		selectedBg: ColorValueSchema,
 		userMessageBg: ColorValueSchema,
 		userMessageText: ColorValueSchema,
@@ -108,6 +111,9 @@ export type ThemeColor =
 	| "dim"
 	| "text"
 	| "thinkingText"
+	| "accentShimmer"
+	| "successShimmer"
+	| "bashModeShimmer"
 	| "userMessageText"
 	| "customMessageText"
 	| "customMessageLabel"

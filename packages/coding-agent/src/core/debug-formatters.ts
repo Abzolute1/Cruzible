@@ -157,6 +157,20 @@ export function toSessionDateStr(isoOrTimestamp: string | number): string {
 }
 
 /**
+ * Format an ISO date string or timestamp to the session folder timestamp portion: YYYY-MM-DD_HH-MM-SS
+ */
+export function toSessionDateTimeStr(isoOrTimestamp: string | number): string {
+	const d = new Date(isoOrTimestamp);
+	const year = d.getUTCFullYear();
+	const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const day = String(d.getUTCDate()).padStart(2, "0");
+	const hour = String(d.getUTCHours()).padStart(2, "0");
+	const min = String(d.getUTCMinutes()).padStart(2, "0");
+	const sec = String(d.getUTCSeconds()).padStart(2, "0");
+	return `${year}-${month}-${day}_${hour}-${min}-${sec}`;
+}
+
+/**
  * Format a UTC timestamp as "YYYY-MM-DD HH:MM:SS UTC"
  */
 export function toUtcTimestamp(timestamp: number): string {

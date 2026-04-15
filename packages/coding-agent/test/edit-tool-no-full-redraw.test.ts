@@ -68,7 +68,7 @@ describe("edit tool TUI rendering", () => {
 		);
 		const lines = (await readFile(filePath, "utf8")).trimEnd().split("\n");
 		const edits = createLargeEdits(lines);
-		const diff = await computeEditsDiff(filePath, edits, process.cwd());
+		const diff = await computeEditsDiff(filePath, edits, dir);
 		if ("error" in diff) {
 			throw new Error(diff.error);
 		}
@@ -85,9 +85,9 @@ describe("edit tool TUI rendering", () => {
 			"tool-call-1",
 			{ path: filePath, edits },
 			{},
-			createEditToolDefinition(process.cwd()),
+			createEditToolDefinition(dir),
 			tui,
-			process.cwd(),
+			dir,
 		);
 		root.addChild(component);
 		tui.addChild(root);
@@ -105,12 +105,12 @@ describe("edit tool TUI rendering", () => {
 
 		const redrawsBeforeResult = tui.fullRedraws;
 		const clearsBeforeResult = terminal.fullClearCount;
-		component.updateResult(
-			{
-				content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${filePath}.` }],
-				details: diff,
-				isError: false,
-			},
+			component.updateResult(
+				{
+				content: [{ type: "text", text: `Patched ${edits.length} block(s) in ${filePath}.` }],
+					details: diff,
+					isError: false,
+				},
 			false,
 		);
 		tui.requestRender();

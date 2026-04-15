@@ -1,13 +1,13 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@mariozechner/pi-tui";
 import { classifyRequestFailure } from "../../../core/request-failure.js";
+import { stripXmlToolCallArtifacts } from "../../../core/xml-tool-parser.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 /**
  * Component that renders a complete assistant message
  */
 export class AssistantMessageComponent extends Container {
-	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
 	private markdownTheme: MarkdownTheme;
 	private hiddenThinkingLabel: string;
@@ -25,9 +25,7 @@ export class AssistantMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 
-		// Container for text/thinking content
-		this.contentContainer = new Container();
-		this.addChild(this.contentContainer);
+		this.addChild(new Spacer(1));
 
 		if (message) {
 			this.updateContent(message);
@@ -58,49 +56,57 @@ export class AssistantMessageComponent extends Container {
 	updateContent(message: AssistantMessage): void {
 		this.lastMessage = message;
 
-		// Clear content container
-		this.contentContainer.clear();
+		this.clear();
+		this.addChild(new Spacer(1));
 
 		const hasVisibleContent = message.content.some(
-			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
+			(c) =>
+				(c.type === "text" && this.getRenderableText(c.text).trim()) ||
+				(c.type === "thinking" && c.thinking.trim()),
 		);
 
 		if (hasVisibleContent) {
-			this.contentContainer.addChild(new Spacer(1));
+			this.addChild(new Spacer(1));
 		}
 
 		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
-			if (content.type === "text" && content.text.trim()) {
-				// Assistant text messages with no background - trim the text
-				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme));
+			if (content.type === "text") {
+				const renderableText = this.getRenderableText(content.text);
+				if (!renderableText.trim()) {
+					continue;
+				}
+				this.addChild(
+					new Markdown(renderableText, 0, 0, this.markdownTheme, {
+						color: (text: string) => theme.fg("text", text),
+					}),
+				);
 			} else if (content.type === "thinking" && content.thinking.trim()) {
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)
-					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
+					.some(
+						(c) =>
+							(c.type === "text" && this.getRenderableText(c.text).trim()) ||
+							(c.type === "thinking" && c.thinking.trim()),
+					);
 
 				if (this.hideThinkingBlock) {
-					// Show static thinking label when hidden
-					this.contentContainer.addChild(
-						new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), 1, 0),
-					);
+					this.addChild(new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), 0, 0));
 					if (hasVisibleContentAfter) {
-						this.contentContainer.addChild(new Spacer(1));
+						this.addChild(new Spacer(1));
 					}
 				} else {
-					// Thinking traces in thinkingText color, italic
-					this.contentContainer.addChild(
-						new Markdown(content.thinking.trim(), 1, 0, this.markdownTheme, {
+					this.addChild(
+						new Markdown(content.thinking.trim(), 0, 0, this.markdownTheme, {
 							color: (text: string) => theme.fg("thinkingText", text),
 							italic: true,
 						}),
 					);
 					if (hasVisibleContentAfter) {
-						this.contentContainer.addChild(new Spacer(1));
+						this.addChild(new Spacer(1));
 					}
 				}
 			}
@@ -115,20 +121,21 @@ export class AssistantMessageComponent extends Container {
 					message.errorMessage && message.errorMessage !== "Request was aborted"
 						? message.errorMessage
 						: "Operation aborted";
-				if (hasVisibleContent) {
-					this.contentContainer.addChild(new Spacer(1));
-				} else {
-					this.contentContainer.addChild(new Spacer(1));
-				}
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
+				this.addChild(new Spacer(1));
+				this.addChild(new Text(theme.fg("error", abortMessage), 0, 0));
 			} else if (message.stopReason === "error") {
 				const classifiedFailure = classifyRequestFailure(message);
 				const errorMsg = classifiedFailure
 					? `${classifiedFailure.message}\n${classifiedFailure.recoveryHint}`
 					: `Error: ${message.errorMessage || "Unknown error"}`;
-				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", errorMsg), 1, 0));
+				this.addChild(new Spacer(1));
+				this.addChild(new Text(theme.fg("error", errorMsg), 0, 0));
 			}
 		}
 	}
+
+	private getRenderableText(text: string): string {
+		return stripXmlToolCallArtifacts(text).trim();
+	}
+
 }

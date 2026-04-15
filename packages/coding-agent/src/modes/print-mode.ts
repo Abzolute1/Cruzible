@@ -9,6 +9,8 @@
 import type { AssistantMessage, ImageContent } from "@mariozechner/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
+import { classifyRequestFailure } from "../core/request-failure.js";
+import { SessionDebugLogger } from "../core/session-debug-logger.js";
 
 /**
  * Options for print mode.
@@ -33,6 +35,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
+	let debugLogger: SessionDebugLogger | undefined;
 
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
@@ -95,6 +98,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		await rebindSession();
+		debugLogger = new SessionDebugLogger({
+			session: session,
+			projectRoot: session.sessionManager.getCwd(),
+		});
+		debugLogger.start();
 
 		if (initialMessage) {
 			await session.prompt(initialMessage, { images: initialImages });
@@ -111,7 +119,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			if (lastMessage?.role === "assistant") {
 				const assistantMsg = lastMessage as AssistantMessage;
 				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
-					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
+					const classifiedFailure =
+						assistantMsg.stopReason === "error" ? classifyRequestFailure(assistantMsg) : undefined;
+					console.error(
+						classifiedFailure
+							? `${classifiedFailure.message}\n${classifiedFailure.recoveryHint}`
+							: (assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`),
+					);
 					exitCode = 1;
 				} else {
 					for (const content of assistantMsg.content) {
@@ -129,6 +143,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		return 1;
 	} finally {
 		unsubscribe?.();
+		debugLogger?.dispose();
 		await runtimeHost.dispose();
 		await flushRawStdout();
 	}

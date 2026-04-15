@@ -65,6 +65,8 @@ export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
+	planningModel?: string;
+	executionModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	contextWindow?: number; // Custom context window override (tokens), survives session reloads
 	transport?: TransportSetting; // default: "sse"
@@ -595,6 +597,14 @@ export class SettingsManager {
 		return this.settings.defaultModel;
 	}
 
+	getPlanningModel(): string | undefined {
+		return this.settings.planningModel;
+	}
+
+	getExecutionModel(): string | undefined {
+		return this.settings.executionModel;
+	}
+
 	setDefaultProvider(provider: string): void {
 		this.globalSettings.defaultProvider = provider;
 		this.markModified("defaultProvider");
@@ -612,6 +622,18 @@ export class SettingsManager {
 		this.globalSettings.defaultModel = modelId;
 		this.markModified("defaultProvider");
 		this.markModified("defaultModel");
+		this.save();
+	}
+
+	setPlanningModel(modelRef: string | undefined): void {
+		this.globalSettings.planningModel = modelRef;
+		this.markModified("planningModel");
+		this.save();
+	}
+
+	setExecutionModel(modelRef: string | undefined): void {
+		this.globalSettings.executionModel = modelRef;
+		this.markModified("executionModel");
 		this.save();
 	}
 

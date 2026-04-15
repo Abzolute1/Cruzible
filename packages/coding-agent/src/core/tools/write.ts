@@ -7,7 +7,7 @@ import { keyHint } from "../../modes/interactive/components/keybinding-hints.js"
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveContainedPath } from "./path-utils.js";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -161,6 +161,10 @@ function formatWriteCall(
 	return text;
 }
 
+function formatWriteSuccess(path: string, content: string): string {
+	return `Wrote ${content.length}B to ${path}.`;
+}
+
 function formatWriteResult(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean },
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
@@ -198,7 +202,7 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveContainedPath(path, cwd, { allowMissing: true });
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(
 				absolutePath,
@@ -226,7 +230,7 @@ export function createWriteToolDefinition(
 									signal?.removeEventListener("abort", onAbort);
 									resolve({
 										content: [
-											{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` },
+											{ type: "text", text: formatWriteSuccess(path, content) },
 										],
 										details: undefined,
 									});

@@ -15,7 +15,7 @@ import {
 	stripBom,
 } from "./edit-diff.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveContainedPath } from "./path-utils.js";
 import { invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -150,6 +150,10 @@ function formatEditResult(
 	return `\n${renderDiff(resultDiff, { filePath: rawPath ?? undefined })}`;
 }
 
+function formatEditSuccess(path: string, editCount: number): string {
+	return `Patched ${editCount} block(s) in ${path}.`;
+}
+
 export function createEditToolDefinition(
 	cwd: string,
 	options?: EditToolOptions,
@@ -172,7 +176,7 @@ export function createEditToolDefinition(
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveContainedPath(path, cwd);
 
 			return withFileMutationQueue(
 				absolutePath,
@@ -260,7 +264,7 @@ export function createEditToolDefinition(
 									content: [
 										{
 											type: "text",
-											text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+											text: formatEditSuccess(path, edits.length),
 										},
 									],
 									details: { diff: diffResult.diff, firstChangedLine: diffResult.firstChangedLine },

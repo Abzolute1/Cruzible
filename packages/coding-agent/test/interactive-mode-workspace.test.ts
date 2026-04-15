@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { getAutonomousScopeGuardReason } from "../src/modes/interactive/interactive-autonomous-ui.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -76,6 +77,50 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 		} finally {
 			process.env.HOME = previousHome;
 		}
+	});
+
+	test("allows autonomous mode from nested project-like folders under Desktop", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "interactive-scope-"));
+		const projectDir = join(tempDir, "Desktop", "Tests", "Snake");
+		mkdirSync(projectDir, { recursive: true });
+
+		const previousHome = process.env.HOME;
+		process.env.HOME = tempDir;
+		try {
+			expect(getAutonomousScopeGuardReason(projectDir)).toBeUndefined();
+		} finally {
+			process.env.HOME = previousHome;
+		}
+	});
+
+	test("resolves debug artifacts root from the current session cwd", () => {
+		const fakeThis: any = {
+			activeAutonomousWorkspace: undefined,
+			lastAutonomousWorkspace: undefined,
+			sessionManager: {
+				getCwd: () => "/home/alex/Desktop/Tests/Snake",
+			},
+		};
+
+		const resolved = (InteractiveMode as any).prototype.resolveProjectRoot.call(fakeThis);
+		expect(resolved).toBe("/home/alex/Desktop/Tests/Snake");
+	});
+
+	test("prefers autonomous source cwd for debug artifacts", () => {
+		const fakeThis: any = {
+			activeAutonomousWorkspace: {
+				sourceCwd: "/home/alex/projects/snake",
+			},
+			lastAutonomousWorkspace: {
+				sourceCwd: "/tmp/old-workspace",
+			},
+			sessionManager: {
+				getCwd: () => "/tmp/isolation-copy",
+			},
+		};
+
+		const resolved = (InteractiveMode as any).prototype.resolveProjectRoot.call(fakeThis);
+		expect(resolved).toBe("/home/alex/projects/snake");
 	});
 
 	test("shows preserved autonomous workspace details", () => {
@@ -590,6 +635,7 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 			formatAutonomousRecoverySummary: (InteractiveMode as any).prototype.formatAutonomousRecoverySummary,
 			getAutonomousRecoveryActions: (InteractiveMode as any).prototype.getAutonomousRecoveryActions,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
+			getLatestPlanArtifact: vi.fn(() => undefined),
 		};
 
 		(InteractiveMode as any).prototype.handleSessionCommand.call(fakeThis);

@@ -40,6 +40,8 @@ export interface AppKeybindings {
 	"app.session.delete": true;
 	"app.session.deleteNoninvasive": true;
 	"app.mode.cycle": true;
+	"app.plan.review": true;
+	"app.plan.nextStep": true;
 }
 
 export type AppKeybinding = keyof AppKeybindings;
@@ -136,6 +138,14 @@ export const KEYBINDINGS = {
 		defaultKeys: "alt+m",
 		description: "Toggle autonomous mode for the next prompt",
 	},
+	"app.plan.review": {
+		defaultKeys: "alt+r",
+		description: "Review the latest saved plan",
+	},
+	"app.plan.nextStep": {
+		defaultKeys: "alt+n",
+		description: "Execute the next incomplete plan step",
+	},
 } as const satisfies KeybindingDefinitions;
 
 const KEYBINDING_NAME_MIGRATIONS = {
@@ -198,6 +208,8 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	renameSession: "app.session.rename",
 	deleteSession: "app.session.delete",
 	deleteSessionNoninvasive: "app.session.deleteNoninvasive",
+	reviewPlan: "app.plan.review",
+	nextPlanStep: "app.plan.nextStep",
 } as const satisfies Record<string, Keybinding>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

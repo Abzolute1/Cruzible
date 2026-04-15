@@ -10,6 +10,7 @@ import {
 	type TruncationResult,
 	truncateTail,
 } from "../../../core/tools/truncate.js";
+import { describeWorkingActivity } from "../interactive-working-verbs.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
@@ -28,10 +29,16 @@ export class BashExecutionComponent extends Container {
 	private fullOutputPath?: string;
 	private expanded = false;
 	private contentContainer: Container;
+	private readonly runningMessage: string;
 
 	constructor(command: string, ui: TUI, excludeFromContext = false) {
 		super();
 		this.command = command;
+		const activity = describeWorkingActivity({ toolName: "bash", command });
+		const verb = theme.bold(theme.fg(activity.tone, activity.verb));
+		const detail = activity.target ? theme.fg("muted", ` ${activity.target}`) : "";
+		const helper = theme.fg("dim", ` (${keyText("tui.select.cancel")} to cancel)`);
+		this.runningMessage = `${verb}${detail}${helper}`;
 
 		// Use dim border for excluded-from-context commands (!! prefix)
 		const colorKey = excludeFromContext ? "dim" : "bashMode";
@@ -55,8 +62,8 @@ export class BashExecutionComponent extends Container {
 		this.loader = new Loader(
 			ui,
 			(spinner) => theme.fg(colorKey, spinner),
-			(text) => theme.fg("muted", text),
-			`Running... (${keyText("tui.select.cancel")} to cancel)`, // Plain text for loader
+			(text) => text,
+			this.runningMessage,
 		);
 		this.contentContainer.addChild(this.loader);
 

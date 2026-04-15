@@ -69,7 +69,7 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
-	describe("prompt guidelines", () => {
+		describe("prompt guidelines", () => {
 		test("appends promptGuidelines to default guidelines", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
@@ -81,6 +81,23 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("- Use dynamic_tool for project summaries.");
 		});
 
+		test("includes discovery-oriented guidance for local inspection tools", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "grep", "find", "ls"],
+				promptGuidelines: [
+					"Use find to locate files when the path is uncertain before retrying read.",
+					"Use grep to locate symbols or strings before opening candidate files with read.",
+					"Use ls to inspect directories before reading files inside them.",
+				],
+				contextFiles: [],
+				skills: [],
+			});
+
+			expect(prompt).toContain("- Use find to locate files when the path is uncertain before retrying read.");
+			expect(prompt).toContain("- Use grep to locate symbols or strings before opening candidate files with read.");
+			expect(prompt).toContain("- Use ls to inspect directories before reading files inside them.");
+		});
+
 		test("deduplicates and trims promptGuidelines", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
@@ -89,7 +106,34 @@ describe("buildSystemPrompt", () => {
 				skills: [],
 			});
 
-			expect(prompt.match(/- Use dynamic_tool for summaries\./g)).toHaveLength(1);
+				expect(prompt.match(/- Use dynamic_tool for summaries\./g)).toHaveLength(1);
+			});
+
+			test("uses compact pi-doc guidance in the default prompt", () => {
+				const prompt = buildSystemPrompt({
+					selectedTools: ["read", "bash"],
+					contextFiles: [],
+					skills: [],
+				});
+
+				expect(prompt).toContain("Pi docs: only for pi-specific work.");
+				expect(prompt).toContain("README ");
+				expect(prompt).toContain("Docs ");
+				expect(prompt).toContain("Examples ");
+				expect(prompt).toContain("Follow markdown cross-references before implementing.");
+				expect(prompt).not.toContain("Always read pi .md files completely");
+				expect(prompt).not.toContain("When asked about:");
+			});
+
+			test("uses a read-only role line when only inspection tools are available", () => {
+				const prompt = buildSystemPrompt({
+					selectedTools: ["read", "grep", "find", "ls", "webSearch", "webFetch"],
+					contextFiles: [],
+					skills: [],
+				});
+
+				expect(prompt).toContain("Use the available read-only and research tools to inspect evidence and answer precisely.");
+				expect(prompt).not.toContain("run commands, edit files");
+			});
 		});
 	});
-});

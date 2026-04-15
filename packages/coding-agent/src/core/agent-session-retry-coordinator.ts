@@ -2,7 +2,11 @@ import type { Agent } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { isContextOverflow } from "@mariozechner/pi-ai";
 import { sleep } from "../utils/sleep.js";
+import { canReplayContinue } from "./agent-session-continue-replay.js";
 import type { AgentSessionEvent } from "./agent-session.js";
+import type { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
+import { AgentSessionRecoveryReplayScheduler } from "./agent-session-recovery-replay-scheduler.js";
+import { classifyRequestFailure } from "./request-failure.js";
 import type { SettingsManager } from "./settings-manager.js";
 
 export interface AgentSessionRetryCoordinatorOptions {
@@ -10,6 +14,7 @@ export interface AgentSessionRetryCoordinatorOptions {
 	settingsManager: SettingsManager;
 	getContextWindow: () => number | undefined;
 	emit: (event: AgentSessionEvent) => void;
+	recoveryArbiter: AgentSessionRecoveryArbiter;
 }
 
 export class AgentSessionRetryCoordinator {
@@ -17,8 +22,21 @@ export class AgentSessionRetryCoordinator {
 	private retryAttempt = 0;
 	private retryPromise: Promise<void> | undefined = undefined;
 	private retryResolve: (() => void) | undefined = undefined;
+	private readonly replayScheduler: AgentSessionRecoveryReplayScheduler;
 
-	constructor(private readonly options: AgentSessionRetryCoordinatorOptions) {}
+	constructor(private readonly options: AgentSessionRetryCoordinatorOptions) {
+		this.replayScheduler = new AgentSessionRecoveryReplayScheduler({
+			owner: "retry",
+			recoveryArbiter: this.options.recoveryArbiter,
+			getState: () => ({
+				messages: this.options.agent.state.messages,
+				isStreaming: this.options.agent.state.isStreaming === true,
+				model: this.options.agent.state.model,
+				thinkingLevel: this.options.agent.state.thinkingLevel,
+			}),
+			emit: this.options.emit,
+		});
+	}
 
 	get currentAttempt(): number {
 		return this.retryAttempt;
@@ -43,6 +61,7 @@ export class AgentSessionRetryCoordinator {
 	}
 
 	onAssistantSuccess(): number | undefined {
+		this.options.recoveryArbiter.clear("retry");
 		if (this.retryAttempt <= 0) {
 			return undefined;
 		}
@@ -52,6 +71,8 @@ export class AgentSessionRetryCoordinator {
 	}
 
 	resolvePending(): void {
+		this.replayScheduler.cancel();
+		this.options.recoveryArbiter.clear("retry");
 		if (this.retryResolve) {
 			this.retryResolve();
 			this.retryResolve = undefined;
@@ -61,6 +82,7 @@ export class AgentSessionRetryCoordinator {
 
 	isRetryableError(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error" || !message.errorMessage) return false;
+		if (classifyRequestFailure(message)) return false;
 		const contextWindow = this.options.getContextWindow() ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i.test(
@@ -103,11 +125,6 @@ export class AgentSessionRetryCoordinator {
 			errorMessage: message.errorMessage || "Unknown error",
 		});
 
-		const messages = this.options.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.options.agent.state.messages = messages.slice(0, -1);
-		}
-
 		this.retryAbortController = new AbortController();
 		try {
 			await sleep(delayMs, this.retryAbortController.signal);
@@ -126,11 +143,49 @@ export class AgentSessionRetryCoordinator {
 		}
 		this.retryAbortController = undefined;
 
-		setTimeout(() => {
-			this.options.agent.continue().catch(() => {});
-		}, 0);
+		const messages = this.options.agent.state.messages;
+		const removedAssistant =
+			messages.length > 0 && messages[messages.length - 1].role === "assistant"
+				? (messages[messages.length - 1] as AssistantMessage)
+				: undefined;
+		if (removedAssistant) {
+			this.options.agent.state.messages = messages.slice(0, -1);
+		}
 
-		return true;
+		return this.replayScheduler.schedule({
+			delayMs: 0,
+			alreadyScheduledMessage: "Retry skipped because another recovery path is already scheduled.",
+			stateChangedMessage: "Retry skipped because the session changed before replay.",
+			run: () => this.options.agent.continue(),
+			onSkipped: (reason) => {
+				const attempt = this.retryAttempt;
+				this.retryAttempt = 0;
+				this.options.emit({
+					type: "auto_retry_end",
+					success: false,
+					attempt,
+					finalError:
+						reason === "already_scheduled"
+							? "Retry skipped because another recovery path is already scheduled."
+							: "Retry skipped because the session changed before replay.",
+				});
+				this.resolvePending();
+			},
+			onRunError: (error, snapshot) => {
+				if (removedAssistant && canReplayContinue(this.getReplayState(), snapshot)) {
+					this.options.agent.state.messages = [...this.options.agent.state.messages, removedAssistant];
+				}
+				const attempt = this.retryAttempt;
+				this.retryAttempt = 0;
+				this.options.emit({
+					type: "auto_retry_end",
+					success: false,
+					attempt,
+					finalError: error instanceof Error ? error.message : String(error),
+				});
+				this.resolvePending();
+			},
+		});
 	}
 
 	abort(): void {
@@ -144,5 +199,14 @@ export class AgentSessionRetryCoordinator {
 		}
 		await this.retryPromise;
 		await this.options.agent.waitForIdle();
+	}
+
+	private getReplayState() {
+		return {
+			messages: this.options.agent.state.messages,
+			isStreaming: this.options.agent.state.isStreaming === true,
+			model: this.options.agent.state.model,
+			thinkingLevel: this.options.agent.state.thinkingLevel,
+		};
 	}
 }

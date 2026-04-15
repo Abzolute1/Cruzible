@@ -2,6 +2,7 @@ import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@mariozechner/p
 import type { CompactionSummaryMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
+import { buildConsoleBadge, buildConsoleHeader } from "./console-chrome.js";
 
 /**
  * Component that renders a compaction message with collapsed/expanded state.
@@ -33,8 +34,17 @@ export class CompactionSummaryMessageComponent extends Box {
 		this.clear();
 
 		const tokenStr = this.message.tokensBefore.toLocaleString();
-		const label = theme.fg("customMessageLabel", `\x1b[1m[compaction]\x1b[22m`);
-		this.addChild(new Text(label, 0, 0));
+		this.addChild(
+			new Text(
+				buildConsoleHeader({
+					badge: "compaction",
+					badgeColor: "warning",
+					meta: [`from ${tokenStr} tokens`, this.expanded ? "expanded" : "collapsed"],
+				}),
+				0,
+				0,
+			),
+		);
 		this.addChild(new Spacer(1));
 
 		if (this.expanded) {
@@ -47,9 +57,11 @@ export class CompactionSummaryMessageComponent extends Box {
 		} else {
 			this.addChild(
 				new Text(
-					theme.fg("customMessageText", `Compacted from ${tokenStr} tokens (`) +
-						theme.fg("dim", keyText("app.tools.expand")) +
-						theme.fg("customMessageText", " to expand)"),
+					theme.fg("customMessageText", `Compacted from ${tokenStr} tokens.`) +
+						" " +
+						buildConsoleBadge(keyText("app.tools.expand"), "muted") +
+						" " +
+						theme.fg("dim", "to expand"),
 					0,
 					0,
 				),

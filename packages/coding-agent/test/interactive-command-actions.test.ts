@@ -13,6 +13,7 @@ function createActions(): InteractiveBuiltinCommandActions {
 		handleCopyCommand: vi.fn(async () => {}),
 		handleNameCommand: vi.fn(),
 		handleSessionCommand: vi.fn(),
+		handlePlanCommand: vi.fn(async () => {}),
 		handleResearchCommand: vi.fn(),
 		handleDebugCommand: vi.fn(),
 		handleWorkspaceCommand: vi.fn(),
@@ -69,5 +70,14 @@ describe("interactive-command-actions", () => {
 
 		expect(actions.clearEditor).toHaveBeenCalledOnce();
 		expect(actions.shutdown).toHaveBeenCalledOnce();
+	});
+
+	test("dispatches plan through the dedicated plan handler", async () => {
+		const actions = createActions();
+
+		await dispatchInteractiveBuiltinCommand({ kind: "plan", action: "show" }, actions);
+
+		expect(actions.handlePlanCommand).toHaveBeenCalledWith({ kind: "plan", action: "show" });
+		expect(actions.clearEditor).toHaveBeenCalledOnce();
 	});
 });

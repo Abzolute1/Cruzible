@@ -52,6 +52,7 @@ export interface Args {
 
 	// Auton flags
 	auto?: boolean;
+	autonomous?: boolean;
 	maxCost?: number;
 	maxTokens?: number;
 	maxTurns?: number;
@@ -181,6 +182,8 @@ export function parseArgs(args: string[]): Args {
 			result.offline = true;
 		} else if (arg === "--auto") {
 			result.auto = true;
+		} else if (arg === "--autonomous") {
+			result.autonomous = true;
 		} else if (arg === "--max-cost" && i + 1 < args.length) {
 			const val = parseFloat(args[++i] ?? "0");
 			if (Number.isNaN(val) || val < 0) {
@@ -314,6 +317,7 @@ ${chalk.bold("Options:")}
 ${chalk.bold("Autonomous Mode (Auton):")}
   alt+m                          Toggle autonomous mode inside the TUI (primary UX)
   --auto                         Start the TUI with autonomous mode armed for the first prompt
+  --autonomous                   Run a headless autonomous session and exit
   --max-cost <amount>            Maximum cost in USD (0 = unlimited)
   --max-tokens <count>           Maximum tokens (0 = unlimited)
   --max-turns <count>            Maximum turns (0 = unlimited)

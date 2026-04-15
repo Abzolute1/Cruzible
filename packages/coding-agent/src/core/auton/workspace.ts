@@ -5,12 +5,12 @@ import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	realpathSync,
 	readlinkSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
-	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -276,6 +276,7 @@ function copyWorkspaceTree(
 	options: { excludedRoots?: string[] } = {},
 ): void {
 	const normalizedSource = resolve(sourceCwd);
+	const sourceRootReal = realpathSync(normalizedSource);
 	const excludedRoots = (options.excludedRoots ?? []).map((entry) => resolve(entry));
 	mkdirSync(workspaceRoot, { recursive: true });
 
@@ -290,7 +291,7 @@ function copyWorkspaceTree(
 	for (const entry of readdirSync(sourceCwd)) {
 		const sourceEntry = join(sourceCwd, entry);
 		if (!shouldIncludePath(sourceEntry)) continue;
-		copyEntryRecursively(sourceEntry, join(workspaceRoot, entry), shouldIncludePath);
+		copyEntryRecursively(sourceEntry, join(workspaceRoot, entry), shouldIncludePath, sourceRootReal);
 	}
 
 	for (const excludedRoot of excludedRoots) {
@@ -305,16 +306,28 @@ function copyEntryRecursively(
 	sourcePath: string,
 	destPath: string,
 	shouldIncludePath: (targetPath: string) => boolean,
+	sourceRootReal: string,
 ): void {
 	if (!shouldIncludePath(sourcePath)) return;
 	const stats = lstatSync(sourcePath);
 
 	if (stats.isSymbolicLink()) {
 		const linkTarget = readlinkSync(sourcePath);
+		const resolvedTarget = realpathSync(sourcePath);
+		if (!isNestedWithin(resolvedTarget, sourceRootReal)) {
+			throw new Error(
+				`Autonomous workspace copy refuses symlink '${sourcePath}' because it resolves outside the source tree: ${resolvedTarget}`,
+			);
+		}
+		const targetStats = statSync(resolvedTarget);
+		if (targetStats.isDirectory()) {
+			throw new Error(
+				`Autonomous workspace copy refuses directory symlink '${sourcePath}' -> '${linkTarget}'. Replace it with a real directory before running autonomy.`,
+			);
+		}
 		const parentDir = resolve(destPath, "..");
 		mkdirSync(parentDir, { recursive: true });
-		rmSync(destPath, { recursive: true, force: true });
-		symlinkSync(linkTarget, destPath);
+		copyFileSync(resolvedTarget, destPath);
 		return;
 	}
 
@@ -323,7 +336,7 @@ function copyEntryRecursively(
 		for (const entry of readdirSync(sourcePath)) {
 			const childSource = join(sourcePath, entry);
 			if (!shouldIncludePath(childSource)) continue;
-			copyEntryRecursively(childSource, join(destPath, entry), shouldIncludePath);
+			copyEntryRecursively(childSource, join(destPath, entry), shouldIncludePath, sourceRootReal);
 		}
 		return;
 	}
@@ -374,7 +387,10 @@ function collectWorkspaceEntries(root: string, current = root, entries = new Map
 		}
 		const absolutePath = join(current, entry);
 		const relativePath = relative(root, absolutePath);
-		const stats = statSync(absolutePath);
+		const stats = lstatSync(absolutePath);
+		if (stats.isSymbolicLink()) {
+			throw new Error(`Autonomous workspace diffs refuse symlinked entries: ${absolutePath}`);
+		}
 		if (stats.isDirectory()) {
 			entries.set(relativePath, { kind: "directory" });
 			collectWorkspaceEntries(root, absolutePath, entries);

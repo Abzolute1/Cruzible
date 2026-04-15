@@ -1,4 +1,4 @@
-import { Container, Markdown, type MarkdownTheme, Spacer } from "@mariozechner/pi-tui";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer } from "@mariozechner/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -12,12 +12,13 @@ export class UserMessageComponent extends Container {
 	constructor(text: string, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super();
 		this.addChild(new Spacer(1));
-		this.addChild(
-			new Markdown(text, 1, 1, markdownTheme, {
-				bgColor: (text: string) => theme.bg("userMessageBg", text),
-				color: (text: string) => theme.fg("userMessageText", text),
+		const lane = new Box(1, 1, (content: string) => theme.bg("userMessageBg", content));
+		lane.addChild(
+			new Markdown(text, 0, 0, markdownTheme, {
+				color: (content: string) => theme.fg("userMessageText", content),
 			}),
 		);
+		this.addChild(lane);
 	}
 
 	override render(width: number): string[] {

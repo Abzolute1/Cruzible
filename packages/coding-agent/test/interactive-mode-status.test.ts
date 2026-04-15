@@ -795,17 +795,18 @@ describe("InteractiveMode persistent mode strip", () => {
 	test("describes interactive mode near the editor", () => {
 		const fakeThis: any = {
 			autonomousMode: false,
+			planningMode: false,
 			getAutonomousStabilizationProfile: () => ({ level: "none", reasons: [] }),
 		};
 
 		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
-		expect(line).toContain("Interactive Mode");
-		expect(line).toContain("approvals required");
+		expect(line).toBe("");
 	});
 
 	test("includes autonomous stabilization when active", () => {
 		const fakeThis: any = {
 			autonomousMode: true,
+			planningMode: false,
 			lastAutonomousLiveStatus: undefined,
 			getAutonomousStabilizationProfile: () => ({
 				level: "guarded",
@@ -815,14 +816,13 @@ describe("InteractiveMode persistent mode strip", () => {
 		};
 
 		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
-		expect(line).toContain("Autonomous Mode");
-		expect(line).toContain("isolated workspace");
-		expect(line).toContain("guarded stabilization");
+		expect(line).toContain("Autonomous Mode Running");
 	});
 
 	test("includes the live autonomous control state in the mode strip", () => {
 		const fakeThis: any = {
 			autonomousMode: true,
+			planningMode: false,
 			lastAutonomousLiveStatus: "Autonomous: researching sources | turn 2 | https://react.dev/",
 			getAutonomousStabilizationProfile: () => ({
 				level: "none",
@@ -832,13 +832,13 @@ describe("InteractiveMode persistent mode strip", () => {
 		};
 
 		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
-		expect(line).toContain("Autonomous Mode");
-		expect(line).toContain("researching sources");
+		expect(line).toContain("Autonomous Mode Running");
 	});
 
 	test("shows preserved sandbox state in interactive mode strip", () => {
 		const fakeThis: any = {
 			autonomousMode: false,
+			planningMode: false,
 			lastAutonomousWorkspace: {
 				workspaceRoot: "/tmp/ag1-workspace",
 			},
@@ -846,8 +846,7 @@ describe("InteractiveMode persistent mode strip", () => {
 		};
 
 		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
-		expect(line).toContain("Interactive Mode");
-		expect(line).toContain("sandbox preserved");
+		expect(line).toBe("");
 	});
 
 	test("shows autonomy unavailable in the mode strip for broad unsafe roots", () => {
@@ -856,14 +855,14 @@ describe("InteractiveMode persistent mode strip", () => {
 		try {
 			const fakeThis: any = {
 				autonomousMode: false,
+				planningMode: false,
 				sessionManager: { getCwd: () => "/home/alex" },
 				lastAutonomousWorkspace: undefined,
 				getAutonomousStabilizationProfile: () => ({ level: "none", reasons: [] }),
 			};
 
 			const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
-			expect(line).toContain("Interactive Mode");
-			expect(line).toContain("autonomy unavailable from current cwd");
+			expect(line).toBe("");
 		} finally {
 			process.env.HOME = previousHome;
 		}
@@ -875,10 +874,12 @@ describe("InteractiveMode persistent mode strip", () => {
 		try {
 			const fakeThis: any = {
 				autonomousMode: false,
+				planningMode: true,
+				getExecutionMode: () => "planning",
 				sessionManager: { getCwd: () => "/home/alex" },
 				showWarning: vi.fn(),
 				updateModeDisplay: vi.fn(),
-				applySafetyPolicy: vi.fn(),
+				setExecutionMode: vi.fn(),
 				showStatus: vi.fn(),
 			};
 
@@ -892,6 +893,182 @@ describe("InteractiveMode persistent mode strip", () => {
 		} finally {
 			process.env.HOME = previousHome;
 		}
+	});
+
+	test("describes planning mode near the editor", () => {
+		const fakeThis: any = {
+			autonomousMode: false,
+			planningMode: true,
+			getLatestPlanArtifact: () => ({
+				version: 1,
+				planId: "plan_1",
+				revision: 2,
+				status: "draft",
+				goal: "Improve plan mode",
+				steps: ["Persist plan artifacts", "Add execution promotion"],
+				assumptions: [],
+				constraints: [],
+				risks: [],
+				verification: [],
+				openQuestions: [],
+				rawPlan: "Plan:\n1. Persist plan artifacts\n2. Add execution promotion",
+				createdAt: "2026-01-01T00:00:00Z",
+				updatedAt: "2026-01-01T00:00:00Z",
+			}),
+			getAutonomousStabilizationProfile: () => ({ level: "none", reasons: [] }),
+		};
+
+		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
+		expect(line).toBe("");
+	});
+
+	test("shows awaiting clarification in planning mode strip", () => {
+		const fakeThis: any = {
+			autonomousMode: false,
+			planningMode: true,
+			getLatestPlanArtifact: () => ({
+				version: 1,
+				planId: "plan_1",
+				revision: 3,
+				status: "clarifying",
+				goal: "Improve plan mode",
+				steps: [],
+				assumptions: [],
+				constraints: [],
+				risks: [],
+				verification: [],
+				openQuestions: ["Do you want to preserve current CLI behavior?"],
+				rawPlan: "Questions:\n- Do you want to preserve current CLI behavior?",
+				createdAt: "2026-01-01T00:00:00Z",
+				updatedAt: "2026-01-01T00:00:00Z",
+			}),
+			getAutonomousStabilizationProfile: () => ({ level: "none", reasons: [] }),
+		};
+
+		const line = (InteractiveMode as any).prototype.getPersistentModeLine.call(fakeThis);
+		expect(line).toBe("");
+	});
+
+	test("cycles interactive directly to autonomous", () => {
+		const fakeThis: any = {
+			autonomousMode: false,
+			planningMode: false,
+			getExecutionMode: () => "interactive",
+			sessionManager: { getCwd: () => "/tmp/project" },
+			setExecutionMode: vi.fn(),
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.cycleMode.call(fakeThis);
+
+		expect(fakeThis.setExecutionMode).toHaveBeenCalledWith("autonomous");
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Execution: Autonomous");
+	});
+
+	test("cycles planning directly to autonomous without an intermediate planning toggle", () => {
+		const fakeThis: any = {
+			autonomousMode: false,
+			planningMode: true,
+			getExecutionMode: () => "planning",
+			sessionManager: { getCwd: () => "/tmp/project" },
+			setExecutionMode: vi.fn(),
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.cycleMode.call(fakeThis);
+
+		expect(fakeThis.setExecutionMode).toHaveBeenCalledWith("autonomous");
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Execution: Autonomous");
+	});
+
+	test("shows the saved plan review block in the pending area", () => {
+		const fakeThis: any = {
+			pendingMessagesContainer: new Container(),
+			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
+			getLatestPlanArtifact: () => ({
+				version: 1,
+				planId: "plan_1",
+				revision: 1,
+				status: "accepted",
+				goal: "Refactor runtime bootstrap",
+				steps: ["Extract bootstrap coordinator", "Add focused tests"],
+				completedStepIndexes: [0],
+				assumptions: [],
+				constraints: [],
+				risks: [],
+				verification: [],
+				openQuestions: [],
+				rawPlan: "Plan:\n1. Extract bootstrap coordinator\n2. Add focused tests",
+				createdAt: "2026-01-01T00:00:00Z",
+				updatedAt: "2026-01-01T00:00:00Z",
+			}),
+		};
+
+		(InteractiveMode as any).prototype.updatePendingMessagesDisplay.call(fakeThis);
+
+		const output = renderAll(fakeThis.pendingMessagesContainer);
+		expect(output).toContain("Plan Review: v1");
+		expect(output).toContain("accepted");
+		expect(output).toContain("Refactor runtime bootstrap");
+		expect(output).toContain("Progress: 1/2 complete");
+		expect(output).toContain("Next: Add focused tests");
+		expect(output).toContain("execute next");
+	});
+
+	test("shows clarifying questions in the pending review block", () => {
+		const fakeThis: any = {
+			pendingMessagesContainer: new Container(),
+			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
+			getLatestPlanArtifact: () => ({
+				version: 1,
+				planId: "plan_1",
+				revision: 2,
+				status: "clarifying",
+				goal: "Refactor runtime bootstrap",
+				steps: [],
+				assumptions: [],
+				constraints: [],
+				risks: [],
+				verification: [],
+				openQuestions: ["Should runtime bootstrap stay in the same file?"],
+				rawPlan: "Questions:\n- Should runtime bootstrap stay in the same file?",
+				createdAt: "2026-01-01T00:00:00Z",
+				updatedAt: "2026-01-01T00:00:00Z",
+			}),
+		};
+
+		(InteractiveMode as any).prototype.updatePendingMessagesDisplay.call(fakeThis);
+
+		const output = renderAll(fakeThis.pendingMessagesContainer);
+		expect(output).toContain("Plan Review: v2");
+		expect(output).toContain("clarifying");
+		expect(output).toContain("Should runtime bootstrap stay in the same file?");
+		expect(output).toContain("Interview: 0/1 answered");
+		expect(output).toContain("Actions: interview");
+	});
+
+	test("shows preserved autonomous workspace context in the pending area", () => {
+		const fakeThis: any = {
+			pendingMessagesContainer: new Container(),
+			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
+			getLatestPlanArtifact: () => undefined,
+			activeAutonomousWorkspace: undefined,
+			lastAutonomousWorkspace: {
+				strategy: "copy",
+				workspaceRoot: "/tmp/ag1-sandbox",
+				activeCwd: "/tmp/ag1-sandbox/project",
+				sourceCwd: "/home/alex/AG1",
+			},
+		};
+
+		(InteractiveMode as any).prototype.updatePendingMessagesDisplay.call(fakeThis);
+
+		const output = renderAll(fakeThis.pendingMessagesContainer);
+		expect(output).toContain("Autonomous Sandbox Preserved");
+		expect(output).toContain("State:");
+		expect(output).toContain("preserved");
+		expect(output).toContain("/tmp/ag1-sandbox");
+		expect(output).toContain("/home/alex/AG1");
 	});
 });
 

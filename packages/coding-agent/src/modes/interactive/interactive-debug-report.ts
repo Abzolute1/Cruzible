@@ -14,7 +14,7 @@ export function buildInteractiveDebugReport(options: {
 	renderedLines: string[];
 	messages: AgentMessage[];
 	modelId: string;
-	autonomousMode: boolean;
+	mode: "interactive" | "planning" | "autonomous";
 	stabilization: RuntimeStabilizationProfile;
 	xmlFallbackCount: number;
 	degradedTurnCount: number;
@@ -36,7 +36,7 @@ export function buildInteractiveDebugReport(options: {
 		"",
 		"=== Runtime overview ===",
 		`Model: ${options.modelId}`,
-		`Mode: ${options.autonomousMode ? "autonomous" : "interactive"}`,
+		`Mode: ${options.mode}`,
 		`Stabilization: ${options.stabilization.level}${
 			options.stabilization.reasons.length > 0 ? ` (${options.stabilization.reasons.join(" | ")})` : ""
 		}`,

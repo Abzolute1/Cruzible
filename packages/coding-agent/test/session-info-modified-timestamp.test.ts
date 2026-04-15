@@ -16,9 +16,6 @@ function createSessionFile(path: string): void {
 		cwd: "/tmp",
 	};
 	writeFileSync(path, `${JSON.stringify(header)}\n`, "utf8");
-
-	// SessionManager only persists once it has seen at least one assistant message.
-	// Add a minimal assistant entry so subsequent appends are persisted.
 	const mgr = SessionManager.open(path);
 	mgr.appendMessage({
 		role: "assistant",

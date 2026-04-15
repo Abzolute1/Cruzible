@@ -1,8 +1,8 @@
-import { mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { expandPath, resolveReadPath, resolveToCwd } from "../src/core/tools/path-utils.js";
+import { expandPath, resolveContainedPath, resolveReadPath, resolveToCwd } from "../src/core/tools/path-utils.js";
 
 describe("path-utils", () => {
 	describe("expandPath", () => {
@@ -142,6 +142,17 @@ describe("path-utils", () => {
 
 			// This works because tryMacOSScreenshotPath() handles this case
 			expect(result).toBe(join(tempDir, macosName));
+		});
+
+		it("blocks paths that traverse symlinked components outside the workspace", () => {
+			const outsideDir = mkdtempSync(join(tmpdir(), "path-utils-outside-"));
+			symlinkSync(outsideDir, join(tempDir, "outside"));
+
+			expect(() => resolveContainedPath("outside/secret.txt", tempDir, { allowMissing: true })).toThrow(
+				/outside the workspace|symlinked path/i,
+			);
+
+			rmSync(outsideDir, { recursive: true, force: true });
 		});
 	});
 });

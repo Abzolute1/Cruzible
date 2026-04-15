@@ -14,6 +14,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
+import { buildTaggedPromptBundle, buildTaggedPromptSection } from "../prompt-sections.js";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.js";
 import { estimateTokens } from "./compaction.js";
 import {
@@ -302,15 +303,16 @@ export async function generateBranchSummary(
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt
-	let instructions: string;
+	let promptText: string;
 	if (replaceInstructions && customInstructions) {
-		instructions = customInstructions;
-	} else if (customInstructions) {
-		instructions = `${BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: ${customInstructions}`;
+		promptText = `${buildTaggedPromptSection("conversation", conversationText)}\n\n${customInstructions}`;
 	} else {
-		instructions = BRANCH_SUMMARY_PROMPT;
+		const promptSections = buildTaggedPromptBundle([
+			{ tag: "conversation", content: conversationText },
+			{ tag: "additional-focus", content: customInstructions },
+		]);
+		promptText = `${promptSections}\n\n${BRANCH_SUMMARY_PROMPT}`;
 	}
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
 
 	const summarizationMessages = [
 		{

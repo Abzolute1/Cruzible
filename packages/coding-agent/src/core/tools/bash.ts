@@ -186,6 +186,38 @@ function formatBashCall(args: { command?: string; timeout?: number } | undefined
 	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
 }
 
+function isInspectionBashCommand(command: string): boolean {
+	const normalized = command.replace(/\s+/g, " ").trim();
+	return /(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|pwd\b|git\s+status(\s|$)|git\s+branch(\s|$)|which\b)/.test(
+		normalized,
+	);
+}
+
+function compactInspectionBashOutput(output: string): string {
+	const lines = output
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => line.length > 0);
+	if (lines.length <= 40) return output;
+	const shown = lines.slice(0, 25);
+	const omitted = lines.length - shown.length;
+	return `${shown.join("\n")}\n\n[${omitted} more lines omitted from inspection output]`;
+}
+
+function formatBashContinuationNotice(options: {
+	startLine: number;
+	endLine: number;
+	totalLines: number;
+	truncatedBy?: "lines" | "bytes";
+	fullOutputPath?: string;
+}): string {
+	const base =
+		options.truncatedBy === "lines"
+			? `[tail lines ${options.startLine}-${options.endLine}/${options.totalLines}]`
+			: `[tail lines ${options.startLine}-${options.endLine}/${options.totalLines}; byte limit hit]`;
+	return options.fullOutputPath ? `${base} [full output: ${options.fullOutputPath}]` : base;
+}
+
 function rebuildBashResultRenderComponent(
 	component: BashResultRenderComponent,
 	result: {
@@ -275,9 +307,9 @@ export function createBashToolDefinition(
 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_BASH_TIMEOUT}s.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
-		async execute(
-			_toolCallId,
-			{ command, timeout }: { command: string; timeout?: number },
+			async execute(
+				_toolCallId,
+				{ command, timeout }: { command: string; timeout?: number },
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
@@ -342,15 +374,17 @@ export function createBashToolDefinition(
 					timeout: timeout ?? DEFAULT_BASH_TIMEOUT,
 					env: spawnContext.env,
 				})
-					.then(({ exitCode }) => {
-						// Combine the rolling buffer chunks.
-						const fullBuffer = Buffer.concat(chunks);
-						const fullOutput = fullBuffer.toString("utf-8");
-						// Apply tail truncation for the final display payload.
-						const truncation = truncateTail(fullOutput);
-						if (truncation.truncated) {
-							ensureTempFile();
-						}
+						.then(({ exitCode }) => {
+							// Combine the rolling buffer chunks.
+							const fullBuffer = Buffer.concat(chunks);
+							const fullOutput = fullBuffer.toString("utf-8");
+							const transcriptOutput =
+								exitCode === 0 && isInspectionBashCommand(command) ? compactInspectionBashOutput(fullOutput) : fullOutput;
+							// Apply tail truncation for the final display payload.
+							const truncation = truncateTail(transcriptOutput);
+							if (truncation.truncated) {
+								ensureTempFile();
+							}
 						// Close temp file stream before building the final result.
 						if (tempFileStream) tempFileStream.end();
 						let outputText = truncation.content || "(no output)";
@@ -358,18 +392,24 @@ export function createBashToolDefinition(
 						if (truncation.truncated) {
 							// Build truncation details and an actionable notice.
 							details = { truncation, fullOutputPath: tempFilePath };
-							const startLine = truncation.totalLines - truncation.outputLines + 1;
-							const endLine = truncation.totalLines;
-							if (truncation.lastLinePartial) {
-								// Edge case: the last line alone is larger than the byte limit.
-								const lastLineSize = formatSize(Buffer.byteLength(fullOutput.split("\n").pop() || "", "utf-8"));
-								outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${tempFilePath}]`;
-							} else if (truncation.truncatedBy === "lines") {
-								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${tempFilePath}]`;
-							} else {
-								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
+								const startLine = truncation.totalLines - truncation.outputLines + 1;
+								const endLine = truncation.totalLines;
+								if (truncation.lastLinePartial) {
+									// Edge case: the last line alone is larger than the byte limit.
+									const lastLineSize = formatSize(Buffer.byteLength(transcriptOutput.split("\n").pop() || "", "utf-8"));
+									outputText += `\n\n[last ${formatSize(truncation.outputBytes)} of line ${endLine}; line size ${lastLineSize}]${
+										tempFilePath ? ` [full output: ${tempFilePath}]` : ""
+									}`;
+								} else {
+									outputText += `\n\n${formatBashContinuationNotice({
+										startLine,
+										endLine,
+										totalLines: truncation.totalLines,
+										truncatedBy: truncation.truncatedBy === "lines" ? "lines" : "bytes",
+										fullOutputPath: tempFilePath,
+									})}`;
+								}
 							}
-						}
 						if (exitCode !== 0 && exitCode !== null) {
 							outputText += `\n\nCommand exited with code ${exitCode}`;
 							reject(new Error(outputText));

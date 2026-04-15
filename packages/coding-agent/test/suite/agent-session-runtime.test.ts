@@ -12,6 +12,7 @@ import {
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import { SessionManager } from "../../src/core/session-manager.js";
 import type {
+	AssistantMessage,
 	ExtensionAPI,
 	ExtensionFactory,
 	SessionBeforeForkEvent,
@@ -114,6 +115,27 @@ describe("AgentSessionRuntime characterization", () => {
 		});
 
 		return { runtime, faux, tempDir };
+	}
+
+	function createRetryableErrorMessage(session: { model: { api: string; provider: string; id: string } }): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [],
+			api: session.model.api,
+			provider: session.model.provider,
+			model: session.model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "overloaded_error",
+			timestamp: Date.now(),
+		};
 	}
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
@@ -452,6 +474,18 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(trackedRuntime.session.model?.id).toBe("faux-2");
 	});
 
+	it("preserves the current thinking level across a new session", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+
+		runtime.session.setThinkingLevel("high");
+		expect(runtime.session.thinkingLevel).toBe("high");
+
+		await runtime.newSession();
+
+		expect(runtime.session.model?.id).toBe("faux-1");
+		expect(runtime.session.thinkingLevel).toBe("high");
+	});
+
 	it("preserves the current runtime if preparing a replacement runtime fails", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		const originalSession = runtime.session;
@@ -503,5 +537,61 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(preparedSessionDisposeSpy).toHaveBeenCalledTimes(1);
 
 		runtime.session.dispose = originalDispose as typeof runtime.session.dispose;
+	});
+
+	it("cancels a pending retry replay when newSession replaces the runtime", async () => {
+		vi.useFakeTimers();
+		try {
+			const { runtime } = await createRuntimeForTest(() => {});
+			const oldSession = runtime.session;
+			const errorMessage = createRetryableErrorMessage({ model: oldSession.model! });
+			oldSession.agent.state.messages = [errorMessage];
+			const continueSpy = vi.spyOn(oldSession.agent, "continue").mockResolvedValue();
+			const handleRetryableError = (
+				oldSession as unknown as {
+					_handleRetryableError: (message: AssistantMessage) => Promise<boolean>;
+				}
+			)._handleRetryableError.bind(oldSession);
+
+			const retryPromise = handleRetryableError(errorMessage);
+			await runtime.newSession();
+			await retryPromise;
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(runtime.session).not.toBe(oldSession);
+			expect(continueSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("cancels a pending compaction replay when switchSession replaces the runtime", async () => {
+		vi.useFakeTimers();
+		try {
+			const { runtime } = await createRuntimeForTest(() => {});
+			await runtime.session.prompt("hello");
+			const originalSessionFile = runtime.session.sessionFile!;
+
+			await runtime.newSession();
+			const oldSession = runtime.session;
+			oldSession.agent.followUp({
+				role: "custom",
+				customType: "test",
+				content: [{ type: "text", text: "Queued custom" }],
+				display: false,
+				timestamp: Date.now(),
+			});
+			const continueSpy = vi.spyOn(oldSession.agent, "continue").mockResolvedValue();
+			const coordinator = (oldSession as any)._compactionCoordinator;
+			coordinator.scheduleAutoContinue(100);
+
+			await runtime.switchSession(originalSessionFile);
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(runtime.session).not.toBe(oldSession);
+			expect(continueSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

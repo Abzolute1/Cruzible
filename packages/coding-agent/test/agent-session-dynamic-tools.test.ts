@@ -201,22 +201,62 @@ describe("AgentSession dynamic tool registration", () => {
 
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("webSearch");
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("webFetch");
-		expect(session.getActiveToolNames()).toContain("webSearch");
-		expect(session.getActiveToolNames()).toContain("webFetch");
-		expect(session.systemPrompt).toContain("- webSearch: Search the web for current information, documentation, or error messages");
-		expect(session.systemPrompt).toContain("- webFetch: Fetch and read a URL directly");
-		expect(session.systemPrompt).toContain(
-			"For online research, use webSearch to find candidate sources and webFetch to read the most relevant URL",
-		);
-		expect(session.systemPrompt).toContain(
-			"Treat webSearch as a compact source index, not a document reader; do not repeat the same search to read omitted results when webFetch can read a returned URL",
-		);
-		expect(session.systemPrompt).toContain(
-			"Prefer authoritative sources such as official docs, vendor docs, specs, and release notes over forums or blog posts when possible",
-		);
-		expect(session.systemPrompt).toContain(
-			"When online information affects the result, keep the source URLs available in your notes and final summary",
-		);
+			expect(session.getActiveToolNames()).toContain("webSearch");
+			expect(session.getActiveToolNames()).toContain("webFetch");
+			expect(session.systemPrompt).toContain("- webSearch: Search the web for current information, documentation, or error messages");
+			expect(session.systemPrompt).toContain("- webFetch: Fetch and read a URL directly");
+			expect(session.systemPrompt).toContain(
+				"For online research, use webSearch for candidate sources and webFetch for the best URL",
+			);
+			expect(session.systemPrompt).toContain(
+				"Prefer authoritative sources such as official docs, vendor docs, specs, and release notes",
+			);
+			expect(session.systemPrompt).toContain(
+				"Keep source URLs available when online information affects the answer",
+			);
+
+			session.dispose();
+		});
+
+	it("registers visual tools as callable built-ins for vision models without requiring extensions", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("openai", "gpt-4o")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+
+		const tools = session.getAllTools();
+		const screenshotTool = tools.find((tool) => tool.name === "screenshot_url");
+		const interactiveTool = tools.find((tool) => tool.name === "interact_then_screenshot");
+
+		expect(screenshotTool).toBeDefined();
+		expect(interactiveTool).toBeDefined();
+		expect(session.getActiveToolNames()).toContain("screenshot_url");
+		expect(session.getActiveToolNames()).toContain("interact_then_screenshot");
+		expect(screenshotTool?.sourceInfo).toMatchObject({
+			path: "<visual:screenshot_url>",
+			source: "visual",
+			scope: "temporary",
+			origin: "top-level",
+		});
+		expect(interactiveTool?.sourceInfo).toMatchObject({
+			path: "<visual:interact_then_screenshot>",
+			source: "visual",
+			scope: "temporary",
+			origin: "top-level",
+		});
 
 		session.dispose();
 	});

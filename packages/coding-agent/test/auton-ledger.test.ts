@@ -7,6 +7,7 @@ import {
 	createAutonomousRunSnapshot,
 	createAutonomousRunLedger,
 	createAutonomousRunSnapshotFromState,
+	formatAutonomousContinuationLedger,
 	formatAutonomousPromptLedger,
 	formatAutonomousRunLedger,
 	getLatestAutonomousRunSnapshot,
@@ -484,5 +485,57 @@ describe("autonomous ledger helpers", () => {
 		expect(promptLedger).not.toContain("Plan:");
 		expect(promptLedger).not.toContain("Changed:");
 		expect(promptLedger).not.toContain("Read:");
+	});
+
+	test("formats a slimmer continuation ledger for repeated prompts", () => {
+		const ledger = createAutonomousRunLedger("research the latest React 19 docs");
+		ledger.planner = {
+			phase: "summarizing",
+			lane: "research",
+			planRevision: 2,
+			executionAttempts: 1,
+			handoffSummary: "Summarize the source-backed answer and cite the supporting URLs.",
+		};
+		ledger.resume = {
+			mode: "resume_summarize",
+			resumeInstruction: "Summarize the saved evidence and stop.",
+			resumeReason: "Enough authoritative evidence is already available.",
+			lastStableCheckpoint: "Fetched React — https://react.dev/",
+		};
+		ledger.taskJournal.activeSubtask = "Summarize the source-backed answer";
+		ledger.taskJournal.plannedNextStep = "Summarize the source-backed answer and cite the supporting URLs.";
+		ledger.taskJournal.expectedVerification = "Cite supporting source URLs such as https://react.dev/";
+		ledger.research = {
+			searchQueries: ["React 19 documentation"],
+			fetchedUrls: ["https://react.dev/"],
+			sourceUrls: ["https://react.dev/"],
+			preferredSourceUrls: ["https://react.dev/"],
+			recentFindings: ["React Docs — https://react.dev/"],
+			evidence: {
+				status: "sufficient",
+				authoritativeSourceCount: 1,
+				fetchedSourceCount: 1,
+				citedSourceCount: 1,
+				findingCount: 1,
+				citationReady: true,
+				summaryReady: true,
+				gaps: [],
+			},
+		};
+		ledger.lastActionType = "verification";
+		ledger.lastActionDetail = "webFetch https://react.dev/";
+		ledger.verificationSatisfied = true;
+		ledger.lastVerificationDetail = "Source URLs captured";
+
+		const continuationLedger = formatAutonomousContinuationLedger(ledger);
+
+		expect(continuationLedger).toContain("Run ledger:");
+		expect(continuationLedger).toContain("Goal: research the latest React 19 docs");
+		expect(continuationLedger).toContain("Active subtask: Summarize the source-backed answer");
+		expect(continuationLedger).toContain("Planned next step: Summarize the source-backed answer and cite the supporting URLs.");
+		expect(continuationLedger).toContain("Research: sufficient | source https://react.dev/");
+		expect(continuationLedger).toContain("Verification: satisfied via Source URLs captured");
+		expect(continuationLedger).not.toContain("Planner handoff:");
+		expect(continuationLedger).not.toContain("Resume mode:");
 	});
 });

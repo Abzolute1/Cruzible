@@ -1,6 +1,6 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import * as os from "node:os";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const NARROW_NO_BREAK_SPACE = "\u202F";
@@ -59,8 +59,96 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return resolvePath(cwd, expanded);
 }
 
+function isPathInsideRoot(targetPath: string, rootPath: string): boolean {
+	const rel = relative(rootPath, targetPath);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function findNearestExistingAncestor(targetPath: string): string | undefined {
+	let current = resolvePath(targetPath);
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) {
+			return undefined;
+		}
+		current = parent;
+	}
+	return current;
+}
+
+function assertNoSymlinkTraversal(rootPath: string, targetPath: string): void {
+	const normalizedRoot = resolvePath(rootPath);
+	const normalizedTarget = resolvePath(targetPath);
+	const rel = relative(normalizedRoot, normalizedTarget);
+	if (rel.startsWith("..") || isAbsolute(rel)) {
+		throw new Error(`Path escapes the workspace: ${normalizedTarget}`);
+	}
+
+	let current = normalizedRoot;
+	for (const segment of rel.split(/[/\\]/).filter(Boolean)) {
+		current = resolvePath(current, segment);
+		if (!existsSync(current)) {
+			break;
+		}
+		if (lstatSync(current).isSymbolicLink()) {
+			throw new Error(`Refusing to access symlinked path component: ${current}`);
+		}
+	}
+}
+
+export function resolveContainedPath(
+	filePath: string,
+	cwd: string,
+	options?: { allowMissing?: boolean },
+): string {
+	const normalizedCwd = resolvePath(cwd);
+	const workspaceRoot = realpathSync(normalizedCwd);
+	const resolvedPath = resolveToCwd(filePath, normalizedCwd);
+
+	if (existsSync(resolvedPath)) {
+		assertNoSymlinkTraversal(normalizedCwd, resolvedPath);
+		if (lstatSync(resolvedPath).isSymbolicLink()) {
+			throw new Error(`Refusing to access symlinked path: ${resolvedPath}`);
+		}
+		const realTarget = realpathSync(resolvedPath);
+		if (!isPathInsideRoot(realTarget, workspaceRoot)) {
+			throw new Error(`Path resolves outside the workspace: ${resolvedPath}`);
+		}
+		return realTarget;
+	}
+
+	const ancestor = findNearestExistingAncestor(resolvedPath);
+	if (!ancestor) {
+		throw new Error(`Unable to resolve path inside the workspace: ${resolvedPath}`);
+	}
+	assertNoSymlinkTraversal(normalizedCwd, ancestor);
+	const ancestorReal = realpathSync(ancestor);
+	if (!isPathInsideRoot(ancestorReal, workspaceRoot)) {
+		throw new Error(`Path resolves outside the workspace: ${resolvedPath}`);
+	}
+	const suffix = relative(ancestor, resolvedPath);
+	const candidate = resolvePath(ancestorReal, suffix);
+	if (!isPathInsideRoot(candidate, workspaceRoot)) {
+		throw new Error(`Path resolves outside the workspace: ${resolvedPath}`);
+	}
+	return candidate;
+}
+
+export function isContainedPath(
+	filePath: string,
+	cwd: string,
+	options?: { allowMissing?: boolean },
+): boolean {
+	try {
+		resolveContainedPath(filePath, cwd, options);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function resolveReadPath(filePath: string, cwd: string): string {
-	const resolved = resolveToCwd(filePath, cwd);
+	const resolved = resolveContainedPath(filePath, cwd);
 
 	if (fileExists(resolved)) {
 		return resolved;

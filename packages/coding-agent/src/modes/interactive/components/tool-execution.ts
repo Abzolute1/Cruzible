@@ -4,9 +4,18 @@ import { allToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
 import { convertToPng } from "../../../utils/image-convert.js";
 import { theme } from "../theme/theme.js";
+import { keyHint } from "./keybinding-hints.js";
+import { buildConsoleHeader } from "./console-chrome.js";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
+}
+
+const COMPACT_TOOL_SUMMARY_NAMES = new Set(["read", "write", "webFetch", "webSearch", "bash"]);
+
+function matchesRendererShape(candidate: unknown, builtIn: unknown): boolean {
+	if (typeof candidate !== "function" || typeof builtIn !== "function") return false;
+	return candidate.toString() === builtIn.toString();
 }
 
 export class ToolExecutionComponent extends Container {
@@ -60,8 +69,8 @@ export class ToolExecutionComponent extends Container {
 
 		// Always create both. contentBox is used for tools with renderer-based call/result composition.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentBox = new Box(0, 0, undefined);
+		this.contentText = new Text("", 0, 0);
 
 		if (this.hasRendererDefinition()) {
 			this.addChild(this.contentBox);
@@ -114,6 +123,19 @@ export class ToolExecutionComponent extends Container {
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 		};
+	}
+
+	private shouldUseCompactBuiltInSummary(): boolean {
+		if (!COMPACT_TOOL_SUMMARY_NAMES.has(this.toolName)) return false;
+		if (!this.builtInToolDefinition) return false;
+		if (!this.toolDefinition) return true;
+		const customCallRenderer =
+			this.toolDefinition.renderCall !== undefined &&
+			!matchesRendererShape(this.toolDefinition.renderCall, this.builtInToolDefinition.renderCall);
+		const customResultRenderer =
+			this.toolDefinition.renderResult !== undefined &&
+			!matchesRendererShape(this.toolDefinition.renderResult, this.builtInToolDefinition.renderResult);
+		return !customCallRenderer && !customResultRenderer;
 	}
 
 	private createCallFallback(): Component {
@@ -205,66 +227,76 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
-
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
-			this.contentBox.setBgFn(bgFn);
+			this.contentBox.setBgFn(undefined);
 			this.contentBox.clear();
+			this.contentBox.addChild(new Text(this.buildHeaderLine(), 0, 0));
 
-			const callRenderer = this.getCallRenderer();
-			if (!callRenderer) {
-				this.contentBox.addChild(this.createCallFallback());
-				hasContent = true;
-			} else {
-				try {
-					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
-					this.callRendererComponent = component;
+			if (this.shouldUseCompactBuiltInSummary()) {
+				const component = this.expanded ? this.renderExpandedCompactSummary() : this.renderCollapsedCompactSummary();
+				if (component) {
+					this.contentBox.addChild(new Spacer(1));
 					this.contentBox.addChild(component);
 					hasContent = true;
-				} catch {
-					this.callRendererComponent = undefined;
+				}
+			} else {
+				const callRenderer = this.getCallRenderer();
+				if (!callRenderer) {
+					this.contentBox.addChild(new Spacer(1));
 					this.contentBox.addChild(this.createCallFallback());
 					hasContent = true;
-				}
-			}
-
-			if (this.result) {
-				const resultRenderer = this.getResultRenderer();
-				if (!resultRenderer) {
-					const component = this.createResultFallback();
-					if (component) {
-						this.contentBox.addChild(component);
-						hasContent = true;
-					}
 				} else {
 					try {
-						const component = resultRenderer(
-							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
-							theme,
-							this.getRenderContext(this.resultRendererComponent),
-						);
-						this.resultRendererComponent = component;
+						const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
+						this.callRendererComponent = component;
+						this.contentBox.addChild(new Spacer(1));
 						this.contentBox.addChild(component);
 						hasContent = true;
 					} catch {
-						this.resultRendererComponent = undefined;
+						this.callRendererComponent = undefined;
+						this.contentBox.addChild(new Spacer(1));
+						this.contentBox.addChild(this.createCallFallback());
+						hasContent = true;
+					}
+				}
+
+				if (this.result) {
+					const resultRenderer = this.getResultRenderer();
+					if (!resultRenderer) {
 						const component = this.createResultFallback();
 						if (component) {
+							this.contentBox.addChild(new Spacer(1));
 							this.contentBox.addChild(component);
 							hasContent = true;
+						}
+					} else {
+						try {
+							const component = resultRenderer(
+								{ content: this.result.content as any, details: this.result.details },
+								{ expanded: this.expanded, isPartial: this.isPartial },
+								theme,
+								this.getRenderContext(this.resultRendererComponent),
+							);
+							this.resultRendererComponent = component;
+							this.contentBox.addChild(new Spacer(1));
+							this.contentBox.addChild(component);
+							hasContent = true;
+						} catch {
+							this.resultRendererComponent = undefined;
+							const component = this.createResultFallback();
+							if (component) {
+								this.contentBox.addChild(new Spacer(1));
+								this.contentBox.addChild(component);
+								hasContent = true;
+							}
 						}
 					}
 				}
 			}
 		} else {
-			this.contentText.setCustomBgFn(bgFn);
+			this.contentText.setCustomBgFn(undefined);
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}
@@ -313,8 +345,301 @@ export class ToolExecutionComponent extends Container {
 		return getRenderedTextOutput(this.result, this.showImages);
 	}
 
+	private renderExpandedCompactSummary(): Component {
+		const lines: string[] = [];
+		lines.push(this.getNestedTargetLine(this.getCompactCallSummary()));
+		const resultSummary = this.getCompactResultSummary();
+		if (resultSummary) {
+			lines.push(theme.fg("text", resultSummary));
+		}
+		return new Text(lines.join("\n"), 0, 0);
+	}
+
+	private renderCollapsedCompactSummary(): Component | undefined {
+		const lines: string[] = [];
+		const resultSummary = this.getCollapsedResultSummary();
+		if (resultSummary) {
+			const expandHint = this.shouldOfferExpansionHint() ? ` ${keyHint("app.tools.expand", "to expand")}` : "";
+			lines.push(theme.fg("text", resultSummary) + expandHint);
+		}
+		const callSummary = this.getCompactCallSummary();
+		if (callSummary) {
+			lines.push(this.getNestedTargetLine(callSummary));
+		}
+		if (lines.length === 0) return undefined;
+		return new Text(lines.join("\n"), 0, 0);
+	}
+
+	private getCompactCallSummary(): string {
+		switch (this.toolName) {
+			case "read":
+				return this.formatCompactReadCall();
+			case "write":
+				return this.formatCompactWriteCall();
+			case "webFetch":
+				return this.formatCompactWebFetchCall();
+			case "webSearch":
+				return this.formatCompactWebSearchCall();
+			case "bash":
+				return this.formatCompactBashCall();
+			default:
+				return this.toolName;
+		}
+	}
+
+	private getCompactResultSummary(): string | undefined {
+		switch (this.toolName) {
+			case "read":
+				return this.formatCompactReadResult();
+			case "write":
+				return this.formatCompactWriteResult();
+			case "webFetch":
+				return this.formatCompactWebFetchResult();
+			case "webSearch":
+				return this.formatCompactWebSearchResult();
+			case "bash":
+				return this.formatCompactBashResult();
+			default:
+				return this.getCompactPreview(this.getTextOutput(), 3);
+		}
+	}
+
+	private getCollapsedResultSummary(): string | undefined {
+		switch (this.toolName) {
+			case "read":
+				return this.summarizeReadResult();
+			case "write":
+				return this.summarizeWriteResult();
+			case "webFetch":
+				return this.summarizeWebFetchResult();
+			case "webSearch":
+				return this.summarizeWebSearchResult();
+			case "bash":
+				return this.summarizeBashResult();
+			default:
+				return this.result ? this.getCollapsedTextSummary(this.getTextOutput()) : undefined;
+		}
+	}
+
+	private formatCompactReadCall(): string {
+		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "(missing path)";
+		const offset = this.args?.offset;
+		const limit = this.args?.limit;
+		const range =
+			offset !== undefined || limit !== undefined
+				? ` lines ${offset ?? 1}${limit !== undefined ? `-${(offset ?? 1) + limit - 1}` : "+"}`
+				: "";
+		return `${path}${range}`;
+	}
+
+	private formatCompactWriteCall(): string {
+		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "(missing path)";
+		const content = this.getStringArg("content") ?? this.getStringArg("newText") ?? "";
+		const lineCount = content ? content.split("\n").length : 0;
+		return `${path}${lineCount > 0 ? ` • ${lineCount} lines staged` : ""}`;
+	}
+
+	private formatCompactWebFetchCall(): string {
+		return this.getStringArg("url") ?? "(missing url)";
+	}
+
+	private formatCompactWebSearchCall(): string {
+		return this.getStringArg("query") ?? "(missing query)";
+	}
+
+	private formatCompactBashCall(): string {
+		const command = this.getStringArg("command") ?? "(missing command)";
+		return this.getCompactPreview(command, 1, 140) ?? command;
+	}
+
+	private formatCompactReadResult(): string | undefined {
+		if (!this.result) return undefined;
+		const output = this.getTextOutput();
+		if (!output.trim()) return undefined;
+		const lines = output.split("\n");
+		const preview = this.getCompactPreview(output, this.expanded ? 8 : 2);
+		const prefix = `${lines.filter((line) => line.trim().length > 0).length} line${lines.length === 1 ? "" : "s"} loaded`;
+		return preview ? `${prefix}\n${preview}` : prefix;
+	}
+
+	private formatCompactWriteResult(): string | undefined {
+		if (!this.result) return undefined;
+		const diff = typeof this.result.details?.diff === "string" ? this.result.details.diff : undefined;
+		if (diff) {
+			const changeLines = diff
+				.split("\n")
+				.filter((line: string) => line.startsWith("+") || line.startsWith("-")).length;
+			const preview = this.getCompactPreview(diff, this.expanded ? 8 : 3);
+			return `${changeLines} changed line${changeLines === 1 ? "" : "s"}\n${preview ?? ""}`.trim();
+		}
+		return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
+	}
+
+	private formatCompactWebFetchResult(): string | undefined {
+		const details = this.result?.details as
+			| { title?: string; facts?: string[]; preview?: string; truncated?: boolean; cacheHit?: boolean }
+			| undefined;
+		if (!details) return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
+		const lines: string[] = [];
+		if (details.title) lines.push(details.title);
+		if (details.facts?.length) {
+			lines.push(...details.facts.slice(0, this.expanded ? 4 : 2));
+		}
+		if (details.preview) {
+			const preview = this.getCompactPreview(details.preview, this.expanded ? 6 : 2);
+			if (preview) lines.push(preview);
+		}
+		if (details.truncated && !this.expanded) {
+			lines.push("Preview truncated. Expand for more.");
+		}
+		return lines.join("\n");
+	}
+
+	private formatCompactWebSearchResult(): string | undefined {
+		const details = this.result?.details as
+			| { resultCount?: number; results?: Array<{ title?: string; url?: string }> }
+			| undefined;
+		if (!details) return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
+		const results = details.results ?? [];
+		const shown = results.slice(0, this.expanded ? 5 : 2);
+		const lines: string[] = [];
+		if (typeof details.resultCount === "number") {
+			lines.push(`${details.resultCount} result${details.resultCount === 1 ? "" : "s"} found`);
+		}
+		for (const entry of shown) {
+			const title = entry.title ?? entry.url ?? "Untitled result";
+			lines.push(`- ${title}`);
+		}
+		if (!this.expanded && results.length > shown.length) {
+			lines.push(`+${results.length - shown.length} more results`);
+		}
+		return lines.join("\n");
+	}
+
+	private formatCompactBashResult(): string | undefined {
+		return this.getCompactPreview(this.getTextOutput(), this.expanded ? 10 : 4);
+	}
+
+	private summarizeReadResult(): string | undefined {
+		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "file";
+		if (!this.result) return undefined;
+		const count = this.countNonEmptyLines(this.getTextOutput());
+		if (count === 0) return `Loaded ${path}`;
+		return `Loaded ${path} · ${count} line${count === 1 ? "" : "s"}`;
+	}
+
+	private summarizeWriteResult(): string | undefined {
+		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "file";
+		if (!this.result) return `Staging ${path}`;
+		const diff = typeof this.result.details?.diff === "string" ? this.result.details.diff : undefined;
+		if (diff) {
+			const changeLines = diff
+				.split("\n")
+				.filter((line: string) => line.startsWith("+") || line.startsWith("-")).length;
+			if (changeLines > 0) {
+				return `Updated ${path} · ${changeLines} changed line${changeLines === 1 ? "" : "s"}`;
+			}
+		}
+		return `Updated ${path}`;
+	}
+
+	private summarizeWebFetchResult(): string | undefined {
+		const url = this.getStringArg("url") ?? "page";
+		if (!this.result) return `Fetching ${url}`;
+		const details = this.result.details as { title?: string } | undefined;
+		if (details?.title) {
+			return `Fetched ${details.title}`;
+		}
+		return `Fetched ${url}`;
+	}
+
+	private summarizeWebSearchResult(): string | undefined {
+		const query = this.getStringArg("query") ?? "search";
+		if (!this.result) return `Searching ${query}`;
+		const details = this.result.details as { resultCount?: number } | undefined;
+		if (typeof details?.resultCount === "number") {
+			return `Search returned ${details.resultCount} result${details.resultCount === 1 ? "" : "s"}`;
+		}
+		return `Search completed`;
+	}
+
+	private summarizeBashResult(): string | undefined {
+		const command = this.getStringArg("command") ?? "command";
+		if (!this.result) {
+			return this.executionStarted ? `Running ${this.summarizeCommandAction(command)}` : undefined;
+		}
+		if (this.result.isError) {
+			return `Command failed`;
+		}
+		const count = this.countNonEmptyLines(this.getTextOutput());
+		if (count === 0) return `${this.summarizeCommandAction(command)} complete`;
+		return `${this.summarizeCommandAction(command)} · ${count} line${count === 1 ? "" : "s"} available`;
+	}
+
+	private summarizeCommandAction(command: string): string {
+		const trimmed = command.trim();
+		if (/^ls(\s|$)/.test(trimmed)) return "directory listing";
+		if (/^rg(\s|$)|^grep(\s|$)|^find(\s|$)/.test(trimmed)) return "search";
+		if (/^git\s+status(\s|$)/.test(trimmed)) return "git status";
+		if (/^git\s+diff(\s|$)/.test(trimmed)) return "git diff";
+		if (/^npm\s+test(\s|$)|^pnpm\s+test(\s|$)|^yarn\s+test(\s|$)/.test(trimmed)) return "test run";
+		return "command";
+	}
+
+	private getCollapsedTextSummary(text: string): string | undefined {
+		const normalized = text
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean);
+		if (normalized.length === 0) return undefined;
+		if (normalized.length === 1) {
+			return this.truncateInline(normalized[0]!, 90);
+		}
+		return `${normalized.length} output lines`;
+	}
+
+	private shouldOfferExpansionHint(): boolean {
+		if (this.expanded || !this.result) return false;
+		const output = this.getTextOutput();
+		return this.countNonEmptyLines(output) > 0;
+	}
+
+	private getNestedTargetLine(content: string): string {
+		return theme.fg("text", `└ ${this.truncateInline(content, 140)}`);
+	}
+
+	private countNonEmptyLines(text: string): number {
+		return text
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean).length;
+	}
+
+	private truncateInline(text: string, maxChars: number): string {
+		if (text.length <= maxChars) return text;
+		return `${text.slice(0, Math.max(1, maxChars - 1))}…`;
+	}
+
+	private getCompactPreview(text: string, maxLines: number, maxChars = 160): string | undefined {
+		const normalized = text
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.filter((line) => line.trim().length > 0);
+		if (normalized.length === 0) return undefined;
+		const limited = normalized.slice(0, maxLines).map((line) => (line.length > maxChars ? `${line.slice(0, maxChars - 1)}…` : line));
+		if (!this.expanded && normalized.length > limited.length) {
+			limited.push(`… ${normalized.length - limited.length} more lines`);
+		}
+		return limited.join("\n");
+	}
+
+	private getStringArg(key: string): string | undefined {
+		const value = this.args?.[key];
+		return typeof value === "string" ? value : undefined;
+	}
+
 	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
+		let text = `${this.buildHeaderLine()}\n\n${theme.fg("toolTitle", theme.bold(this.toolName))}`;
 		const content = JSON.stringify(this.args, null, 2);
 		if (content) {
 			text += `\n\n${content}`;
@@ -324,5 +649,26 @@ export class ToolExecutionComponent extends Container {
 			text += `\n${output}`;
 		}
 		return text;
+	}
+
+	private buildHeaderLine(): string {
+		const dot = theme.bold(theme.fg(this.getExecutionDotColor(), "●"));
+		return `${dot} ${buildConsoleHeader({
+			badge: this.toolName,
+			badgeColor: "text",
+		})}`;
+	}
+
+	private getExecutionDotColor(): "muted" | "success" | "error" {
+		if (!this.executionStarted && !this.result) {
+			return "muted";
+		}
+		if (this.isPartial) {
+			return "muted";
+		}
+		if (this.result?.isError) {
+			return "error";
+		}
+		return "success";
 	}
 }

@@ -3,9 +3,15 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { ContextUsage, ExtensionContext, ToolRenderResultOptions } from "../extensions/types.js";
+import { getEffectiveFetchCompressionProfile, getResearchUrlHint } from "./research-intent.js";
 import {
+	assessResearchFetchContent,
+	buildResearchPreview,
 	deriveResearchCompressionProfile,
 	extractResearchFacts,
+	extractResearchDocumentTitle,
+	extractResearchMetaDescription,
+	extractResearchPrimaryHtml,
 	formatFetchTranscriptContent,
 	limitPreviewLines,
 } from "./research-output.js";
@@ -58,48 +64,6 @@ function htmlToMarkdown(html: string): string {
 	return md.trim();
 }
 
-function extractPrimaryHtml(html: string): string {
-	const candidates = [
-		/<article\b[^>]*>([\s\S]*?)<\/article>/i,
-		/<main\b[^>]*>([\s\S]*?)<\/main>/i,
-		/<body\b[^>]*>([\s\S]*?)<\/body>/i,
-	];
-
-	for (const pattern of candidates) {
-		const match = html.match(pattern);
-		const fragment = match?.[1]?.trim();
-		if (fragment) return fragment;
-	}
-
-	return html;
-}
-
-function extractDocumentTitle(html: string): string | undefined {
-	const candidates = [
-		/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
-		/<meta[^>]+name=["']twitter:title["'][^>]+content=["']([^"']+)["']/i,
-		/<title[^>]*>([^<]+)<\/title>/i,
-	];
-
-	for (const pattern of candidates) {
-		const match = html.match(pattern);
-		const title = match?.[1]?.trim();
-		if (title) return title.replace(/\s+/g, " ").trim();
-	}
-
-	return undefined;
-}
-
-function buildPreview(markdown: string): string {
-	const lines = markdown
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.slice(0, MAX_PREVIEW_LINES)
-		.map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS - 1)}...` : line));
-	return lines.join("\n");
-}
-
 function renderWebFetchResult(
 	result: {
 		details?: {
@@ -110,6 +74,9 @@ function renderWebFetchResult(
 			preview?: string;
 			truncated?: boolean;
 			cacheHit?: boolean;
+			status?: string;
+			statusReason?: string;
+			metaDescription?: string;
 		};
 	},
 	options: ToolRenderResultOptions,
@@ -134,6 +101,8 @@ function renderWebFetchResult(
 		for (const fact of details.facts.slice(0, options.expanded ? 4 : 2)) {
 			text += `\n${theme.fg("toolOutput", `- ${fact}`)}`;
 		}
+	} else if (details.metaDescription) {
+		text += `\n${theme.fg("toolOutput", details.metaDescription)}`;
 	}
 	if (details.preview) {
 		const preview = limitPreviewLines(
@@ -145,6 +114,14 @@ function renderWebFetchResult(
 	}
 	if (details.truncated) {
 		text += `\n${theme.fg("muted", "Preview truncated to keep context usage low")}`;
+	}
+	if (details.status === "placeholder") {
+		text += `\n${theme.fg("warning", "placeholder/interstitial page detected")}`;
+	} else if (details.status === "thin") {
+		text += `\n${theme.fg("muted", "thin article extract")}`;
+	}
+	if (details.statusReason) {
+		text += `\n${theme.fg("muted", details.statusReason)}`;
 	}
 	return new Text(text, 0, 0);
 }
@@ -218,34 +195,59 @@ async function executeWebFetch(
 			};
 		}
 
-		const markdown = htmlToMarkdown(extractPrimaryHtml(content));
-		const preview = buildPreview(markdown);
-		const compression = getResearchCompressionProfile(ctx);
-		const facts = extractResearchFacts(markdown, compression.fetchTranscriptFacts, compression.fetchTranscriptLineChars);
-		const htmlTitle = extractDocumentTitle(content);
-		const titleMatch = markdown.match(/^#\s+(.+)$/m);
-		if (htmlTitle) details.title = htmlTitle;
-		else if (titleMatch?.[1]) details.title = titleMatch[1].trim();
-		details.facts = facts;
-		details.preview = preview;
-		details.truncated = markdown.length > MAX_CONTENT_SIZE;
-		details.compressionMode = compression.mode;
+			const metaDescription = extractResearchMetaDescription(content);
+			const markdown = htmlToMarkdown(extractResearchPrimaryHtml(content));
+			const hint = getResearchUrlHint(url);
+			const preview = buildResearchPreview(markdown, MAX_PREVIEW_LINES, MAX_LINE_CHARS);
+			const compression = getEffectiveFetchCompressionProfile(getResearchCompressionProfile(ctx), hint);
+			const facts = extractResearchFacts(markdown, compression.fetchTranscriptFacts + 1, compression.fetchTranscriptLineChars);
+			const htmlTitle = extractResearchDocumentTitle(content);
+			const titleMatch = markdown.match(/^#\s+(.+)$/m);
+			if (htmlTitle) details.title = htmlTitle;
+			else if (titleMatch?.[1]) details.title = titleMatch[1].trim();
+			const enrichedFacts = [...facts];
+			if (
+				metaDescription &&
+				metaDescription.length >= 40 &&
+				hint?.intent !== "docs_reference" &&
+				!enrichedFacts.some((fact) => fact.toLowerCase() === metaDescription.toLowerCase())
+			) {
+				enrichedFacts.unshift(metaDescription);
+			}
+			const selectedFacts = enrichedFacts.slice(0, compression.fetchTranscriptFacts);
+			const assessment = assessResearchFetchContent({
+				markdown,
+				facts: selectedFacts,
+				preview,
+				title: typeof details.title === "string" ? details.title : undefined,
+				metaDescription,
+			});
+			details.facts = selectedFacts;
+			details.preview = preview;
+			details.truncated = markdown.length > MAX_CONTENT_SIZE;
+			details.compressionMode = compression.mode;
+			details.metaDescription = metaDescription;
+			details.status = assessment.status;
+			details.statusReason = assessment.reason;
 
-		return {
-			details,
-			content: [
-				{
-					type: "text" as const,
-					text: formatFetchTranscriptContent({
-						url,
-						title: typeof details.title === "string" ? details.title : undefined,
-						facts,
-						preview,
-						profile: compression,
-						truncated: details.truncated === true,
-					}),
-				},
-			],
+			return {
+				details,
+				content: [
+					{
+						type: "text" as const,
+						text: formatFetchTranscriptContent({
+							url,
+							title: typeof details.title === "string" ? details.title : undefined,
+							facts: selectedFacts,
+							preview,
+							profile: compression,
+							truncated: details.truncated === true,
+							metaDescription,
+							status: assessment.status,
+							statusReason: assessment.reason,
+						}),
+					},
+				],
 		};
 	} catch (err) {
 		return {

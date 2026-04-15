@@ -1,5 +1,6 @@
 export interface InteractiveEditorSubmitState {
 	isBashRunning: boolean;
+	isPlanningMode: boolean;
 	isCompacting: boolean;
 	isStreaming: boolean;
 	isExtensionCommand: (text: string) => boolean;
@@ -26,6 +27,11 @@ export async function handleInteractiveEditorSubmitAfterBuiltin(
 	actions: InteractiveEditorSubmitActions,
 ): Promise<boolean> {
 	if (text.startsWith("!")) {
+		if (state.isPlanningMode) {
+			actions.showWarning("Bash shortcuts are blocked in planning mode. Switch to interactive or autonomous mode to execute shell commands.");
+			actions.restoreEditorText(text);
+			return true;
+		}
 		const isExcluded = text.startsWith("!!");
 		const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 		if (command) {

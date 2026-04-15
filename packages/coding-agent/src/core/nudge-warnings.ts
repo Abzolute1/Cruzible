@@ -2,6 +2,7 @@
  * Shared nudge detection functions for interactive mode.
  * Standalone - no dependencies on auton modules.
  */
+import { buildToolOutcomeFingerprint, normalizeToolName } from "./auton/nudges/types.js";
 
 /** Tool outcome for tracking */
 interface ToolOutcome {
@@ -9,6 +10,8 @@ interface ToolOutcome {
 	success: boolean;
 	estimatedTokens?: number;
 	file?: string;
+	detail?: string;
+	fingerprint?: string;
 }
 
 // Thresholds (matching auton nudge-eval.ts)
@@ -35,13 +38,17 @@ export interface InteractiveNudgeContext {
 function hasDuplicateToolCalls(history: ToolOutcome[], threshold: number): boolean {
 	if (history.length < threshold) return false;
 	const recent = history.slice(-threshold);
-	const first = recent[0]?.tool;
+	const first = recent[0];
 	if (!first) return false;
-	return recent.every((t) => t.tool === first);
+	const firstFingerprint = buildToolOutcomeFingerprint(first);
+	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
 }
 
 function hasWastedReadTokens(history: ToolOutcome[]): boolean {
-	const reads = history.filter((t) => t.tool === "read" || t.tool === "read_file");
+	const reads = history.filter((entry) => {
+		const tool = normalizeToolName(entry.tool);
+		return tool === "read" || tool === "read_file";
+	});
 	if (reads.length < 3) return false;
 	return reads.reduce((s, t) => s + (t.estimatedTokens || 0), 0) > MAX_WASTED_READ_TOKENS;
 }
@@ -50,16 +57,24 @@ function hasFileChurn(history: ToolOutcome[], turnIndex: number): boolean {
 	if (turnIndex < MAX_FILE_CHURN_TURNS || history.length === 0) return false;
 	const recent = history.slice(-MAX_FILE_CHURN_TURNS);
 	const uniqueFiles = new Set(recent.map((f) => f.file).filter(Boolean));
-	const hasEdits = recent.some((f) => f.tool === "edit" || f.tool === "write");
+	const hasEdits = recent.some((entry) => {
+		const tool = normalizeToolName(entry.tool);
+		return tool === "edit" || tool === "write" || tool === "str_replace_editor";
+	});
 	return uniqueFiles.size >= 6 && !hasEdits;
 }
 
 function hasStuckFileAccess(history: ToolOutcome[]): boolean {
 	if (history.length < MAX_CONSECUTIVE_SAME_FILE) return false;
 	const recent = history.slice(-MAX_CONSECUTIVE_SAME_FILE);
-	const first = recent[0]?.file;
-	if (!first) return false;
-	return recent.every((f) => f.file === first);
+	const first = recent[0];
+	if (!first?.file) return false;
+	return recent.every((entry) => entry.file === first.file);
+}
+
+function isDiscoveryTool(tool: string): boolean {
+	const normalized = normalizeToolName(tool);
+	return normalized === "grep" || normalized === "find" || normalized === "glob" || normalized === "ls";
 }
 
 export function evaluateInteractiveNudges(context: InteractiveNudgeContext): NudgeWarning[] {
@@ -92,10 +107,14 @@ export function evaluateInteractiveNudges(context: InteractiveNudgeContext): Nud
 	}
 
 	if (hasStuckFileAccess(fileAccessHistory)) {
-		const lastFile = fileAccessHistory[fileAccessHistory.length - 1]?.file;
+		const recent = fileAccessHistory.slice(-MAX_CONSECUTIVE_SAME_FILE);
+		const lastFile = recent[recent.length - 1]?.file;
+		const discoveryOnly = recent.every((entry) => isDiscoveryTool(entry.tool));
 		warnings.push({
 			type: "stuck_file",
-			message: `Repeatedly accessing \`${lastFile}\`. Consider a different file or approach.`,
+			message: discoveryOnly
+				? `Repeatedly rediscovering \`${lastFile}\`. Reuse the evidence you already have instead of searching again.`
+				: `Repeatedly revisiting \`${lastFile}\`. Reuse the evidence you already have, or change files/approach.`,
 			severity: "warning",
 		});
 	}

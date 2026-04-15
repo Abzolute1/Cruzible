@@ -26,6 +26,7 @@ import {
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { selectSession } from "./cli/session-picker.js";
+import { filterHeadlessActiveToolNames } from "./core/headless-tool-filter.js";
 import type { DefaultResourceLoaderOptions } from "./core/resource-loader.js";
 import { createAllTools, type Tool, type ToolName } from "./core/tools/index.js";
 import { matchSavedDefaultModel, pickPreferredAvailableModel } from "./core/model-resolver.js";
@@ -36,10 +37,52 @@ import type { Args } from "./cli/args.js";
 import { parseArgs } from "./cli/args.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { getNvidiaModels, NVIDIA_BASE_URL } from "./providers/nvidia-provider.js";
+import { runAutonomousMode } from "./modes/autonomous-mode.js";
 
 type StartupModelsFile = {
 	providers: Record<string, unknown>;
 };
+
+function modelsMatch(a: Pick<Model<Api>, "provider" | "id"> | undefined, b: Pick<Model<Api>, "provider" | "id"> | undefined): boolean {
+	return a?.provider === b?.provider && a?.id === b?.id;
+}
+
+export function enforceRequestedStartupModel(
+	session: {
+		agent: { state: { model?: Model<Api> } };
+		sessionManager: { appendModelChange: (provider: string, modelId: string) => string };
+	},
+	requestedModel: Model<Api> | undefined,
+): boolean {
+	if (!requestedModel || modelsMatch(session.agent.state.model, requestedModel)) {
+		return false;
+	}
+	session.agent.state.model = requestedModel;
+	session.sessionManager.appendModelChange(requestedModel.provider, requestedModel.id);
+	return true;
+}
+
+export async function enforceExplicitRuntimeModel(
+	session: {
+		model?: Model<Api>;
+		setModel: (model: Model<Api>) => Promise<void>;
+	},
+	requestedModel: Model<Api> | undefined,
+	hasExplicitRequest: boolean,
+): Promise<boolean> {
+	if (!hasExplicitRequest || !requestedModel || modelsMatch(session.model, requestedModel)) {
+		return false;
+	}
+	await session.setModel(requestedModel);
+	return true;
+}
+
+export function shouldUseRequestedStartupModel(existingSession: {
+	messages: unknown[];
+	model: { provider: string; modelId: string } | null | undefined;
+}): boolean {
+	return existingSession.messages.length === 0 && existingSession.model == null;
+}
 
 function printHelp(stream: "stdout" | "stderr" = "stdout"): void {
 	const cliName = basename(process.argv[1] || CLI_NAME);
@@ -50,7 +93,7 @@ ${APP_NAME} — interactive and autonomous coding harness
 Usage: ${cliName} [prompt] [options]
 
 Options:
-  --model <model>        Model to use (default: nvidia/nemotron-3-super-120b-a12b, or qwen3.6-plus, or a local LM Studio model)
+  --model <model>        Model to use (default: nvidia/llama-3.1-nemotron-ultra-253b-v1, or qwen3.6-plus, or a local LM Studio model)
   --thinking [level]     Enable thinking mode (optional level: low, medium, high, xhigh)
   --session <id|path>    Resume or load a specific session
   --cwd <dir>            Working directory (default: current directory)
@@ -72,6 +115,7 @@ Options:
   --help                 Show this help
   --version              Show version
   --auto                 Start the TUI with autonomous mode armed for the first prompt
+  --autonomous           Run a headless autonomous session and exit
 
 Local models: Start LM Studio (port 1234) and models appear automatically.
   Override URL with LM_STUDIO_URL or LM_STUDIO_PORT env vars.
@@ -84,7 +128,15 @@ function printVersion(): void {
 	console.log(`${APP_NAME} v${VERSION}`);
 }
 
-async function resolveModel(
+function findModelMatch(available: Model<Api>[], query: string): Model<Api> | undefined {
+	const lower = query.toLowerCase();
+	return (
+		available.find((m: Model<Api>) => m.id.toLowerCase() === lower) ??
+		available.find((m: Model<Api>) => m.name?.toLowerCase().includes(lower) || m.id.toLowerCase().includes(lower))
+	);
+}
+
+export async function resolveModel(
 	modelArg: string | undefined,
 	providerArg: string | undefined,
 	modelRegistry: ModelRegistry,
@@ -97,24 +149,34 @@ async function resolveModel(
 		);
 	}
 
-	// If provider is explicitly specified, respect it
-	if (modelArg && providerArg) {
-		const providerMatch = available.find(
-			(m: Model<Api>) =>
-				m.id.toLowerCase() === modelArg.toLowerCase() && m.provider.toLowerCase() === providerArg.toLowerCase(),
-		);
-		if (providerMatch) return { model: providerMatch };
+	if (providerArg) {
+		const providerLower = providerArg.toLowerCase();
+		const providerModels = available.filter((m: Model<Api>) => m.provider.toLowerCase() === providerLower);
+		if (providerModels.length === 0) {
+			throw new Error(`No models available for provider "${providerArg}".`);
+		}
+
+		if (modelArg) {
+			const providerMatch = findModelMatch(providerModels, modelArg);
+			if (providerMatch) return { model: providerMatch };
+			throw new Error(`No model matching "${modelArg}" found for provider "${providerArg}".`);
+		}
+
+		const savedModelId = settingsManager.getDefaultModel();
+		if (savedModelId) {
+			const matched = matchSavedDefaultModel(savedModelId, providerModels);
+			if (matched) return { model: matched };
+		}
+
+		return { model: pickPreferredAvailableModel(providerModels) ?? providerModels[0] };
 	}
 
-	// If model is specified, find it
 	if (modelArg) {
-		const exactMatch = available.find((m: Model<Api>) => m.id.toLowerCase() === modelArg.toLowerCase());
-		if (exactMatch) return { model: exactMatch };
-		const partial = available.find((m: Model<Api>) => m.name?.toLowerCase().includes(modelArg.toLowerCase()));
-		if (partial) return { model: partial };
+		const matched = findModelMatch(available, modelArg);
+		if (matched) return { model: matched };
+		throw new Error(`No model matching "${modelArg}" is available.`);
 	}
 
-	// No model specified — prefer explicit saved default, then local, then cloud defaults.
 	const savedModelId = settingsManager.getDefaultModel();
 	if (savedModelId) {
 		const matched = matchSavedDefaultModel(savedModelId, available);
@@ -140,7 +202,8 @@ async function listModelsCmd(modelRegistry: ModelRegistry, search?: string | tru
 	for (const m of filtered) console.log(`  ${m.id}`);
 }
 
-function resolveRequestedMode(config: Args, stdinIsTTY: boolean): "interactive" | "print" | "json" | "rpc" {
+function resolveRequestedMode(config: Args, stdinIsTTY: boolean): "interactive" | "print" | "json" | "rpc" | "autonomous" {
+	if (config.autonomous) return "autonomous";
 	if (config.mode === "rpc") return "rpc";
 	if (config.mode === "json") return "json";
 	if (config.print || !stdinIsTTY) return "print";
@@ -165,7 +228,10 @@ export function resolveSessionStorageDir(
 	return configuredDir ? resolve(cwd, configuredDir) : getDefaultSessionDir(cwd, agentDir);
 }
 
-export function validateSessionFlags(config: Args, mode: "interactive" | "print" | "json" | "rpc"): string | null {
+export function validateSessionFlags(
+	config: Args,
+	mode: "interactive" | "print" | "json" | "rpc" | "autonomous",
+): string | null {
 	const selectors = [config.continue, config.resume, Boolean(config.session), Boolean(config.fork)].filter(Boolean).length;
 	if (selectors > 1) {
 		return "Only one of --continue, --resume, --session, or --fork may be used at a time.";
@@ -180,7 +246,7 @@ export function validateSessionFlags(config: Args, mode: "interactive" | "print"
 }
 
 export function validateModeFlags(config: Args): string | null {
-	const requestedModes = [config.print, config.mode === "json", config.mode === "rpc"].filter(Boolean).length;
+	const requestedModes = [config.print, config.mode === "json", config.mode === "rpc", config.autonomous].filter(Boolean).length;
 	if (requestedModes > 1) {
 		return "Only one non-interactive output mode may be selected at a time.";
 	}
@@ -252,20 +318,20 @@ function loadStartupModelsFile(modelsPath: string): StartupModelsFile {
 	}
 }
 
-function buildNvidiaProviderConfig(nvidiaApiKey: string): Record<string, unknown> {
+function buildNvidiaProviderConfig(): Record<string, unknown> {
 	const nvidiaModels = getNvidiaModels().map((m) => ({
 		id: m.id,
 		reasoning: m.supportsThinking ?? false,
 		compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		cost: m.cost,
 		contextWindow: m.contextWindow ?? 128_000,
 		maxTokens: 8192,
 	}));
 
 	return {
 		baseUrl: NVIDIA_BASE_URL,
-		api: "openai-responses",
-		apiKey: nvidiaApiKey,
+		api: "openai-completions",
+		apiKey: "NVIDIA_API_KEY",
 		models: nvidiaModels,
 	};
 }
@@ -289,17 +355,13 @@ function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Reco
 		baseUrl: `${lmStudioUrl}/v1`,
 		api: "openai-completions",
 		apiKey: "local",
-		models: [
-			{
-				id: "local",
-				name: `Local (${modelIds.length} loaded)`,
-				reasoning: false,
-				compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 32_768,
-				maxTokens: 4096,
-			},
-		],
+		models: modelIds.map((id) => ({
+			id,
+			name: id,
+			reasoning: false,
+			compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		})),
 	};
 }
 
@@ -314,21 +376,23 @@ export async function prepareStartupModelsFile(options: {
 	const startupWarn = options.startupWarn ?? (() => {});
 	const env = options.env ?? process.env;
 	const fetchImpl = options.fetchImpl ?? fetch;
-	const modelsPath = resolve(options.agentDir, "models.json");
+	const userModelsPath = resolve(options.agentDir, "models.json");
+	const runtimeModelsPath = resolve(options.agentDir, "models.runtime.json");
 
 	if (!existsSync(options.agentDir)) mkdirSync(options.agentDir, { recursive: true });
 
-	const modelsData = loadStartupModelsFile(modelsPath);
-	const preservedProviders = Object.fromEntries(
-		Object.entries(modelsData.providers).filter(([name]) => name !== "nvidia" && name !== "local"),
-	);
-	modelsData.providers = preservedProviders;
+	const userModelsData = loadStartupModelsFile(userModelsPath);
+	const modelsData: StartupModelsFile = {
+		providers: { ...userModelsData.providers },
+	};
+	delete modelsData.providers.nvidia;
+	delete modelsData.providers.local;
 
 	const nvidiaKeyEnv = env.NVIDIA_API_KEY;
 	if (!nvidiaKeyEnv) {
 		startupWarn("[Auton] NVIDIA_API_KEY not set. NVIDIA models will not be available.");
 	} else {
-		modelsData.providers.nvidia = buildNvidiaProviderConfig(nvidiaKeyEnv);
+		modelsData.providers.nvidia = buildNvidiaProviderConfig();
 	}
 
 	const lmStudioUrl = env.LM_STUDIO_URL ?? `http://127.0.0.1:${env.LM_STUDIO_PORT ?? "1234"}`;
@@ -340,15 +404,17 @@ export async function prepareStartupModelsFile(options: {
 
 	try {
 		const nextContent = JSON.stringify(modelsData, null, 2);
-		const previousContent = existsSync(modelsPath) ? readFileSync(modelsPath, "utf-8") : undefined;
+		const previousContent = existsSync(runtimeModelsPath) ? readFileSync(runtimeModelsPath, "utf-8") : undefined;
 		if (previousContent !== nextContent) {
-			writeFileSync(modelsPath, nextContent);
+			writeFileSync(runtimeModelsPath, nextContent);
 		}
 	} catch (error) {
-		startupWarn(`[Auton] Failed to write models.json: ${(error as Error).message}. Provider config not persisted.`);
+		startupWarn(
+			`[Auton] Failed to write runtime models config: ${(error as Error).message}. Startup provider discovery not persisted.`,
+		);
 	}
 
-	return { modelsPath, modelsData };
+	return { modelsPath: runtimeModelsPath, modelsData };
 }
 
 async function readPipedStdin(stdinIsTTY: boolean): Promise<string | undefined> {
@@ -364,11 +430,13 @@ async function readPipedStdin(stdinIsTTY: boolean): Promise<string | undefined> 
 export async function prepareStartupInput(
 	config: Args,
 	stdinContent?: string,
+	cwd = process.cwd(),
 ): Promise<{ initialMessage?: string; initialImages?: ImageContent[]; remainingMessages: string[] }> {
 	const files =
 		config.fileArgs.length > 0
 			? await processFileArguments(config.fileArgs, {
 					autoResizeImages: true,
+					cwd,
 				})
 			: { text: "", images: [] as ImageContent[] };
 	const { initialMessage, initialImages } = buildInitialMessage({
@@ -423,7 +491,7 @@ async function createSessionManagerFromConfig(
 	config: Args,
 	cwd: string,
 	sessionDir: string,
-	mode: "interactive" | "print" | "json" | "rpc",
+	mode: "interactive" | "print" | "json" | "rpc" | "autonomous",
 	useCrossProjectResumePicker: boolean,
 ): Promise<SessionManager | null> {
 	if (config.noSession) {
@@ -538,6 +606,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	const sessionDir = resolveSessionStorageDir(cwd, agentDir, settingsManager, config);
 	const authStorage = AuthStorage.create(resolve(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, modelsPath);
+	if (config.listModels) {
+		await listModelsCmd(modelRegistry, config.listModels);
+		return;
+	}
+
+	let resolvedModel: Model<Api>;
+	try {
+		({ model: resolvedModel } = await resolveModel(config.model, config.provider, modelRegistry, settingsManager));
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		finishMain(deferNonInteractiveHelp, { exitCode: 1 });
+		return;
+	}
+
 	const sessionManager = await createSessionManagerFromConfig(
 		config,
 		cwd,
@@ -550,13 +632,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 		return;
 	}
 
-	if (config.listModels) {
-		await listModelsCmd(modelRegistry, config.listModels);
-		return;
-	}
-
-	const { model: resolvedModel } = await resolveModel(config.model, config.provider, modelRegistry, settingsManager);
-	let preferredRuntimeModel: Model<Api> | undefined = resolvedModel;
 	const { selectedToolNames, extensionFlagValues, resourceLoaderOptions } = buildRuntimeCliOptions(config, cwd);
 
 	// Runtime creation: use Pi's built-in tools only. No custom tools for MVP.
@@ -576,8 +651,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 			resourceLoaderOptions,
 		});
 		const existingSession = rSessionManager.buildSessionContext();
-		const shouldUsePreferredModel =
-			existingSession.messages.length === 0 && existingSession.model === undefined;
+		const shouldUsePreferredModel = shouldUseRequestedStartupModel(existingSession);
+		const requestedRuntimeModel = shouldUsePreferredModel
+			? (await resolveModel(config.model, config.provider, services.modelRegistry, services.settingsManager)).model
+			: undefined;
 		const selectedTools =
 			selectedToolNames === undefined
 				? undefined
@@ -588,11 +665,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 		const sessionResult = await createAgentSessionFromServices({
 			services,
 			sessionManager: rSessionManager,
-			model: shouldUsePreferredModel ? preferredRuntimeModel : undefined,
+			model: requestedRuntimeModel,
 			tools: selectedTools,
 			sessionStartEvent,
 		});
-		preferredRuntimeModel = sessionResult.session.model;
+		enforceRequestedStartupModel(sessionResult.session, requestedRuntimeModel);
 		return {
 			session: sessionResult.session,
 			services,
@@ -603,23 +680,33 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	};
 
 	const runtime = await createAgentSessionRuntime(createRuntimeFn, { cwd, agentDir, sessionManager });
+	await enforceExplicitRuntimeModel(runtime.session, resolvedModel, Boolean(config.model || config.provider));
 
 	// Determine mode: interactive (default), print, json, or rpc
 	// Autonomous execution is primarily a keyboard-toggled TUI mode. The
 	// optional --auto flag only changes the startup state for the first prompt.
 	const mode = requestedMode;
 
+	if (mode === "print" || mode === "json" || mode === "rpc") {
+		runtime.session.setActiveToolsByName(
+			filterHeadlessActiveToolNames(
+				runtime.session.getActiveToolNames(),
+				runtime.session.getAllTools().map((tool) => tool.name),
+			),
+		);
+	}
+
 	// Headless modes cannot surface interactive approvals, so mutating tool calls
 	// are blocked there by default. Interactive mode rebinds the policy after the
 	// TUI starts so it can ask the user before write/edit/bash execution.
 	if (mode !== "interactive") {
 		runtime.session.setToolSafetyPolicy({
-			mode: "headless",
+			mode: mode === "autonomous" ? "autonomous" : "headless",
 			cwd: runtime.session.sessionManager.getCwd(),
 		});
 	}
 
-	const startupInput = await prepareStartupInput(config, await readPipedStdin(stdinIsTTY));
+	const startupInput = await prepareStartupInput(config, await readPipedStdin(stdinIsTTY), cwd);
 
 	if (mode === "interactive") {
 		initTheme(settingsManager.getTheme(), false);
@@ -654,6 +741,32 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 		}
 
 		await interactiveMode.run();
+	} else if (mode === "autonomous") {
+		const autonomousGoal = [startupInput.initialMessage, ...startupInput.remainingMessages]
+			.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+			.join("\n\n");
+		if (!autonomousGoal.trim()) {
+			console.error("--autonomous requires a prompt or piped input.");
+			process.exitCode = 1;
+			return;
+		}
+		if ((startupInput.initialImages?.length ?? 0) > 0) {
+			console.error("--autonomous does not yet support image attachments.");
+			process.exitCode = 1;
+			return;
+		}
+		process.exitCode = await runAutonomousMode(runtime, {
+			goal: autonomousGoal,
+			autonConfig: {
+				maxCost: config.maxCost ?? 0,
+				maxTokens: config.maxTokens ?? 0,
+				maxTurns: config.maxTurns ?? 100,
+				enableNudges: config.enableNudges,
+				enableBehavioralPrompt: config.enableBehavioralPrompt,
+				verbose: config.verbose,
+			},
+			cwd,
+		});
 	} else if (mode === "print") {
 		await runPrintMode(runtime, {
 			mode: "text",

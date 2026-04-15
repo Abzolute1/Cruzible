@@ -2,7 +2,15 @@
 // Ported from Kairos src/agent/nudges.ts (evaluateNudge, getNudgeMessage)
 
 import type { OutputTrendTracker } from "./output-trend.js";
-import type { NudgeCooldownState, NudgeEvaluation, NudgeType, OutputTrend, ToolOutcome } from "./types.js";
+import {
+	buildToolOutcomeFingerprint,
+	normalizeToolName,
+	type NudgeCooldownState,
+	type NudgeEvaluation,
+	type NudgeType,
+	type OutputTrend,
+	type ToolOutcome,
+} from "./types.js";
 
 // ── Thresholds ─────────────────────────────────────────────────────────
 
@@ -176,26 +184,14 @@ export function getNudgeMessage(nudgeType: NudgeType): string {
 function hasDuplicateToolCalls(history: ToolOutcome[], threshold: number): boolean {
 	if (history.length < threshold) return false;
 	const recent = history.slice(-threshold);
-	const firstFingerprint = buildToolFingerprint(recent[0]);
-	return recent.every((entry) => buildToolFingerprint(entry) === firstFingerprint);
-}
-
-/**
- * Builds a fingerprint string for a tool call that includes both the tool name
- * and a normalized version of its arguments. Two calls to the same tool with
- * different arguments produce different fingerprints.
- *
- * This prevents false positives when the model legitimately reads multiple
- * different files, runs multiple different commands, etc.
- */
-function buildToolFingerprint(entry: ToolOutcome): string {
-	return `${entry.tool}|${entry.file ?? ""}`;
+	const firstFingerprint = buildToolOutcomeFingerprint(recent[0]);
+	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
 }
 
 function hasConsecutiveVerifyFailures(history: ToolOutcome[]): boolean {
 	if (history.length < MAX_CONSECUTIVE_VERIFY_FAILURES) return false;
 	const recent = history.slice(-MAX_CONSECUTIVE_VERIFY_FAILURES);
-	return recent.every((entry) => entry.tool === "Verify" && !entry.success);
+	return recent.every((entry) => normalizeToolName(entry.tool) === "verify" && !entry.success);
 }
 
 function hasWastedFileReadTokens(history: ToolOutcome[]): boolean {
@@ -203,10 +199,11 @@ function hasWastedFileReadTokens(history: ToolOutcome[]): boolean {
 	const fileReadTokens = new Map<string, number>();
 	for (const entry of history) {
 		if (entry.file) {
-			if (entry.tool === "Edit" || entry.tool === "Write") {
+			const toolName = normalizeToolName(entry.tool);
+			if (toolName === "edit" || toolName === "write" || toolName === "str_replace_editor") {
 				// File was modified — reset its read counter
 				fileReadTokens.delete(entry.file);
-			} else if (entry.tool === "Read" && entry.success && entry.estimatedTokens) {
+			} else if ((toolName === "read" || toolName === "read_file") && entry.success && entry.estimatedTokens) {
 				fileReadTokens.set(entry.file, (fileReadTokens.get(entry.file) ?? 0) + entry.estimatedTokens);
 			}
 		}
@@ -221,7 +218,10 @@ function hasFileChurn(history: ToolOutcome[]): boolean {
 	if (history.length < MAX_FILE_CHURN_TURNS) return false;
 	const recent = history.slice(-MAX_FILE_CHURN_TURNS);
 	const fileOps = recent.filter((e) => e.file);
-	const editOps = recent.filter((e) => e.tool === "Edit" || e.tool === "Write");
+	const editOps = recent.filter((e) => {
+		const toolName = normalizeToolName(e.tool);
+		return toolName === "edit" || toolName === "write" || toolName === "str_replace_editor";
+	});
 	const uniqueFiles = new Set(fileOps.map((e) => e.file));
 	return uniqueFiles.size >= 6 && editOps.length === 0;
 }
@@ -230,8 +230,8 @@ function hasStuckFileAccess(history: ToolOutcome[], threshold: number): boolean 
 	const fileEntries = history.filter((e) => e.file);
 	if (fileEntries.length < threshold) return false;
 	const recent = fileEntries.slice(-threshold);
-	const firstFingerprint = buildToolFingerprint(recent[0]);
-	return recent.every((entry) => buildToolFingerprint(entry) === firstFingerprint);
+	const firstFingerprint = buildToolOutcomeFingerprint(recent[0]);
+	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
 }
 
 /**

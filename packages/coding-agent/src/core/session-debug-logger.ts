@@ -13,6 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, AgentSessionEvent } from "./agent-session.js";
+import type { ToolOutcome } from "./auton/nudges/types.js";
 import type { CompactionResult } from "./compaction/index.js";
 import {
 	formatCost,
@@ -26,10 +27,13 @@ import {
 	safeJsonPreview,
 	summarizeToolArgs,
 	toSessionDateStr,
+	toSessionDateTimeStr,
 	toUtcTimestamp,
 	truncate,
 } from "./debug-formatters.js";
 import { evaluateInteractiveNudges, type InteractiveNudgeContext, type NudgeWarning } from "./nudge-warnings.js";
+import { extractTrackedFileFromToolResult } from "./tool-outcome-file.js";
+import { buildToolOutcomeFingerprint, normalizeToolName } from "./auton/nudges/types.js";
 
 // ============================================================================
 // Types
@@ -676,14 +680,15 @@ export class SessionDebugLogger {
 		});
 
 		// Track for nudge evaluation
-		const toolOutcome = {
-			tool: toolCall.name,
+		const toolOutcome: ToolOutcome = {
+			tool: normalizeToolName(toolCall.name),
 			success: !isError,
 			estimatedTokens: Math.ceil(contentLength / 4),
 			file: this.extractFileFromToolResult(toolCall.name, event),
 			detail: this.extractToolDetail(toolCall.name, toolCall.arguments),
 			metadata: this.extractToolMetadata(event),
 		};
+		toolOutcome.fingerprint = buildToolOutcomeFingerprint(toolOutcome);
 		this.toolCallHistoryForNudges.push(toolOutcome);
 		if (toolOutcome.file) {
 			this.fileAccessHistoryForNudges.push(toolOutcome);
@@ -1321,19 +1326,12 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 	 * Applies to Read, Edit, Write, Grep, Glob, Ls tools.
 	 */
 	private extractFileFromToolResult(toolName: string, event: any): string | undefined {
-		const fileTools = ["read", "edit", "write", "grep", "glob", "ls", "Read", "Edit", "Write", "Grep", "Glob", "Ls"];
-		if (!fileTools.includes(toolName)) return undefined;
-		const details = event.details;
-		if (details) {
-			return details.path || details.filePath || undefined;
-		}
-		// Try to extract from arguments
 		const toolCall = this.currentTurn?.toolCalls.find((tc) => tc.toolCallId === event.toolCallId);
-		if (toolCall?.arguments) {
-			const args = toolCall.arguments as Record<string, unknown>;
-			return (args.path as string) || (args.filePath as string) || (args.file as string) || undefined;
-		}
-		return undefined;
+		return extractTrackedFileFromToolResult(
+			toolName,
+			(toolCall?.arguments as Record<string, unknown> | undefined) ?? undefined,
+			event.result,
+		);
 	}
 
 	/**
@@ -1352,14 +1350,14 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 	}
 
 	private resolveDebugRoot(): string {
-		return "/home/alex/AG1/Debug";
+		return path.join(this.projectRoot, "Debug");
 	}
 
 	private resolveSessionDir(): string | null {
-		const dateStr = toSessionDateStr(this.sessionStartTimestamp || Date.now());
+		const dateTimeStr = toSessionDateTimeStr(this.sessionStartTimestamp || Date.now());
 		const model = this.session.model || { provider: "unknown", id: "unknown" };
 		const modelName = modelToFolderName(model.provider, model.id);
-		const baseName = `${dateStr}_${modelName}`;
+		const baseName = `${dateTimeStr}_${modelName}`;
 		const debugRoot = this.resolveDebugRoot();
 
 		// Check for counter suffix

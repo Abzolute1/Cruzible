@@ -4,6 +4,7 @@ import { handleInteractiveEditorSubmitAfterBuiltin, type InteractiveEditorSubmit
 function createState(overrides: Partial<InteractiveEditorSubmitState> = {}): InteractiveEditorSubmitState {
 	return {
 		isBashRunning: false,
+		isPlanningMode: false,
 		isCompacting: false,
 		isStreaming: false,
 		isExtensionCommand: () => false,
@@ -36,6 +37,17 @@ describe("interactive-editor-submit", () => {
 
 		expect(handled).toBe(true);
 		expect(actions.showWarning).toHaveBeenCalledOnce();
+		expect(actions.restoreEditorText).toHaveBeenCalledWith("!ls");
+		expect(actions.handleBashCommand).not.toHaveBeenCalled();
+	});
+
+	test("blocks bash shortcuts in planning mode", async () => {
+		const actions = createActions();
+
+		const handled = await handleInteractiveEditorSubmitAfterBuiltin("!ls", createState({ isPlanningMode: true }), actions);
+
+		expect(handled).toBe(true);
+		expect(actions.showWarning).toHaveBeenCalledWith(expect.stringContaining("planning mode"));
 		expect(actions.restoreEditorText).toHaveBeenCalledWith("!ls");
 		expect(actions.handleBashCommand).not.toHaveBeenCalled();
 	});

@@ -75,4 +75,29 @@ describe("turn health", () => {
 		expect(analysis.reasons).toEqual([]);
 		expect(analysis.recoveryHint).toBeUndefined();
 	});
+
+	test("does not mark local backend availability errors as degraded turns", () => {
+		const analysis = analyzeAssistantTurnHealth({
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: "openai-responses",
+			provider: "local",
+			model: "lm-studio",
+			usage: {
+				input: 10,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 10,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "Connection error.",
+			timestamp: Date.now(),
+		});
+
+		expect(analysis.severity).toBe("normal");
+		expect(analysis.reasons).toEqual([]);
+		expect(analysis.recoveryHint).toBeUndefined();
+	});
 });

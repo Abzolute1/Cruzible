@@ -3,13 +3,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBash } from "../src/core/bash-executor.js";
-import { bashTool, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.js";
-import { editTool } from "../src/core/tools/edit.js";
-import { findTool } from "../src/core/tools/find.js";
-import { grepTool } from "../src/core/tools/grep.js";
-import { lsTool } from "../src/core/tools/ls.js";
-import { readTool } from "../src/core/tools/read.js";
-import { writeTool } from "../src/core/tools/write.js";
+import { createBashTool, createLocalBashOperations } from "../src/core/tools/bash.js";
+import { createEditTool } from "../src/core/tools/edit.js";
+import { createFindTool } from "../src/core/tools/find.js";
+import { createGrepTool } from "../src/core/tools/grep.js";
+import { createLsTool } from "../src/core/tools/ls.js";
+import { createReadTool } from "../src/core/tools/read.js";
+import { createWriteTool } from "../src/core/tools/write.js";
 import * as shellModule from "../src/utils/shell.js";
 
 // Helper to extract text from content blocks
@@ -24,11 +24,25 @@ function getTextOutput(result: any): string {
 
 describe("Coding Agent Tools", () => {
 	let testDir: string;
+	let readTool: ReturnType<typeof createReadTool>;
+	let writeTool: ReturnType<typeof createWriteTool>;
+	let editTool: ReturnType<typeof createEditTool>;
+	let grepTool: ReturnType<typeof createGrepTool>;
+	let findTool: ReturnType<typeof createFindTool>;
+	let lsTool: ReturnType<typeof createLsTool>;
+	let cwdBashTool: ReturnType<typeof createBashTool>;
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
 		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		readTool = createReadTool(testDir);
+		writeTool = createWriteTool(testDir);
+		editTool = createEditTool(testDir);
+		grepTool = createGrepTool(testDir);
+		findTool = createFindTool(testDir);
+		lsTool = createLsTool(testDir);
+		cwdBashTool = createBashTool(testDir);
 	});
 
 	afterEach(() => {
@@ -53,7 +67,9 @@ describe("Coding Agent Tools", () => {
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
 
-			await expect(readTool.execute("test-call-2", { path: testFile })).rejects.toThrow(/ENOENT|not found/i);
+			await expect(readTool.execute("test-call-2", { path: testFile })).rejects.toThrow(
+				/Path not found: .*Use find to locate files or ls to inspect directories before retrying read\./i,
+			);
 		});
 
 		it("should truncate files exceeding line limit", async () => {
@@ -64,10 +80,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-3", { path: testFile });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 2000");
-			expect(output).not.toContain("Line 2001");
-			expect(output).toContain("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]");
+				expect(output).toContain("Line 1");
+				expect(output).toContain("Line 2000");
+				expect(output).not.toContain("Line 2001");
+				expect(output).toContain("[lines 1-2000/2500; next offset=2001]");
 		});
 
 		it("should truncate when byte limit exceeded", async () => {
@@ -79,9 +95,9 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-4", { path: testFile });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1:");
-			// Should show byte limit message
-			expect(output).toMatch(/\[Showing lines 1-\d+ of 500 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+				expect(output).toContain("Line 1:");
+				// Should show byte limit message
+				expect(output).toMatch(/\[lines 1-\d+\/500; byte limit hit; next offset=\d+\]/);
 		});
 
 		it("should handle offset parameter", async () => {
@@ -107,10 +123,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-6", { path: testFile, limit: 10 });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 10");
-			expect(output).not.toContain("Line 11");
-			expect(output).toContain("[90 more lines in file. Use offset=11 to continue.]");
+				expect(output).toContain("Line 1");
+				expect(output).toContain("Line 10");
+				expect(output).not.toContain("Line 11");
+				expect(output).toContain("[90 more lines; next offset=11]");
 		});
 
 		it("should handle offset + limit together", async () => {
@@ -126,10 +142,10 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(output).not.toContain("Line 40");
-			expect(output).toContain("Line 41");
-			expect(output).toContain("Line 60");
-			expect(output).not.toContain("Line 61");
-			expect(output).toContain("[40 more lines in file. Use offset=61 to continue.]");
+				expect(output).toContain("Line 41");
+				expect(output).toContain("Line 60");
+				expect(output).not.toContain("Line 61");
+				expect(output).toContain("[40 more lines; next offset=61]");
 		});
 
 		it("should show error when offset is beyond file length", async () => {
@@ -188,6 +204,15 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("definitely not a png");
 			expect(result.content.some((c: any) => c.type === "image")).toBe(false);
 		});
+
+		it("should guide directory reads toward ls", async () => {
+			const dirPath = join(testDir, "nested");
+			mkdirSync(dirPath, { recursive: true });
+
+			await expect(readTool.execute("test-call-img-3", { path: dirPath })).rejects.toThrow(
+				/Path is a directory: .*Use ls to inspect it, then read a specific file\./i,
+			);
+		});
 	});
 
 	describe("write tool", () => {
@@ -197,7 +222,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-3", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(getTextOutput(result)).toContain("Wrote");
 			expect(getTextOutput(result)).toContain(testFile);
 			expect(result.details).toBeUndefined();
 		});
@@ -208,7 +233,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-4", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(getTextOutput(result)).toContain("Wrote");
 		});
 	});
 
@@ -223,7 +248,7 @@ describe("Coding Agent Tools", () => {
 				edits: [{ oldText: "world", newText: "testing" }],
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced");
+			expect(getTextOutput(result)).toContain("Patched");
 			expect(result.details).toBeDefined();
 			expect(result.details.diff).toBeDefined();
 			expect(typeof result.details.diff).toBe("string");
@@ -268,7 +293,7 @@ describe("Coding Agent Tools", () => {
 				],
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced 2 block(s)");
+			expect(getTextOutput(result)).toContain("Patched 2 block(s)");
 			expect(readFileSync(testFile, "utf-8")).toBe("ALPHA\nbeta\nGAMMA\ndelta\n");
 			expect(result.details?.diff).toContain("ALPHA");
 			expect(result.details?.diff).toContain("GAMMA");
@@ -360,20 +385,20 @@ describe("Coding Agent Tools", () => {
 
 	describe("bash tool", () => {
 		it("should execute simple commands", async () => {
-			const result = await bashTool.execute("test-call-8", { command: "echo 'test output'" });
+			const result = await cwdBashTool.execute("test-call-8", { command: "echo 'test output'" });
 
 			expect(getTextOutput(result)).toContain("test output");
 			expect(result.details).toBeUndefined();
 		});
 
 		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
+			await expect(cwdBashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
 				/(Command failed|code 1)/,
 			);
 		});
 
 		it("should respect timeout", async () => {
-			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
+			await expect(cwdBashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
 				/timed out/i,
 			);
 		});
@@ -451,10 +476,10 @@ describe("Coding Agent Tools", () => {
 			const fullOutputPath = result.details?.fullOutputPath;
 
 			expect(result.details?.truncation?.truncated).toBe(true);
-			expect(result.details?.truncation?.truncatedBy).toBe("lines");
-			expect(fullOutputPath).toBeDefined();
-			expect(output).toMatch(/\[Showing lines \d+-\d+ of \d+\. Full output: /);
-			expect(output).not.toContain("Full output: undefined");
+				expect(result.details?.truncation?.truncatedBy).toBe("lines");
+				expect(fullOutputPath).toBeDefined();
+				expect(output).toMatch(/\[tail lines \d+-\d+\/\d+\] \[full output: /);
+				expect(output).not.toContain("Full output: undefined");
 
 			for (let i = 0; i < 20 && (!fullOutputPath || !existsSync(fullOutputPath)); i++) {
 				await new Promise((resolve) => setTimeout(resolve, 10));
@@ -463,9 +488,23 @@ describe("Coding Agent Tools", () => {
 			expect(fullOutputPath).toBeDefined();
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
-			expect(fullOutput).toContain("1\n2\n3");
-			expect(fullOutput).toContain("2998\n2999\n3000");
-		});
+				expect(fullOutput).toContain("1\n2\n3");
+				expect(fullOutput).toContain("2998\n2999\n3000");
+			});
+
+			it("should compact large listing-style bash output before transcript truncation", async () => {
+				for (let i = 1; i <= 80; i++) {
+					writeFileSync(join(testDir, `file-${i.toString().padStart(3, "0")}.txt`), String(i));
+				}
+				const bash = createBashTool(testDir);
+				const result = await bash.execute("test-call-listing-compact", { command: "ls" });
+				const output = getTextOutput(result);
+
+				expect(output).toContain("file-001.txt");
+				expect(output).toContain("file-025.txt");
+				expect(output).not.toContain("file-080.txt");
+				expect(output).toContain("[55 more lines omitted from inspection output]");
+			});
 
 		it("executeBash should persist full output when truncation happens by line count only", async () => {
 			const result = await executeBash("seq 3000");
@@ -500,6 +539,20 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("example.txt:2: match line");
 		});
 
+		it("should emit a direct read follow-up for a single definitive match", async () => {
+			const testFile = join(testDir, "single-match.ts");
+			writeFileSync(testFile, "line one\nexport function target() {}\nline three\n");
+
+			const result = await grepTool.execute("test-call-11b", {
+				pattern: "export function target",
+				path: testDir,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("single-match.ts:2: export function target() {}");
+			expect(output).toContain("[1 match in single-match.ts:2; next: read single-match.ts offset=1]");
+		});
+
 		it("should respect global limit and include context lines", async () => {
 			const testFile = join(testDir, "context.txt");
 			const content = ["before", "match one", "after", "middle", "match two", "after two"].join("\n");
@@ -516,7 +569,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("context.txt-1- before");
 			expect(output).toContain("context.txt:2: match one");
 			expect(output).toContain("context.txt-3- after");
-			expect(output).toContain("[1 matches limit reached. Use limit=2 for more, or refine pattern]");
+			expect(output).toContain("[1 matches limit; next limit=2]");
 			// Ensure second match is not present
 			expect(output).not.toContain("match two");
 		});
@@ -557,6 +610,42 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("kept.txt");
 			expect(output).not.toContain("ignored.txt");
 		});
+
+		it("should emit compact result-limit notices", async () => {
+			writeFileSync(join(testDir, "alpha.txt"), "a");
+			writeFileSync(join(testDir, "beta.txt"), "b");
+			writeFileSync(join(testDir, "gamma.txt"), "c");
+
+			const result = await findTool.execute("test-call-14b", {
+				pattern: "*.txt",
+				path: testDir,
+				limit: 2,
+			});
+
+			expect(getTextOutput(result)).toContain("[2 results limit; next limit=4]");
+		});
+
+		it("should emit a read follow-up for a single file match", async () => {
+			writeFileSync(join(testDir, "only.ts"), "export const only = true;\n");
+
+			const result = await findTool.execute("test-call-14c", {
+				pattern: "only.ts",
+				path: testDir,
+			});
+
+			expect(getTextOutput(result)).toContain("[1 match; next: read only.ts or grep inside it]");
+		});
+
+		it("should emit an ls follow-up for a single directory match", async () => {
+			mkdirSync(join(testDir, "src"), { recursive: true });
+
+			const result = await findTool.execute("test-call-14d", {
+				pattern: "src",
+				path: testDir,
+			});
+
+			expect(getTextOutput(result)).toContain("[1 directory match; next: ls src/]");
+		});
 	});
 
 	describe("ls tool", () => {
@@ -570,15 +659,26 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain(".hidden-file");
 			expect(output).toContain(".hidden-dir/");
 		});
+
+		it("should emit compact entry-limit notices", async () => {
+			writeFileSync(join(testDir, "a.txt"), "a");
+			writeFileSync(join(testDir, "b.txt"), "b");
+			writeFileSync(join(testDir, "c.txt"), "c");
+
+			const result = await lsTool.execute("test-call-16", { path: testDir, limit: 2 });
+			expect(getTextOutput(result)).toContain("[2 entries limit; next limit=4]");
+		});
 	});
 });
 
 describe("edit tool fuzzy matching", () => {
 	let testDir: string;
+	let editTool: ReturnType<typeof createEditTool>;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `coding-agent-fuzzy-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		editTool = createEditTool(testDir);
 	});
 
 	afterEach(() => {
@@ -596,7 +696,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "line one\nline two\n", newText: "replaced\n" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("replaced\nline three\n");
 	});
@@ -610,7 +710,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "你好,世界\n你好(世界)\n", newText: "你好，pi\n你好(pi)\n" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("你好，pi\n你好(pi)\n");
 	});
@@ -624,7 +724,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "ABC123\ncafé\n", newText: "XYZ789\ncoffee\n" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("XYZ789\ncoffee\n");
 	});
@@ -640,7 +740,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "console.log('hello');", newText: "console.log('world');" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toContain("world");
 	});
@@ -656,7 +756,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: 'const msg = "Hello World";', newText: 'const msg = "Goodbye";' }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toContain("Goodbye");
 	});
@@ -672,7 +772,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "range: 1-5\nbreak-here", newText: "range: 10-50\nbreak--here" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toContain("10-50");
 	});
@@ -688,7 +788,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "hello world", newText: "hello universe" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toContain("universe");
 	});
@@ -703,7 +803,7 @@ describe("edit tool fuzzy matching", () => {
 			edits: [{ oldText: "const x = 'exact';", newText: "const x = 'changed';" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("const x = 'changed';\nconst y = 'other';\n");
 	});
@@ -751,10 +851,12 @@ describe("edit tool fuzzy matching", () => {
 
 describe("edit tool CRLF handling", () => {
 	let testDir: string;
+	let editTool: ReturnType<typeof createEditTool>;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `coding-agent-crlf-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		editTool = createEditTool(testDir);
 	});
 
 	afterEach(() => {
@@ -771,7 +873,7 @@ describe("edit tool CRLF handling", () => {
 			edits: [{ oldText: "line two\n", newText: "replaced line\n" }],
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Patched");
 	});
 
 	it("should preserve CRLF line endings after edit", async () => {

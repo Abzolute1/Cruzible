@@ -4,6 +4,10 @@ import type { ExtensionRunner, ToolDefinition } from "./extensions/index.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { wrapRegisteredTools } from "./extensions/index.js";
 import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
+import {
+	createInteractThenScreenshotToolDefinition,
+	createScreenshotUrlToolDefinition,
+} from "./tools/visual/index.js";
 
 export interface ToolDefinitionEntryState {
 	definition: ToolDefinition;
@@ -38,8 +42,8 @@ export class AgentSessionToolRegistryCoordinator {
 		const registeredTools = extensionRunner?.getAllRegisteredTools() ?? [];
 
 		const visualToolDefinitions = this.getVisualToolDefinitions();
-		const allCustomTools = [
-			...registeredTools,
+		const extensionTools = registeredTools;
+		const standaloneCustomTools = [
 			...this.options.getCustomTools().map((definition) => ({
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
@@ -59,7 +63,7 @@ export class AgentSessionToolRegistryCoordinator {
 				},
 			]),
 		);
-		for (const tool of allCustomTools) {
+		for (const tool of [...extensionTools, ...standaloneCustomTools]) {
 			definitionRegistry.set(tool.definition.name, {
 				definition: tool.definition,
 				sourceInfo: tool.sourceInfo,
@@ -84,13 +88,17 @@ export class AgentSessionToolRegistryCoordinator {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 
-		const wrappedExtensionTools = extensionRunner ? wrapRegisteredTools(allCustomTools, extensionRunner) : [];
+		const wrappedExtensionTools = extensionRunner ? wrapRegisteredTools(extensionTools, extensionRunner) : [];
+		const wrappedStandaloneTools = standaloneCustomTools.map((tool) => wrapToolDefinition(tool.definition));
 		const toolRegistry = new Map(
 			Array.from(this.options.getBaseToolDefinitions().values()).map((definition) => [
 				definition.name,
 				wrapToolDefinition(definition),
 			]),
 		);
+		for (const tool of wrappedStandaloneTools as AgentTool[]) {
+			toolRegistry.set(tool.name, tool);
+		}
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
@@ -105,6 +113,10 @@ export class AgentSessionToolRegistryCoordinator {
 		const nextActiveToolNames = refreshOptions?.activeToolNames
 			? [...refreshOptions.activeToolNames]
 			: [...previousActiveToolNames];
+
+		for (const tool of wrappedStandaloneTools) {
+			nextActiveToolNames.push(tool.name);
+		}
 
 		if (refreshOptions?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
@@ -121,19 +133,16 @@ export class AgentSessionToolRegistryCoordinator {
 		this.options.applyActiveToolNames([...new Set(nextActiveToolNames)]);
 	}
 
-	private getVisualToolDefinitions(): ToolDefinition[] {
+	private getVisualToolDefinitions(): ToolDefinition<any, any>[] {
 		const model = this.options.getModel();
 		if (!model || !AgentSessionToolRegistryCoordinator.modelSupportsVision(model)) {
 			return [];
 		}
 
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const visual = require("./tools/visual/index.js") as Record<string, ToolDefinition<any, any>>;
-			return [visual.screenshotUrlToolDefinition, visual.interactThenScreenshotToolDefinition];
-		} catch {
-			return [];
-		}
+		return [
+			createScreenshotUrlToolDefinition() as ToolDefinition<any, any>,
+			createInteractThenScreenshotToolDefinition() as ToolDefinition<any, any>,
+		];
 	}
 
 	private static modelSupportsVision(model: Model<any>): boolean {

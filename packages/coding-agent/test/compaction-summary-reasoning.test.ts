@@ -75,4 +75,29 @@ describe("generateSummary reasoning options", () => {
 		});
 		expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
 	});
+
+	it("keeps additional focus in a separate tagged block for cache-stable prompts", async () => {
+		await generateSummary(messages, createModel(false), 2000, "test-key", undefined, undefined, "Focus on tests");
+
+		const promptText = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(promptText).toContain("<additional-focus>\nFocus on tests\n</additional-focus>");
+		expect(promptText).not.toContain("Additional focus: Focus on tests");
+	});
+
+	it("serializes previous summaries in a dedicated tagged block for update prompts", async () => {
+		await generateSummary(
+			messages,
+			createModel(false),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			"Focus on tests",
+			"## Goal\nExisting summary",
+		);
+
+		const promptText = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(promptText).toContain("<previous-summary>\n## Goal\nExisting summary\n</previous-summary>");
+		expect(promptText).toContain("The messages above are NEW conversation messages");
+	});
 });
