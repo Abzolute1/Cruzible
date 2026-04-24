@@ -2,8 +2,8 @@
  * Hello Tool - Minimal custom tool example
  */
 
-import { Type } from "@mariozechner/pi-ai";
-import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@ag1/ai";
+import { defineTool, type ExtensionAPI } from "@ag1/coding-agent";
 
 const helloTool = defineTool({
 	name: "hello",
@@ -21,6 +21,6 @@ const helloTool = defineTool({
 	},
 });
 
-export default function (pi: ExtensionAPI) {
-	pi.registerTool(helloTool);
+export default function (ag1: ExtensionAPI) {
+	ag1.registerTool(helloTool);
 }

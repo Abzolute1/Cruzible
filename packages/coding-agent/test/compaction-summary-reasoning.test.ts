@@ -1,5 +1,5 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Model } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, Model } from "@ag1/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { generateSummary } from "../src/core/compaction/index.js";
 
@@ -7,8 +7,8 @@ const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
 }));
 
-vi.mock("@mariozechner/pi-ai", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@mariozechner/pi-ai")>();
+vi.mock("@ag1/ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@ag1/ai")>();
 	return {
 		...actual,
 		completeSimple: completeSimpleMock,
@@ -82,6 +82,10 @@ describe("generateSummary reasoning options", () => {
 		const promptText = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
 		expect(promptText).toContain("<additional-focus>\nFocus on tests\n</additional-focus>");
 		expect(promptText).not.toContain("Additional focus: Focus on tests");
+		expect(promptText).toContain("## Files & Evidence");
+		expect(promptText).toContain("## Verification");
+		expect(promptText).toContain("## Open Questions");
+		expect(promptText).toContain("## Resume Checklist");
 	});
 
 	it("serializes previous summaries in a dedicated tagged block for update prompts", async () => {
@@ -99,5 +103,6 @@ describe("generateSummary reasoning options", () => {
 		const promptText = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
 		expect(promptText).toContain("<previous-summary>\n## Goal\nExisting summary\n</previous-summary>");
 		expect(promptText).toContain("The messages above are NEW conversation messages");
+		expect(promptText).toContain("## Resume Checklist");
 	});
 });

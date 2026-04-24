@@ -1,6 +1,6 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { AgentTool } from "@ag1/agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@ag1/ai";
+import type { ExtensionAPI } from "@ag1/coding-agent";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.js";
@@ -37,9 +37,9 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		const harness = await createHarness({
 			tools: [waitTool],
 			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
-					pi.registerCommand("testcmd", {
+				(ag1) => {
+					extensionApi = ag1;
+					ag1.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);

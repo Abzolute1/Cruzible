@@ -147,7 +147,7 @@ describe("interactive-maintenance-actions", () => {
 		});
 
 		expect(showStatus).toHaveBeenCalledWith(
-			"Share URL: https://pi.dev/session/#abc123\nGist: https://gist.github.com/user/abc123",
+			"Share URL: https://ag1.dev/session/#abc123\nGist: https://gist.github.com/user/abc123",
 		);
 	});
 

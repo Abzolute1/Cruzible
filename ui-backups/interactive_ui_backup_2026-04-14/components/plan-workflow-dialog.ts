@@ -1,4 +1,4 @@
-import { Container, getKeybindings, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, getKeybindings, Spacer, Text } from "@ag1/tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";

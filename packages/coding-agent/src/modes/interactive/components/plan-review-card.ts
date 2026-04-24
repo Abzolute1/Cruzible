@@ -1,4 +1,4 @@
-import { Box, Container, Spacer, Text } from "@mariozechner/pi-tui";
+import { Box, Container, Spacer, Text } from "@ag1/tui";
 import type { InteractivePlanArtifact } from "../interactive-plan-artifacts.js";
 import {
 	buildInteractiveExpandedPlanCardLines,

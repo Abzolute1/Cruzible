@@ -109,6 +109,21 @@ describe("xml tool parser", () => {
 		expect(buildXmlFallbackRecoveryPrompt(analysis)).toContain("degraded into a long or truncated XML fallback");
 	});
 
+	test("adds direct-answer guidance for local discovery XML recovery", () => {
+		const analysis = analyzeXmlFallbackTurn({
+			callCount: 2,
+			assistantTextLength: 1200,
+			assistantStopReason: "stop",
+			iteration: 1,
+		});
+
+		expect(
+			buildXmlFallbackRecoveryPrompt(analysis, {
+				toolNames: ["ls", "find"],
+			}),
+		).toContain("answer directly now and do not call more tools");
+	});
+
 	test("classifies simple XML fallback turns as normal", () => {
 		const analysis = analyzeXmlFallbackTurn({
 			callCount: 1,
@@ -120,5 +135,18 @@ describe("xml tool parser", () => {
 		expect(analysis.severity).toBe("normal");
 		expect(analysis.shouldInjectRecoveryPrompt).toBe(false);
 		expect(buildXmlFallbackRecoveryPrompt(analysis)).toBeUndefined();
+	});
+
+	test("adds verification guidance after mutating XML fallback tool calls", () => {
+		const analysis = analyzeXmlFallbackTurn({
+			callCount: 1,
+			assistantTextLength: 400,
+			assistantStopReason: "stop",
+			iteration: 0,
+		});
+
+		expect(buildXmlFallbackRecoveryPrompt(analysis, { toolNames: ["edit"] })).toContain(
+			"If the edit/write succeeded, do not repeat or revise it; run the requested verification next.",
+		);
 	});
 });

@@ -4,7 +4,7 @@ interface StdoutTakeoverState {
 	originalStdoutWrite: typeof process.stdout.write;
 }
 
-const STDOUT_TAKEOVER_STATE_KEY = Symbol.for("crucible.stdoutTakeoverState");
+const STDOUT_TAKEOVER_STATE_KEY = Symbol.for("ag1.stdoutTakeoverState");
 const STDOUT_TAKEOVER_ENV = "CRUCIBLE_STDOUT_TAKEN_OVER";
 const stdoutGuardGlobal = globalThis as typeof globalThis & {
 	[STDOUT_TAKEOVER_STATE_KEY]?: StdoutTakeoverState;

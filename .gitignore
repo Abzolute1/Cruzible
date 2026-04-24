@@ -26,6 +26,7 @@ coverage/
 .nyc_output/
 .pi_config/
 .ag1/
+.ag1-secrets/
 .crucible/
 .pi/
 Debug/

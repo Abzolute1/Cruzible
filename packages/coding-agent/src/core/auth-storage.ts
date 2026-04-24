@@ -2,7 +2,7 @@
  * Credential storage for API keys and OAuth tokens.
  * Handles loading, saving, and refreshing credentials from auth.json.
  *
- * Uses file locking to prevent race conditions when multiple pi instances
+ * Uses file locking to prevent race conditions when multiple AG1 instances
  * try to refresh tokens simultaneously.
  */
 
@@ -11,12 +11,13 @@ import {
 	type OAuthCredentials,
 	type OAuthLoginCallbacks,
 	type OAuthProviderId,
-} from "@mariozechner/pi-ai";
-import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@mariozechner/pi-ai/oauth";
+} from "@ag1/ai";
+import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@ag1/ai/oauth";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
+import { readProviderSecretFileApiKey } from "./provider-secret-file.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 
 export type ApiKeyCredential = {
@@ -364,7 +365,7 @@ export class AuthStorage {
 
 	/**
 	 * Refresh OAuth token with backend locking to prevent race conditions.
-	 * Multiple pi instances may try to refresh simultaneously when tokens expire.
+	 * Multiple AG1 instances may try to refresh simultaneously when tokens expire.
 	 */
 	private async refreshOAuthTokenWithLock(
 		providerId: OAuthProviderId,
@@ -416,10 +417,11 @@ export class AuthStorage {
 	 * Get API key for a provider.
 	 * Priority:
 	 * 1. Runtime override (CLI --api-key)
-	 * 2. API key from auth.json
-	 * 3. OAuth token from auth.json (auto-refreshed with locking)
-	 * 4. Environment variable
-	 * 5. Fallback resolver (models.json custom providers)
+	 * 2. Local provider secret file (lets installed AG1 keys override stale shell/auth keys)
+	 * 3. Environment variable
+	 * 4. API key from auth.json
+	 * 5. OAuth token from auth.json (auto-refreshed with locking)
+	 * 6. Fallback resolver (models.json custom providers)
 	 */
 	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
 		// Runtime override takes highest priority
@@ -427,6 +429,12 @@ export class AuthStorage {
 		if (runtimeKey) {
 			return runtimeKey;
 		}
+
+		const secretFileKey = readProviderSecretFileApiKey(providerId);
+		if (secretFileKey) return secretFileKey;
+
+		const envKey = getEnvApiKey(providerId);
+		if (envKey) return envKey;
 
 		const cred = this.data[providerId];
 
@@ -471,10 +479,6 @@ export class AuthStorage {
 				return provider.getApiKey(cred);
 			}
 		}
-
-		// Fall back to environment variable
-		const envKey = getEnvApiKey(providerId);
-		if (envKey) return envKey;
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
 		if (options?.includeFallback !== false) {

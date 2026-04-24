@@ -1,6 +1,6 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { AgentTool } from "@ag1/agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@ag1/ai";
+import type { ExtensionAPI } from "@ag1/coding-agent";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
@@ -10,7 +10,7 @@ async function createWaitingHarness(
 		tools?: AgentTool[];
 		extensionFactories?: Harness["session"]["extensionRunner"] extends never
 			? never
-			: Array<(pi: ExtensionAPI) => void>;
+			: Array<(ag1: ExtensionAPI) => void>;
 	} = {},
 ): Promise<{
 	harness: Harness;
@@ -70,8 +70,8 @@ describe("AgentSession queue characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(ag1) => {
+					ag1.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);
@@ -93,8 +93,8 @@ describe("AgentSession queue characterization", () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
+				(ag1) => {
+					extensionApi = ag1;
 				},
 			],
 		});
@@ -353,6 +353,67 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "custom", "assistant"]);
 	});
 
+	it("replaces older hidden nextTurn messages of the same custom type", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let customTexts: string[] = [];
+
+		await harness.session.sendCustomMessage(
+			{ customType: "runtime_continuation_state", content: "old hidden carry", display: false, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.sendCustomMessage(
+			{ customType: "runtime_continuation_state", content: "new hidden carry", display: false, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+
+		harness.setResponses([
+			(context) => {
+				customTexts = context.messages
+					.filter((message) => message.role === "user" && typeof message.content !== "string")
+					.flatMap((message) =>
+						message.content
+							.filter((part) => part.type === "text")
+							.map((part) => part.text),
+					);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("normal prompt");
+
+		expect(customTexts).toContain("new hidden carry");
+		expect(customTexts).not.toContain("old hidden carry");
+	});
+
+	it("keeps only the newest hidden custom message of a given type in live session state", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.sendCustomMessage({
+			customType: "runtime_continuation_state",
+			content: "old hidden state",
+			display: false,
+			details: {},
+		});
+		await harness.session.sendCustomMessage({
+			customType: "runtime_continuation_state",
+			content: "new hidden state",
+			display: false,
+			details: {},
+		});
+
+		const hiddenMessages = harness.session.messages.filter(
+			(message) =>
+				message.role === "custom" &&
+				message.customType === "runtime_continuation_state" &&
+				message.display === false,
+		);
+
+		expect(hiddenMessages).toHaveLength(1);
+		expect(hiddenMessages[0]).toMatchObject({ content: "new hidden state" });
+	});
+
 	it("updates pendingMessageCount and removes queued text before message_start is emitted", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
@@ -387,8 +448,8 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(ag1) => {
+					ag1.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
 					});
@@ -405,8 +466,8 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with followUp", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(ag1) => {
+					ag1.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
 					});

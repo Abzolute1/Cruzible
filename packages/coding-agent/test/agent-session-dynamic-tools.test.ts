@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@mariozechner/pi-ai";
+import { getModel } from "@ag1/ai";
 import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
@@ -14,7 +14,7 @@ describe("AgentSession dynamic tool registration", () => {
 	let agentDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-dynamic-tool-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `ag1-dynamic-tool-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
 	});
@@ -34,9 +34,9 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
+				(ag1) => {
+					ag1.on("session_start", () => {
+						ag1.registerTool({
 							name: "dynamic_tool",
 							label: "Dynamic Tool",
 							description: "Tool registered from session_start",
@@ -143,9 +143,9 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
+				(ag1) => {
+					ag1.on("session_start", () => {
+						ag1.registerTool({
 							name: "hidden_tool",
 							label: "Hidden Tool",
 							description: "Description should appear in available tools",

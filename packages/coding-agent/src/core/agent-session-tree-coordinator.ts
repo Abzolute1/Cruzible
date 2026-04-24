@@ -1,5 +1,5 @@
-import type { Agent } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
+import type { Agent } from "@ag1/agent-core";
+import type { Model } from "@ag1/ai";
 import {
 	collectEntriesForBranchSummary,
 	generateBranchSummary,

@@ -10,8 +10,8 @@
  *   - details: structured metadata for logs/UI (console errors, failed requests, load time)
  */
 
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@ag1/agent-core";
+import type { ImageContent, TextContent } from "@ag1/ai";
 import { type Static, Type } from "@sinclair/typebox";
 import type { ExtensionContext, ToolDefinition } from "../../extensions/types.js";
 import { wrapToolDefinition } from "../tool-definition-wrapper.js";

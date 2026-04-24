@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import { Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { existsSync, readdirSync, statSync } from "fs";
 import nodePath from "path";
@@ -22,6 +22,9 @@ const DEFAULT_LIMIT = 500;
 export interface LsToolDetails {
 	truncation?: TruncationResult;
 	entryLimitReached?: number;
+	directoryPath?: string;
+	entryCount?: number;
+	entriesSample?: string[];
 }
 
 /**
@@ -103,6 +106,17 @@ function formatLsNotice(limit: number, options: { entryLimitReached?: boolean; b
 	return `[${parts.join("; ")}]`;
 }
 
+function formatLsFollowupNotice(
+	results: string[],
+	options: { entryLimitReached?: boolean; byteTruncated?: boolean },
+): string | undefined {
+	if (results.length === 0 || options.entryLimitReached || options.byteTruncated) return undefined;
+	if (results.length <= 8) {
+		return "[directory listed completely; if the user asked which files are here, answer now from this listing instead of running find or grep]";
+	}
+	return undefined;
+}
+
 export function createLsToolDefinition(
 	cwd: string,
 	options?: LsToolOptions,
@@ -117,6 +131,7 @@ export function createLsToolDefinition(
 			"Use ls to inspect unfamiliar directories before reading files inside them.",
 			"After read says a path is a directory or a path is uncertain, use ls before retrying.",
 			"Use ls to confirm the project structure, then switch to find, grep, or read for specifics.",
+			"If ls fully answers a directory inventory question, answer from the listing instead of following with find or grep.",
 		],
 		parameters: lsSchema,
 		async execute(
@@ -198,6 +213,9 @@ export function createLsToolDefinition(
 						const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 						let output = truncation.content;
 						const details: LsToolDetails = {};
+						details.directoryPath = path ?? ".";
+						details.entryCount = results.length;
+						details.entriesSample = results.slice(0, 8);
 						// Build actionable notices for truncation and entry limits.
 						if (entryLimitReached) {
 							details.entryLimitReached = effectiveLimit;
@@ -211,6 +229,11 @@ export function createLsToolDefinition(
 								byteTruncated: truncation.truncated,
 							})}`;
 						}
+						const followupNotice = formatLsFollowupNotice(results, {
+							entryLimitReached,
+							byteTruncated: truncation.truncated,
+						});
+						if (followupNotice) output += `\n\n${followupNotice}`;
 
 						resolve({
 							content: [{ type: "text", text: output }],

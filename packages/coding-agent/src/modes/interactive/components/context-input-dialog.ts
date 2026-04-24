@@ -1,4 +1,4 @@
-import { Container, type Focusable, getKeybindings, Input, Text, type TUI } from "@mariozechner/pi-tui";
+import { Container, type Focusable, getKeybindings, Input, Text, type TUI } from "@ag1/tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 

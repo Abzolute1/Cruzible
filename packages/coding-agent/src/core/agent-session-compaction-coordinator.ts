@@ -1,6 +1,6 @@
-import type { Agent } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Model } from "@mariozechner/pi-ai";
-import { isContextOverflow } from "@mariozechner/pi-ai";
+import type { Agent } from "@ag1/agent-core";
+import type { AssistantMessage, Model } from "@ag1/ai";
+import { isContextOverflow } from "@ag1/ai";
 import { getAutoCompactTrigger, selectCompactionPolicy } from "./auton/compaction-policy.js";
 import type { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
 import { AgentSessionRecoveryReplayScheduler } from "./agent-session-recovery-replay-scheduler.js";
@@ -269,7 +269,7 @@ export class AgentSessionCompactionCoordinator {
 					const newEstimate = estimateContextTokens(this.options.agent.state.messages);
 					const freedTokens = currentEstimate.tokens - newEstimate.tokens;
 					process.stderr.write?.(
-						`[Compaction] Micro-compact freed ${freedTokens} tokens (${truncated} tool results truncated)\n`,
+						`[Compaction] Micro-compact freed ${freedTokens} tokens (${truncated} stale items compacted)\n`,
 					);
 
 					const newStrategy = selectCompactionStrategy(newEstimate.tokens, policy);

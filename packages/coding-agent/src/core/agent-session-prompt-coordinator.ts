@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, ImageContent, Model, TextContent } from "@ag1/ai";
 import { getDocsPath } from "../config.js";
 import { appendTaggedPromptSection } from "./prompt-sections.js";
 import type { AgentSessionEvent } from "./agent-session.js";

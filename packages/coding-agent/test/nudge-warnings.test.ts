@@ -31,6 +31,56 @@ describe("tool outcome file extraction", () => {
 
 		expect(file).toBe("src/core/tools/research-output.ts");
 	});
+
+	test("prefers firstMatchPath metadata for multi-result find output", () => {
+		const file = extractTrackedFileFromToolResult(
+			"find",
+			{ path: "/home/alex/AG1" },
+			{
+				content: [
+					{
+						type: "text",
+						text: "scripts/harness-benchmark-compare.mjs\nscripts/harness-benchmark-pack.sh\nbenchmarks/",
+					},
+				],
+				details: {
+					firstMatchPath: "scripts/harness-benchmark-compare.mjs",
+					dominantFileDirectory: "scripts",
+				},
+			},
+		);
+
+		expect(file).toBe("scripts/harness-benchmark-compare.mjs");
+	});
+
+	test("does not treat grep no-match output as a tracked file", () => {
+		const file = extractTrackedFileFromToolResult(
+			"grep",
+			{ path: "/home/alex/AG1" },
+			{
+				content: [
+					{
+						type: "text",
+						text: "(no matches)\n[no matches; literal=true with regex-like pattern; retry with a simpler literal or disable literal]",
+					},
+				],
+			},
+		);
+
+		expect(file).toBeUndefined();
+	});
+
+	test("does not treat find no-match output as a tracked file", () => {
+		const file = extractTrackedFileFromToolResult(
+			"find",
+			{ path: "/home/alex/AG1" },
+			{
+				content: [{ type: "text", text: "(no matches)" }],
+			},
+		);
+
+		expect(file).toBeUndefined();
+	});
 });
 
 describe("evaluateInteractiveNudges", () => {

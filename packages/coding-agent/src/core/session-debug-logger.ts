@@ -728,6 +728,14 @@ export class SessionDebugLogger {
 		if (toolName === "verify" && typeof args.command === "string") return args.command;
 		if (toolName === "webSearch" && typeof args.query === "string") return args.query;
 		if (toolName === "webFetch" && typeof args.url === "string") return args.url;
+		if (toolName === "read") {
+			const path = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
+			if (!path) return undefined;
+			const suffix: string[] = [];
+			if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);
+			if (typeof args.limit === "number") suffix.push(`limit=${args.limit}`);
+			return suffix.length > 0 ? `${path} (${suffix.join(", ")})` : path;
+		}
 		if (typeof args.filePath === "string") return args.filePath;
 		if (typeof args.path === "string") return args.path;
 		return undefined;
@@ -1331,6 +1339,7 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 			toolName,
 			(toolCall?.arguments as Record<string, unknown> | undefined) ?? undefined,
 			event.result,
+			this.projectRoot,
 		);
 	}
 

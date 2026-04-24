@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
 
-const outputPath = join(tmpdir(), "pi-browser-smoke.js");
-const errorLogPath = join(tmpdir(), "pi-browser-smoke-errors.log");
+const outputPath = join(tmpdir(), "ag1-browser-smoke.js");
+const errorLogPath = join(tmpdir(), "ag1-browser-smoke-errors.log");
 
 try {
 	await build({

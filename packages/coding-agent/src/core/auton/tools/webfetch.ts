@@ -4,7 +4,11 @@
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "../../extensions/types.js";
-import { getEffectiveFetchCompressionProfile, getResearchUrlHint } from "../../tools/research-intent.js";
+import {
+	getEffectiveFetchCompressionProfile,
+	getResearchUrlHint,
+	rememberResearchFetchOutcome,
+} from "../../tools/research-intent.js";
 import {
 	assessResearchFetchContent,
 	buildResearchPreview,
@@ -200,7 +204,7 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 				const response = await fetch(fetchUrl, {
 					signal,
 					headers: {
-						"User-Agent": "Mozilla/5.0 (compatible; Pi-Agent/1.0)",
+						"User-Agent": "Mozilla/5.0 (compatible; AG1-Agent/1.0)",
 					},
 					redirect: "follow",
 				});
@@ -270,7 +274,10 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 					preview,
 					title,
 					metaDescription,
+					intent: hint?.intent,
+					coverageKind: hint?.coverageKind,
 				});
+				rememberResearchFetchOutcome(fetchUrl, assessment.status);
 
 				return {
 					content: [
@@ -286,6 +293,9 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 								metaDescription,
 								status: assessment.status,
 								statusReason: assessment.reason,
+								intent: hint?.intent,
+								authoritative: hint?.authoritative === true,
+								coverage: assessment.coverage,
 							}),
 						},
 					],
@@ -301,6 +311,10 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 						metaDescription,
 						status: assessment.status,
 						statusReason: assessment.reason,
+						intent: hint?.intent,
+						authoritative: hint?.authoritative === true,
+						coverageKind: hint?.coverageKind,
+						coverage: assessment.coverage,
 					},
 				};
 		} catch (err: any) {

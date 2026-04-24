@@ -24,7 +24,7 @@ const getPod = (podOverride?: string): { name: string; pod: Pod } => {
 
 	const active = getActivePod();
 	if (!active) {
-		console.error(chalk.red("No active pod. Use 'pi pods active <name>' to set one."));
+		console.error(chalk.red("No active pod. Use 'ag1-pods pods active <name>' to set one."));
 		process.exit(1);
 	}
 	return active;
@@ -216,9 +216,10 @@ chmod +x /tmp/model_run_${name}.sh`,
 	);
 
 	// Prepare environment
+	const apiKey = process.env.AG1_API_KEY || "";
 	const env = [
 		`HF_TOKEN='${process.env.HF_TOKEN}'`,
-		`PI_API_KEY='${process.env.PI_API_KEY}'`,
+		`AG1_API_KEY='${apiKey}'`,
 		`HF_HUB_ENABLE_HF_TRANSFER=1`,
 		`VLLM_NO_USAGE_STATS=1`,
 		`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`,
@@ -360,7 +361,7 @@ WRAPPER
 			console.log("  • Try a smaller model variant");
 		}
 
-		console.log(`\n${chalk.cyan(`Check full logs: pi ssh "tail -100 ~/.vllm_logs/${name}.log"`)}`);
+		console.log(`\n${chalk.cyan(`Check full logs: ag1-pods ssh "tail -100 ~/.vllm_logs/${name}.log"`)}`);
 		process.exit(1);
 	} else if (startupComplete) {
 		// Model started successfully - output connection details
@@ -369,12 +370,12 @@ WRAPPER
 		console.log(chalk.cyan("─".repeat(50)));
 		console.log(chalk.white("Base URL:    ") + chalk.yellow(`http://${host}:${port}/v1`));
 		console.log(chalk.white("Model:       ") + chalk.yellow(modelId));
-		console.log(chalk.white("API Key:     ") + chalk.yellow(process.env.PI_API_KEY || "(not set)"));
+		console.log(chalk.white("API Key:     ") + chalk.yellow(process.env.AG1_API_KEY || "(not set)"));
 		console.log(chalk.cyan("─".repeat(50)));
 
 		console.log(`\n${chalk.bold("Export for shell:")}`);
 		console.log(chalk.gray(`export OPENAI_BASE_URL="http://${host}:${port}/v1"`));
-		console.log(chalk.gray(`export OPENAI_API_KEY="${process.env.PI_API_KEY || "your-api-key"}"`));
+		console.log(chalk.gray(`export OPENAI_API_KEY="${process.env.AG1_API_KEY || "your-api-key"}"`));
 		console.log(chalk.gray(`export OPENAI_MODEL="${modelId}"`));
 
 		console.log(`\n${chalk.bold("Example usage:")}`);
@@ -395,20 +396,20 @@ WRAPPER
     -d '{"model":"${modelId}","messages":[{"role":"user","content":"Hi"}]}'`),
 		);
 		console.log("");
-		console.log(chalk.cyan(`Chat with model:  pi agent ${name} "Your message"`));
-		console.log(chalk.cyan(`Interactive mode: pi agent ${name} -i`));
-		console.log(chalk.cyan(`Monitor logs:     pi logs ${name}`));
-		console.log(chalk.cyan(`Stop model:       pi stop ${name}`));
+		console.log(chalk.cyan(`Chat with model:  ag1-pods agent ${name} "Your message"`));
+		console.log(chalk.cyan(`Interactive mode: ag1-pods agent ${name} -i`));
+		console.log(chalk.cyan(`Monitor logs:     ag1-pods logs ${name}`));
+		console.log(chalk.cyan(`Stop model:       ag1-pods stop ${name}`));
 	} else if (interrupted) {
 		console.log(chalk.yellow("\n\nStopped monitoring. Model deployment continues in background."));
-		console.log(chalk.cyan(`Chat with model: pi agent ${name} "Your message"`));
-		console.log(chalk.cyan(`Check status: pi logs ${name}`));
-		console.log(chalk.cyan(`Stop model: pi stop ${name}`));
+		console.log(chalk.cyan(`Chat with model: ag1-pods agent ${name} "Your message"`));
+		console.log(chalk.cyan(`Check status: ag1-pods logs ${name}`));
+		console.log(chalk.cyan(`Stop model: ag1-pods stop ${name}`));
 	} else {
 		console.log(chalk.yellow("\n\nLog stream ended. Model may still be running."));
-		console.log(chalk.cyan(`Chat with model: pi agent ${name} "Your message"`));
-		console.log(chalk.cyan(`Check status: pi logs ${name}`));
-		console.log(chalk.cyan(`Stop model: pi stop ${name}`));
+		console.log(chalk.cyan(`Chat with model: ag1-pods agent ${name} "Your message"`));
+		console.log(chalk.cyan(`Check status: ag1-pods logs ${name}`));
+		console.log(chalk.cyan(`Stop model: ag1-pods stop ${name}`));
 	}
 };
 
@@ -536,7 +537,7 @@ export const listModels = async (options: { pod?: string }) => {
 			console.log(chalk.red(`  ${name}: Process ${model.pid} is not running`));
 			anyDead = true;
 		} else if (status === "crashed") {
-			console.log(chalk.red(`  ${name}: vLLM crashed (check logs with 'pi logs ${name}')`));
+			console.log(chalk.red(`  ${name}: vLLM crashed (check logs with 'ag1-pods logs ${name}')`));
 			anyDead = true;
 		} else if (status === "starting") {
 			console.log(chalk.yellow(`  ${name}: Still starting up...`));
@@ -546,7 +547,7 @@ export const listModels = async (options: { pod?: string }) => {
 	if (anyDead) {
 		console.log("");
 		console.log(chalk.yellow("Some models are not running. Clean up with:"));
-		console.log(chalk.cyan("  pi stop <name>"));
+		console.log(chalk.cyan("  ag1-pods stop <name>"));
 	} else {
 		console.log(chalk.green("✓ All processes verified"));
 	}
@@ -611,10 +612,10 @@ export const showKnownModels = async () => {
 		console.log(chalk.bold(`Known Models for ${activePod.name} (${podGpuCount}x ${podGpuType || "GPU"}):\n`));
 	} else {
 		console.log(chalk.bold("Known Models:\n"));
-		console.log(chalk.yellow("No active pod. Use 'pi pods active <name>' to filter compatible models.\n"));
+		console.log(chalk.yellow("No active pod. Use 'ag1-pods pods active <name>' to filter compatible models.\n"));
 	}
 
-	console.log("Usage: pi start <model> --name <name> [options]\n");
+	console.log("Usage: ag1-pods start <model> --name <name> [options]\n");
 
 	// Group models by compatibility and family
 	const compatible: Record<string, Array<{ id: string; name: string; config: string; notes?: string }>> = {};

@@ -2,8 +2,8 @@
  * Snake game extension - play snake with /snake command
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@ag1/coding-agent";
+import { matchesKey, visibleWidth } from "@ag1/tui";
 
 const GAME_WIDTH = 40;
 const GAME_HEIGHT = 15;
@@ -306,8 +306,8 @@ class SnakeComponent {
 
 const SNAKE_SAVE_TYPE = "snake-save";
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("snake", {
+export default function (ag1: ExtensionAPI) {
+	ag1.registerCommand("snake", {
 		description: "Play Snake!",
 
 		handler: async (_args, ctx) => {
@@ -333,7 +333,7 @@ export default function (pi: ExtensionAPI) {
 					() => done(undefined),
 					(state) => {
 						// Save or clear state
-						pi.appendEntry(SNAKE_SAVE_TYPE, state);
+						ag1.appendEntry(SNAKE_SAVE_TYPE, state);
 					},
 					savedState,
 				);

@@ -8,7 +8,7 @@
  * tools resolve paths relative to your cwd, not process.cwd().
  *
  * For custom tools, see 06-extensions.ts - custom tools are now registered
- * via the extensions system using pi.registerTool().
+ * via the extensions system using `registerTool()`.
  */
 
 import {
@@ -22,7 +22,7 @@ import {
 	readOnlyTools,
 	readTool,
 	SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@ag1/coding-agent";
 
 // Read-only mode (no edit/write) - uses process.cwd()
 await createAgentSession({

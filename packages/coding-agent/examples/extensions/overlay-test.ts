@@ -1,18 +1,18 @@
 /**
  * Overlay Test - validates overlay compositing with inline text inputs
  *
- * Usage: pi --extension ./examples/extensions/overlay-test.ts
+ * Usage: ag1 --extension ./examples/extensions/overlay-test.ts
  *
  * Run /overlay-test to show a floating overlay with:
  * - Inline text inputs within menu items
  * - Edge case tests (wide chars, styled text, emoji)
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { CURSOR_MARKER, type Focusable, matchesKey, visibleWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@ag1/coding-agent";
+import { CURSOR_MARKER, type Focusable, matchesKey, visibleWidth } from "@ag1/tui";
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("overlay-test", {
+export default function (ag1: ExtensionAPI) {
+	ag1.registerCommand("overlay-test", {
 		description: "Test overlay rendering with edge cases",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const result = await ctx.ui.custom<{ action: string; query?: string } | undefined>(

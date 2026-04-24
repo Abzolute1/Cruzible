@@ -73,6 +73,23 @@ describe("interactive-autonomous-stabilization", () => {
 		expect(planningGuidance).toContain("use a numbered list like `1. ...`, `2. ...`");
 	});
 
+	test("does not force terse stabilization wording on expansion follow-ups", () => {
+		const profile = createProfile();
+
+		const autonomous = buildAutonomousStabilizedUserMessage("broaden this and give me the whole picture", profile);
+		const interactive = buildInteractiveStabilizedUserMessage("go deeper and give me more detail", profile);
+
+		expect(autonomous).toContain("keep the answer focused and evidence-backed");
+		expect(autonomous).toContain("do not collapse the answer into a one-line summary");
+		expect(autonomous).not.toContain("keep responses terse and tool-driven");
+		expect(autonomous).not.toContain("4,000");
+
+		expect(interactive).toContain("keep the reply focused and evidence-backed");
+		expect(interactive).toContain("do not compress the reply into a headline-length answer");
+		expect(interactive).not.toContain("keep the reply terse and tool-driven");
+		expect(interactive).not.toContain("4,000");
+	});
+
 	test("recognizes autonomous resume requests by continuation wording or exact goal", () => {
 		const snapshot = createSnapshot();
 

@@ -1,6 +1,6 @@
-# Crucible
+# AG1
 
-Crucible is a stateful coding harness for supervised and autonomous work.
+AG1 is a stateful coding harness for supervised and autonomous work.
 
 The goal is not to be the flashiest agent shell. The goal is to be a harness that can:
 
@@ -10,13 +10,11 @@ The goal is not to be the flashiest agent shell. The goal is to be a harness tha
 - preserve enough structured state that long runs do not depend on raw transcript alone
 - be safe enough to trust more than a typical prompt wrapper
 
-This repo still carries visible Pi fork lineage in package names and some metadata. The direction of the project is no longer "Pi plus random patches". The direction is a coherent harness with a stronger autonomous control plane.
-
-The primary short command is `cru`. The full command is `crucible`. `ag1` remains as a compatibility alias while the rename settles.
+The direction of the project is a coherent, model-agnostic harness with a stronger autonomous control plane.
 
 ## Philosophy
 
-Crucible is being built with a base-layer-first philosophy.
+AG1 is being built with a base-layer-first philosophy.
 
 That means:
 
@@ -29,9 +27,9 @@ That means:
 
 The project is deliberately not following the pattern of shipping a large volume of shallow features. The intent is to make the harness correct, inspectable, and economical before adding more surface area.
 
-## What Crucible Tries To Be
+## What AG1 Tries To Be
 
-Crucible is a coding harness that can work in two modes:
+AG1 is a coding harness that can work in two modes:
 
 - interactive mode: the user steers the run turn by turn
 - autonomous mode: the harness continues until it reaches a verified stop condition, hits a blocker, or exhausts budget
@@ -103,7 +101,7 @@ Autonomous mode is designed to be bounded and inspectable.
 
 ## Research And Cost Discipline
 
-Crucible is explicitly trying to be cheaper than heavier harnesses.
+AG1 is explicitly trying to be cheaper than heavier harnesses.
 
 That only works if the harness avoids wasting turns. Current cost-control direction includes:
 
@@ -118,7 +116,7 @@ The intended result is not "the fewest tokens possible". The intended result is 
 
 ## Safety Model
 
-Crucible is being hardened for unattended execution, but "autonomous" does not mean "unrestricted".
+AG1 is being hardened for unattended execution, but "autonomous" does not mean "unrestricted".
 
 Important current guardrails:
 
@@ -132,7 +130,7 @@ This is still a harness under active hardening, not a claim of perfect sandbox s
 
 ## Current Status
 
-Crucible is already substantially more coherent than the original glued integration, but it is still under active cleanup.
+AG1 is substantially more coherent than the original harness integration, but it is still under active cleanup.
 
 Current strengths:
 
@@ -145,7 +143,6 @@ Current strengths:
 
 Current realities:
 
-- the repo still visibly inherits Pi structure and metadata
 - `interactive-mode.ts` is still large, even after substantial decomposition
 - there is more cleanup to do before the codebase feels fully standalone
 - unattended trust is improving, but the project is not claiming "leave it on a production workstation with zero concern"
@@ -178,8 +175,6 @@ node packages/coding-agent/dist/cli.js
 If you want system commands, point them at the built CLI:
 
 ```bash
-sudo ln -sf /path/to/AG1/packages/coding-agent/dist/cli.js /usr/local/bin/cru
-sudo ln -sf /path/to/AG1/packages/coding-agent/dist/cli.js /usr/local/bin/crucible
 sudo ln -sf /path/to/AG1/packages/coding-agent/dist/cli.js /usr/local/bin/ag1
 ```
 
@@ -215,4 +210,4 @@ The near-term direction is:
 - keep autonomous runs cheap enough for local and mid-context models
 - finish the repo cleanup only after the harness architecture is genuinely stable
 
-If you are evaluating this repo, the important question is not "how many tools does it have?" The important question is whether the harness keeps enough explicit state to make long-running work reliable. That is the main problem Crucible is trying to solve.
+If you are evaluating this repo, the important question is not "how many tools does it have?" The important question is whether the harness keeps enough explicit state to make long-running work reliable. That is the main problem AG1 is trying to solve.

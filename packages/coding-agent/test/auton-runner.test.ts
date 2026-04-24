@@ -253,6 +253,316 @@ describe("runAutonomousSession", () => {
 		expect(result.stopReason).toBe("complete");
 	});
 
+	test("stops after a sufficient direct local answer without explicit completion wording", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`. It archives benchmark run JSON artifacts into the benchmark history/archive flow.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "read", success: true, file: "scripts/harness-benchmark-archive.mjs", detail: "read archive command" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(1);
+		expect(result.stopReason).toBe("complete");
+		expect(result.ledger.taskMode).toBe("answer");
+	});
+
+	test("adds answer-first steering to local path lookups in the initial autonomous prompt", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`.",
+				stopReason: "stop",
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage: "which source file implements the benchmark archive command? give the exact path only",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("answer-only local workspace task");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("answer as soon as one decisive hit identifies it");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not widen into implementation or extra verification");
+	});
+
+	test("adds no-edit review steering to verify-only autonomous tasks", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "The main risk is that the retry counter resets too early after a transient failure.",
+				stopReason: "stop",
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage: "review the retry-path implementation in this repo and list the main risks without changing code",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("local inspection or review task");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not edit files unless the user explicitly asks for a fix");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("answer with those findings and stop");
+	});
+
+	test("does not treat answer-only status updates as a sufficient direct answer", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I inspected the codebase and identified the next changes.",
+				stopReason: "stop",
+			},
+			{
+				text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "read", success: true, file: "scripts/harness-benchmark-archive.mjs", detail: "read archive command" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "which source file implements the benchmark archive command? give the exact path only",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => [],
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("provide the direct answer now and stop");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("adds self-contained workspace steering to the initial autonomous prompt", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the configuration parser so explicit falsey values from user input are preserved.
+2. Do not rewrite the tests.
+3. Run the targeted verification command before you finish.
+
+Constraints:
+
+- Stay inside this workspace.
+- Keep the fix minimal.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "Task complete. I verified the implementation and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("stop shell-style file hunting");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("make your very next tool call a direct `read`");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Treat `.` as the workspace root");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("emit one concrete edit immediately");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("run the intended verification command exactly once, verbatim (`node --test`)");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not rewrite it to a narrower path, append extra args");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not create or edit SUMMARY.md");
+	});
+
+	test("uses tighter continuation prompts for self-contained workspace drift", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the session state bug so saved scopes can be listed correctly for a user.
+2. Run the verification command before your final answer.
+
+Constraints:
+
+- Stay inside this workspace.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "I should inspect more files before I make the change.",
+				stopReason: "stop",
+			},
+			{
+				text: "Task complete. I verified the implementation and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Stop broad shell discovery");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("your next tool call must be one direct read");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("do not jump to /home/alex/AG1");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("src/, tests?/, reference/, or scripts/");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("uses a decisive single-file directory hit to force the direct src read", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the configuration parser so explicit falsey values from user input are preserved.
+2. Do not rewrite the tests.
+3. Run the targeted verification command before you finish.
+
+Constraints:
+
+- Stay inside this workspace.
+- Keep the fix minimal.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "I identified the likely implementation file from the workspace structure.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{
+						tool: "ls",
+						success: true,
+						detail: "src",
+						metadata: { directoryPath: "src", entryCount: 1, entriesSample: ["config-parser.mjs"] },
+					},
+				],
+			},
+			{
+				text: "Fixed src/config-parser.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read parser" },
+					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("The concrete implementation target is already known as `src/config-parser.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not use ls, find, grep, or bash discovery again");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("uses the discovered exact test path for required regression-test follow-up", async () => {
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the search URL builder so an explicit limit of `0` is preserved.",
+			"Add a regression test for that case.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test && node scripts/check-regression-test.mjs`",
+		].join("\n");
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I fixed the implementation and still need to add the regression test.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
+					{
+						tool: "ls",
+						success: true,
+						detail: "tests",
+						metadata: { directoryPath: "tests", entryCount: 1, entriesSample: ["search-url.test.mjs"] },
+					},
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+				],
+			},
+			{
+				text: "I added the regression test and verification passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("patch `tests/search-url.test.mjs` now");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("carries misleading-sibling warnings into self-contained workspace prompts", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the report rendering bug so the CLI output uses line breaks between summary items.
+2. Be careful: there is a misleading similarly named formatter file in the workspace.
+3. Run the verification command before your final answer.
+
+Constraints:
+
+- Stay inside this workspace.
+- Keep the patch minimal.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "Task complete. I verified the implementation and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Treat similarly named files as traps");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("reference output");
+	});
+
 	test("steers research tasks toward webSearch and then webFetch", async () => {
 		const { runtimeHost, session, toolHistory } = createRuntime(
 			[
@@ -463,6 +773,566 @@ describe("runAutonomousSession", () => {
 		expect(result.ledger.research?.evidence?.status).toBe("sufficient");
 	});
 
+	test("keeps local implementation tasks out of research mode when they only mention versioned code", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime(
+			[
+				{
+					text: "I inspected the local version banner implementation.",
+					stopReason: "stop",
+					toolOutcomes: [{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "inspected banner logic" }],
+				},
+				{
+					text: "I updated src/version-banner.mjs and node --test passed.",
+					stopReason: "stop",
+					toolOutcomes: [
+						{ tool: "edit", success: true, file: "src/version-banner.mjs", detail: "uppercased staging label" },
+						{ tool: "bash", success: true, detail: "node --test" },
+					],
+				},
+			],
+			{ availableToolNames: ["read", "edit", "bash", "webSearch", "webFetch"] },
+		);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix the version banner so the staging label is uppercased",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).not.toContain("webSearch");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("keeps local fixture docs tasks out of research mode when the docs are provided in-workspace", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime(
+			[
+				{
+					text: "I read the provided docs excerpt and inspected the local request helper.",
+					stopReason: "stop",
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read local migration note" },
+						{ tool: "read", success: true, file: "src/request.mjs", detail: "inspected request helper" },
+					],
+				},
+				{
+					text: "I updated src/request.mjs, verified the migration with node --test, and no further changes are needed.",
+					stopReason: "stop",
+					toolOutcomes: [
+						{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout handling" },
+						{ tool: "bash", success: true, detail: "node --test" },
+					],
+				},
+			],
+			{ availableToolNames: ["read", "edit", "bash", "webSearch", "webFetch"] },
+		);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Read the provided docs excerpt in `reference/abort-signal-timeout.md`.",
+			"Migrate the request helper to follow that guidance.",
+			"Stay inside this workspace.",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).not.toContain("webSearch first");
+		expect(session.prompt.mock.calls[1]?.[0]).not.toContain("Use webSearch first");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("adds single-file precision steering to self-contained workspace prompts", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "Updated `src/version-banner.mjs` and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the version banner so the staging environment label is uppercased.",
+			"Do not touch generated files.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"Only the implementation file should need to change.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("This is a single-file precision patch.");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not guess wildcard or glob paths like `tests/*.test.js`");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("do not turn the top-level listing into more subdirectory `ls` calls");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not inspect `generated/`, `reference/`, `cli/`, or sibling directories");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("reads an explicitly named local reference before other self-contained discovery", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "Updated `src/request.mjs` and the verification command passed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Read the provided docs excerpt in `reference/abort-signal-timeout.md`.",
+			"Migrate the request helper to follow that guidance.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("`reference/abort-signal-timeout.md`");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain("read that exact file before any directory listing or other discovery");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("pushes self-contained patch tasks from the test file directly to the matching src file", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I read the failing test first.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "read", success: true, file: "tests/config-parser.test.mjs", detail: "read failing parser test" }],
+			},
+			{
+				text: "I updated src/config-parser.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read matching implementation file" },
+					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the configuration parser so explicit falsey values from user input are preserved.",
+			"Do not rewrite the tests.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Derive the matching implementation path from that test");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not use ls, find, or bash discovery again");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("pushes docs-guided self-contained tasks from the named reference directly to src", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I listed the workspace first.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "ls", success: true, detail: "listed workspace files" }],
+			},
+			{
+				text: "I read the reference, patched the implementation, and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read named local reference" },
+					{ tool: "read", success: true, file: "src/request.mjs", detail: "read implementation file" },
+					{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout helper" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Read the provided docs excerpt in `reference/abort-signal-timeout.md`.",
+			"Migrate the request helper to follow that guidance.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("`reference/abort-signal-timeout.md`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Read that exact file now before any more ls, find, grep, or bash discovery");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("instead of guessing alternate extensions or using globs");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("keeps docs-guided local migrations pinned to the first plausible src implementation file", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I read the reference, request helper, and then a helper file.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read named local reference" },
+					{ tool: "read", success: true, file: "src/request.mjs", detail: "read request helper implementation" },
+					{ tool: "read", success: true, file: "src/fake-fetch.mjs", detail: "read helper dependency" },
+				],
+			},
+			{
+				text: "I patched src/request.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated request helper to AbortSignal.timeout" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Read the provided docs excerpt in `reference/abort-signal-timeout.md`.",
+			"Migrate the request helper to follow that guidance.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("first plausible implementation file `src/request.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not pivot to `src/fake-fetch.mjs`");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("reads a custom local verifier script before patching regression-test tasks", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I listed the workspace and know this needs a code patch plus a regression test.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "ls", success: true, detail: "listed workspace files" }],
+			},
+			{
+				text: "I read the verifier script, updated the patch and regression test, and the checks passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "scripts/check-regression-test.mjs", detail: "read verifier script" },
+					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added verifier-compatible regression test" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the search URL builder so an explicit limit of `0` is preserved.",
+			"Add a regression test for that case.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test && node scripts/check-regression-test.mjs`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("custom verifier script at `scripts/check-regression-test.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("exact regression-test expectations");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("keeps verifier-specific regression-test repair instructions inside self-contained nudges", async () => {
+		evaluateNudgeWithCooldownMock.mockReturnValue({
+			shouldNudge: true,
+			nudgeType: "continue",
+			shouldStop: false,
+		});
+
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I fixed the source path, but the verifier still reports a missing regression test.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
+					{ tool: "read", success: true, file: "scripts/check-regression-test.mjs", detail: "read verifier script" },
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+					{
+						tool: "bash",
+						success: false,
+						detail: "node --test && node scripts/check-regression-test.mjs — missing regression test for explicit zero limit",
+					},
+				],
+			},
+			{
+				text: "Task complete. I updated the regression test, reran the checks, and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added verifier-compatible regression test" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the search URL builder so an explicit limit of `0` is preserved.",
+			"Add a regression test for that case.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test && node scripts/check-regression-test.mjs`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("remaining regression-test mismatch");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("tests/search-url.test.mjs");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not reread or rediscover files first");
+		expect(session.prompt.mock.calls[1]?.[0]).not.toContain("Edit `scripts/check-regression-test.mjs`");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("does not move self-contained regression-test tasks to verification before a test file changes", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I fixed the implementation and should verify now.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+				],
+			},
+			{
+				text: "I added the regression test and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the search URL builder so an explicit limit of `0` is preserved.",
+			"Add a regression test for that case.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test && node scripts/check-regression-test.mjs`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("explicitly requires a regression test change");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("patch `tests/search-url.test.mjs` now");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("pushes self-contained patch tasks from test-plus-src inspection into editing", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I read the test and the implementation file.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/config-parser.test.mjs", detail: "read failing parser test" },
+					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read matching implementation file" },
+				],
+			},
+			{
+				text: "I updated src/config-parser.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the configuration parser so explicit falsey values from user input are preserved.",
+			"Do not rewrite the tests.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Stop discovery and patch the smallest required change now");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("forces same-file edit retries for single-file precision tasks after source inspection", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I read the test and source file.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/version-banner.test.mjs", detail: "read staging banner test" },
+					{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "read banner implementation" },
+				],
+			},
+			{
+				text: "Updated src/version-banner.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/version-banner.mjs", detail: "uppercased staging label" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the version banner so the staging environment label is uppercased.",
+			"Do not touch generated files.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"Only the implementation file should need to change.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Only edit `src/version-banner.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("emit one minimal valid edit tool call");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("treats failed edit attempts as blockers during single-file precision recovery", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I read the test and source file.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/version-banner.test.mjs", detail: "read staging banner test" },
+					{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "read banner implementation" },
+				],
+			},
+			{
+				text: "I tried the edit, but it did not apply.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "edit", success: false, file: "src/version-banner.mjs", detail: "invalid edit command" }],
+			},
+			{
+				text: "Updated src/version-banner.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/version-banner.mjs", detail: "uppercased staging label" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the version banner so the staging environment label is uppercased.",
+			"Do not touch generated files.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"Only the implementation file should need to change.",
+			"The intended verification command is: `node --test`",
+		].join("\n");
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(3);
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("The previous edit on `src/version-banner.mjs` did not apply");
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Do not reread other files");
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Emit one valid edit tool call on `src/version-banner.mjs` now");
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Use one native `edit` tool call with `path` and an `edits` array");
+	});
+
 	test("resumes an interrupted autonomous run from the saved control state", async () => {
 		const { runtimeHost, session, toolHistory } = createRuntime(
 			[
@@ -619,7 +1489,7 @@ describe("runAutonomousSession", () => {
 		);
 		expect(result.ledger.taskJournal.expectedVerification).toBe("npm test");
 		expect(result.ledger.taskJournal.intentStatus).toBe("on_track");
-		expect(result.ledger.taskJournal.lastIntentOutcome).toContain("verification matched intent");
+		expect(result.ledger.taskJournal.lastIntentOutcome).toContain("completion matched the planned summarize step");
 		expect(result.ledger.taskJournal.planItems).toEqual([
 			{ key: "inspect", title: "Inspect relevant files", status: "completed" },
 			{ key: "implement", title: "Apply workspace changes", status: "completed" },
@@ -652,7 +1522,7 @@ describe("runAutonomousSession", () => {
 				stopReason: "stop",
 				toolOutcomes: [
 					{ tool: "edit", success: true, file: "src/auth.ts", detail: "updated retry logic" },
-					{ tool: "bash", success: false, detail: "npm test" },
+					{ tool: "bash", success: false, detail: "npm test", metadata: { outputPreview: "missing regression test for explicit zero limit" } },
 				],
 			},
 			{
@@ -674,10 +1544,10 @@ describe("runAutonomousSession", () => {
 		expect(result.ledger.currentFocus).toContain("Running verification");
 		expect(result.ledger.progressDetail).toBe("npm test");
 		expect(result.ledger.verificationAttempts).toBe(2);
-		expect(result.ledger.verificationFailures).toContain("failed verification: npm test");
-		expect(result.ledger.residualRisks).toContain("failed verification: npm test");
+		expect(result.ledger.verificationFailures).toContain("failed verification: npm test — missing regression test for explicit zero limit");
+		expect(result.ledger.residualRisks).toContain("failed verification: npm test — missing regression test for explicit zero limit");
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("Recover from the blocker before doing anything else");
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("verification failed: npm test");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("verification failed: missing regression test for explicit zero limit");
 		const blockerSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
 			.find(
@@ -688,7 +1558,7 @@ describe("runAutonomousSession", () => {
 		expect(blockerSnapshot?.ledger?.taskJournal?.activeSubtask).toContain("Resolve verification failure");
 		expect(blockerSnapshot?.ledger?.taskJournal?.nextAction).toContain("Resolve blocker");
 		expect(blockerSnapshot?.ledger?.taskJournal?.plannedNextStep).toContain("Resolve blocker");
-		expect(blockerSnapshot?.ledger?.taskJournal?.expectedVerification).toBe("npm test");
+		expect(blockerSnapshot?.ledger?.taskJournal?.expectedVerification).toContain("npm test");
 		expect(blockerSnapshot?.ledger?.taskJournal?.intentStatus).toBe("pending");
 		expect(blockerSnapshot?.ledger?.taskJournal?.planItems).toEqual(
 			expect.arrayContaining([
@@ -697,6 +1567,112 @@ describe("runAutonomousSession", () => {
 				expect.objectContaining({ key: "verify", status: "blocked" }),
 			]),
 		);
+	});
+
+	test("normalizes failed workspace edit targets back to relative paths in repair prompts", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the session state bug so saved scopes can be listed correctly for a user.
+2. Keep the fix focused.
+3. Run the verification command before your final answer.
+
+Constraints:
+
+- Stay inside this workspace.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I found the bug but the edit path was malformed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/session-store.test.mjs", detail: "read failing test" },
+					{ tool: "read", success: true, file: "src/session-index.mjs", detail: "read index helper" },
+					{ tool: "read", success: true, file: "src/key-normalizer.mjs", detail: "read key parser" },
+					{
+						tool: "edit",
+						success: false,
+						file: "tmp/harness-benchmark-v3-smoke-cross-file-rerun37/ag1/debug_cross_file_state_bug/fixture/workspace/src/key-normalizer.mjs",
+					},
+				],
+			},
+			{
+				text: "Task complete. I fixed the parser and verified the implementation.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/key-normalizer.mjs", detail: "fixed key separator mismatch" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(result.ledger.currentFocus ?? "").not.toContain("fixture/workspace/src/key-normalizer.mjs");
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("turns concrete verifier complaints on required-test tasks into direct test-file repair guidance", async () => {
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the search URL builder so an explicit limit of \`0\` is preserved.
+2. Add a regression test for that case.
+3. Run the verification command before your final answer.
+
+Constraints:
+
+- Stay inside this workspace.
+- The intended verification command is: \`node --test && node scripts/check-regression-test.mjs\``;
+		const { runtimeHost, session, toolHistory, fileHistory, sessionManager } = createRuntime([
+			{
+				text: "I fixed the source code and verification now points at the remaining test mismatch.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read source file" },
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+					{
+						tool: "bash",
+						success: false,
+						detail: "node --test && node scripts/check-regression-test.mjs",
+						metadata: { outputPreview: "missing regression test for explicit zero limit" },
+					},
+				],
+			},
+			{
+				text: "Task complete. I updated the regression test, reran verification, and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "matched verifier-required regression test wording" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Verification already identified the remaining regression-test mismatch");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("tests/search-url.test.mjs");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not reread or rediscover files first");
+		expect(sessionManager.appendCustomEntry.mock.calls.length).toBeGreaterThan(0);
+		expect(result.stopReason).toBe("complete");
 	});
 
 	test("writes explicit turn intent into pre-turn checkpoints", async () => {
@@ -725,9 +1701,9 @@ describe("runAutonomousSession", () => {
 		const preTurnSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
 			.find((snapshot: any) => snapshot?.phase === "pre_turn" && snapshot?.ledger?.taskJournal?.plannedNextStep);
-		expect(preTurnSnapshot?.ledger?.taskJournal?.plannedNextStep).toBe("Make the next concrete code change.");
+		expect(preTurnSnapshot?.ledger?.taskJournal?.plannedNextStep).toBe("Patch src/auth.ts now. Do not rediscover files first.");
 		expect(preTurnSnapshot?.ledger?.taskJournal?.stepRationale).toBe(
-			"The run has enough context to move from inspection into implementation.",
+			"The run already has the relevant implementation context in hand, so the next step should be a direct code change rather than more inspection.",
 		);
 		expect(preTurnSnapshot?.ledger?.taskJournal?.expectedVerification).toBe(
 			"After the change, run the relevant test, lint, build, or verify command",
@@ -735,21 +1711,23 @@ describe("runAutonomousSession", () => {
 		expect(preTurnSnapshot?.ledger?.taskJournal?.intentStatus).toBe("pending");
 	});
 
-	test("uses ledger-aware compaction instructions during proactive compaction", async () => {
+	test("does not proactively compact before the minimum maturity window", async () => {
 		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
 			{
-				text: "I updated the auth retry path.",
+				text: "I verified the auth retry path and captured the latest test result.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "edit", success: true, file: "src/auth.ts", detail: "updated retry logic" }],
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/auth.ts", detail: "updated retry logic" },
+					{ tool: "bash", success: true, detail: "npm test" },
+				],
 			},
 			{
-				text: "I inspected the remaining checks and identified the next verification step.",
+				text: "I double-checked the auth guard path and kept the verification notes ready.",
 				stopReason: "stop",
 			},
 			{
 				text: "Task complete. I verified the implementation and no further changes are needed.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "bash", success: true, detail: "npm test" }],
 			},
 		]);
 		session.getContextUsage = vi
@@ -762,14 +1740,80 @@ describe("runAutonomousSession", () => {
 			userMessage: "fix auth retry path",
 			projectRoot: "/tmp",
 			config: { enableNudges: false },
+			resumeSnapshot: {
+				version: 1,
+				savedAt: "2026-04-12T12:00:00.000Z",
+				phase: "post_turn",
+				iterations: 4,
+				stopReason: "unknown",
+				costSummary: "$0.0008 | 40 in / 80 out",
+				budgetStatus: {
+					costUsed: 0.0008,
+					tokensUsed: 80,
+					turnsUsed: 4,
+					exceeded: { cost: false, tokens: false, turns: false },
+				},
+				checkpointState: {
+					consecutiveNoToolTurns: 0,
+					completionPromptCount: 0,
+					verificationPromptCount: 0,
+					truncatedTurnCount: 0,
+					outputCapPromptCount: 0,
+					consecutiveIntentDriftCount: 0,
+					consecutiveIntentFailureCount: 0,
+					replanPromptCount: 0,
+					narrowScopePromptCount: 0,
+					budgetPressureLevel: "normal",
+					budgetTrimPromptCount: 0,
+					budgetSqueezePromptCount: 0,
+					lastAssessment: "continue",
+					verificationSatisfied: false,
+					lastVerificationDetail: undefined,
+				},
+				ledger: {
+					goal: "fix auth retry path",
+					status: "running",
+					turnsObserved: 4,
+					planner: {
+						phase: "implementing",
+						lane: "generic",
+						planRevision: 1,
+						executionAttempts: 1,
+						handoffSummary: "Finish verification and summarize the auth retry fix.",
+					},
+					taskJournal: {
+						activeSubtask: "Verify the auth retry fix",
+						nextAction: "Run the latest verification and summarize the result",
+						plannedNextStep: "Run the latest verification and summarize the result",
+						stepRationale: "The file is already patched; the next step is preserving verification state.",
+						intentStatus: "pending",
+						planItems: [
+							{ key: "implement", title: "Apply workspace changes", status: "completed" },
+							{ key: "verify", title: "Verify latest changes", status: "active" },
+							{ key: "summarize", title: "Summarize verified result", status: "pending" },
+						],
+						completedCheckpoints: [],
+						blockedReasons: [],
+					},
+					touchedFiles: ["src/auth.ts"],
+					readFiles: ["src/auth.ts"],
+					recentMutations: ["src/auth.ts"],
+					verificationAttempts: 0,
+					verificationSatisfied: false,
+					verificationFailures: [],
+					residualRisks: [],
+					resume: {
+						mode: "resume_execute",
+						resumeInstruction: "Run the latest verification and summarize the result",
+						resumeReason: "The file is already patched; preserve verification state before summarizing.",
+					},
+				},
+			},
 			getToolCallHistory: () => toolHistory,
 			getFileAccessHistory: () => fileHistory,
 		});
 
-		expect(session.compact).toHaveBeenCalledTimes(1);
-		expect(session.compact.mock.calls[0]?.[0]).toContain("Preserve the autonomous run state precisely");
-		expect(session.compact.mock.calls[0]?.[0]).toContain("Goal: fix auth retry path");
-		expect(session.compact.mock.calls[0]?.[0]).toContain("Changed files: src/auth.ts");
+		expect(session.compact).not.toHaveBeenCalled();
 	});
 
 	test("persists incremental autonomous checkpoints during the run", async () => {
@@ -931,6 +1975,102 @@ describe("runAutonomousSession", () => {
 		expect(session.prompt.mock.calls[1]?.[0]).not.toBe("NUDGE_MESSAGE");
 		expect(evaluateNudgeWithCooldownMock).not.toHaveBeenCalled();
 		expect(result.stopReason).toBe("complete");
+	});
+
+	test("uses workspace-direct nudge wording for self-contained local tasks", async () => {
+		evaluateNudgeWithCooldownMock.mockReturnValue({
+			shouldNudge: true,
+			nudgeType: "continue",
+			shouldStop: false,
+		});
+
+		const task = `You are in a self-contained benchmark workspace.
+
+Task:
+
+1. Fix the report rendering bug so the CLI output uses line breaks between summary items.
+2. Run the verification command before your final answer.
+
+Constraints:
+
+- Stay inside this workspace.
+- The intended verification command is: \`node --test\``;
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "I listed the workspace and now know where to look next.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "ls", success: true, detail: ".", file: "." }],
+			},
+			{
+				text: "Task complete. I verified the implementation and no further changes are needed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage: task,
+			projectRoot: "/tmp",
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("Continue with the next direct workspace step only");
+		expect(session.prompt.mock.calls[1]?.[0]).not.toContain("Elaborate on your findings");
+	});
+
+	test("keeps self-contained continue nudges focused on the required test update before verification", async () => {
+		evaluateNudgeWithCooldownMock.mockReturnValue({
+			shouldNudge: true,
+			nudgeType: "continue",
+			shouldStop: false,
+		});
+
+		const userMessage = [
+			"You are in a self-contained benchmark workspace.",
+			"Fix the search URL builder so an explicit limit of `0` is preserved.",
+			"Add a regression test for that case.",
+			"Run the verification command before your final answer.",
+			"Stay inside this workspace.",
+			"The intended verification command is: `node --test && node scripts/check-regression-test.mjs`",
+		].join("\n");
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I fixed the implementation and still need to add the regression test.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
+					{
+						tool: "ls",
+						success: true,
+						detail: "tests",
+						metadata: { directoryPath: "tests", entryCount: 1, entriesSample: ["search-url.test.mjs"] },
+					},
+					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
+				],
+			},
+			{
+				text: "I added the regression test and verification passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
+				],
+			},
+		]);
+
+		await runAutonomousSession({
+			runtimeHost,
+			userMessage,
+			projectRoot: "/tmp",
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => toolHistory.filter((entry) => entry.tool === "read"),
+		});
+
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("regression test update");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain("`tests/search-url.test.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).not.toContain("Run the intended local verification now");
 	});
 
 	test("uses maxOutputPerTurn to push the next continuation toward concise output", async () => {
@@ -1135,7 +2275,7 @@ describe("runAutonomousSession", () => {
 		expect(result.ledger.residualRisks).not.toEqual(expect.arrayContaining(["console errors: hydration mismatch"]));
 	});
 
-	test("stops after a passing verification turn without requiring extra completion wording", async () => {
+	test("asks for a final verified summary after a passing verification turn", async () => {
 		const { runtimeHost, session, toolHistory } = createRuntime([
 			{
 				text: "I updated the auth retry path.",
@@ -1143,9 +2283,13 @@ describe("runAutonomousSession", () => {
 				toolOutcomes: [{ tool: "edit", success: true, file: "src/auth.ts", detail: "updated retry logic" }],
 			},
 			{
-				text: "npm test passes for the updated auth retry path.",
+				text: "npm test passed.",
 				stopReason: "stop",
 				toolOutcomes: [{ tool: "bash", success: true, detail: "npm test" }],
+			},
+			{
+				text: "Updated src/auth.ts to fix the auth retry path, and npm test passed.",
+				stopReason: "stop",
 			},
 		]);
 
@@ -1158,10 +2302,119 @@ describe("runAutonomousSession", () => {
 			getFileAccessHistory: () => [],
 		});
 
-		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(session.prompt).toHaveBeenCalledTimes(3);
+		expect(session.prompt.mock.calls[2]?.[0]).toContain("Summarize the verified result, note any residual risks, and stop.");
+		expect(session.prompt.mock.calls[2]?.[0]).toContain("Do not call any more tools");
 		expect(result.stopReason).toBe("complete");
 		expect(result.ledger.verificationSatisfied).toBe(true);
 		expect(result.ledger.lastVerificationDetail).toBe("npm test");
+	});
+
+	test("stops after a verified summary turn without requiring explicit completion wording", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I updated the config parser implementation.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" }],
+			},
+			{
+				text: "Updated src/config-parser.mjs to preserve explicit falsey values, and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix the config parser",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => [],
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(result.stopReason).toBe("complete");
+		expect(result.ledger.verificationSatisfied).toBe(true);
+	});
+
+	test("stops after a concrete verified summary even when the ledger has not recorded the change yet", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "Updated `src/version-banner.mjs` to uppercase the staging label, and node --test passed.",
+				stopReason: "stop",
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix the version banner so the staging environment label is uppercased",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => [],
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(1);
+		expect(result.stopReason).toBe("complete");
+	});
+
+	test("does not treat a diagnostic summary with future verification language as complete", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "The fix should be in src/formatter.mjs. Let me run node --test first.",
+				stopReason: "stop",
+			},
+			{
+				text: "Updated src/formatter.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/formatter.mjs", detail: "joined summary items with newline" },
+					{ tool: "bash", success: true, detail: "node --test" },
+				],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: [
+				"You are in a self-contained benchmark workspace.",
+				"Fix the report rendering bug.",
+				"Run the verification command before your final answer.",
+				"Stay inside this workspace.",
+				"The intended verification command is: `node --test`",
+			].join("\n"),
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => [],
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(2);
+		expect(result.stopReason).toBe("complete");
+		expect(result.ledger.verificationSatisfied).toBe(true);
+	});
+
+	test("treats fixed plus verification-passed summaries as explicit completion", async () => {
+		const { runtimeHost, session, toolHistory, fileHistory } = createRuntime([
+			{
+				text: "Bug fixed. Verification passed: node --test passes and the patch is complete.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix it",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => fileHistory,
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(1);
+		expect(result.stopReason).toBe("complete");
 	});
 
 	test("stops after a clean visual recapture without requiring extra completion wording", async () => {
@@ -1640,9 +2893,53 @@ describe("runAutonomousSession", () => {
 		expect(session.prompt).toHaveBeenCalledTimes(4);
 		expect(session.prompt.mock.calls[2]?.[0]).toContain("Replan into 1-2 concrete steps");
 		expect(session.prompt.mock.calls[3]?.[0]).toContain("Narrow scope to the smallest verifiable slice");
+		expect(session.prompt.mock.calls[3]?.[0]).toContain("emit one valid edit tool call");
 		expect(result.stopReason).toBe("complete");
 		expect(result.checkpointState.replanPromptCount).toBe(1);
 		expect(result.checkpointState.narrowScopePromptCount).toBe(1);
+	});
+
+	test("treats a concrete mutation during narrow-scope recovery as back on track", async () => {
+		const { runtimeHost, session, toolHistory } = createRuntime([
+			{
+				text: "I am still looking at it.",
+				stopReason: "stop",
+			},
+			{
+				text: "I am still looking at it.",
+				stopReason: "stop",
+			},
+			{
+				text: "I am still looking at it.",
+				stopReason: "stop",
+			},
+			{
+				text: "I updated src/request.mjs.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout handling" }],
+			},
+			{
+				text: "Updated src/request.mjs and node --test passed.",
+				stopReason: "stop",
+				toolOutcomes: [{ tool: "bash", success: true, detail: "node --test" }],
+			},
+		]);
+
+		const result = await runAutonomousSession({
+			runtimeHost,
+			userMessage: "fix the request helper migration",
+			projectRoot: "/tmp",
+			config: { enableNudges: false },
+			getToolCallHistory: () => toolHistory,
+			getFileAccessHistory: () => [],
+		});
+
+		expect(session.prompt).toHaveBeenCalledTimes(5);
+		expect(session.prompt.mock.calls[2]?.[0]).toContain("Replan into 1-2 concrete steps");
+		expect(session.prompt.mock.calls[3]?.[0]).toContain("Narrow scope to the smallest verifiable slice");
+		expect(session.prompt.mock.calls[4]?.[0]).toContain("Planned next step: Run verification on the latest changes");
+		expect(result.stopReason).toBe("complete");
+		expect(result.checkpointState.consecutiveIntentDriftCount).toBe(0);
 	});
 
 	test("narrows scope after repeated failed steps", async () => {

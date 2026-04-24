@@ -1,4 +1,4 @@
-import { Box, Container, Markdown, type MarkdownTheme, Spacer } from "@mariozechner/pi-tui";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer } from "@ag1/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";

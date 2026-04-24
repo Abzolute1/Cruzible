@@ -200,7 +200,7 @@ async function handleToolWithTextAndImageResult<TApi extends Api>(
 	expect(textContent).toBeTruthy();
 	if (textContent && textContent.type === "text") {
 		const lowerContent = textContent.text.toLowerCase();
-		// Should mention details from the text (diameter/pixels)
+		// Should mention details from the text (diameter/podsxels)
 		expect(lowerContent.match(/diameter|100|pixel/)).toBeTruthy();
 		// Should also mention the visual properties (red and circle)
 		expect(lowerContent).toContain("red");
@@ -337,7 +337,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	// =========================================================================
-	// OAuth-based providers (credentials from ~/.pi/agent/oauth.json)
+	// OAuth-based providers (credentials from ~/.ag1/agent/oauth.json)
 	// =========================================================================
 
 	describe("Anthropic OAuth Provider (claude-sonnet-4-5)", () => {
@@ -437,7 +437,7 @@ describe("Tool Results with Images", () => {
 			},
 		);
 
-		/** These two don't work, the model simply won't call the tool, works in pi
+		/** These two don't work, the model simply won't call the tool, works in ag1
 		it.skipIf(!antigravityToken)(
 			"claude-sonnet-4-5 - should handle tool result with only image",
 			{ retry: 3, timeout: 30000 },

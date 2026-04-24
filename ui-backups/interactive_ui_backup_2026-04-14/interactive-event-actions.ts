@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
-import { Loader, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
+import { Loader, Spacer, Text, type TUI } from "@ag1/tui";
 import { keyText } from "./components/keybinding-hints.js";
 import { theme } from "./theme/theme.js";
 

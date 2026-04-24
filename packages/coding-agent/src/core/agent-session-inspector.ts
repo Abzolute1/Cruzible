@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AgentState, ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AgentState, ThinkingLevel } from "@ag1/agent-core";
+import type { AssistantMessage } from "@ag1/ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import {
 	calculateContextTokens,

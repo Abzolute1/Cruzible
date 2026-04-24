@@ -220,7 +220,7 @@ describe("main CLI contract", () => {
 			extensions: ["./extensions/test.ts"],
 			skills: ["./skills/test"],
 			promptTemplates: ["./prompts"],
-			themes: ["./themes/crucible.json"],
+			themes: ["./themes/ag1.json"],
 			noExtensions: true,
 			noThemes: true,
 			systemPrompt: "./system.txt",
@@ -244,7 +244,7 @@ describe("main CLI contract", () => {
 			additionalExtensionPaths: [join(cwd, "extensions/test.ts")],
 			additionalSkillPaths: [join(cwd, "skills/test")],
 			additionalPromptTemplatePaths: [join(cwd, "prompts")],
-			additionalThemePaths: [join(cwd, "themes/crucible.json")],
+			additionalThemePaths: [join(cwd, "themes/ag1.json")],
 			noExtensions: true,
 			noThemes: true,
 			systemPrompt: systemPromptPath,
@@ -254,9 +254,10 @@ describe("main CLI contract", () => {
 
 	it("prepares startup models by preserving custom providers and replacing managed ones", async () => {
 		const agentDir = createTempDir("main-cli-models-agent");
+		const isolatedFallbackAgentDir = createTempDir("main-cli-models-fallback");
 		const userModelsPath = join(agentDir, "models.json");
 		const runtimeModelsPath = join(agentDir, "models.runtime.json");
-		cleanupPaths.push(agentDir);
+		cleanupPaths.push(agentDir, isolatedFallbackAgentDir);
 		writeFileSync(
 			userModelsPath,
 			JSON.stringify(
@@ -274,7 +275,8 @@ describe("main CLI contract", () => {
 
 		await prepareStartupModelsFile({
 			agentDir,
-			env: {},
+			fallbackAgentDir: isolatedFallbackAgentDir,
+			env: { AG1_HOME: isolatedFallbackAgentDir },
 			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
 		});
 
@@ -291,7 +293,7 @@ describe("main CLI contract", () => {
 		expect(runtimeSaved.providers.local).toBeUndefined();
 	});
 
-	it("adds detected local provider using real LM Studio model ids and survives malformed payloads", async () => {
+	it("adds detected local provider using real LM Studio model ids and preserves the prior runtime list when detection later fails", async () => {
 		const agentDir = createTempDir("main-cli-local-provider");
 		cleanupPaths.push(agentDir);
 
@@ -308,7 +310,7 @@ describe("main CLI contract", () => {
 
 		const first = await prepareStartupModelsFile({
 			agentDir,
-			env: { LM_STUDIO_URL: "http://127.0.0.1:1234" },
+			env: { AG1_HOME: agentDir, LM_STUDIO_URL: "http://127.0.0.1:1234" },
 			fetchImpl: fetchImpl as typeof fetch,
 		});
 		expect(first.modelsData.providers.local).toBeDefined();
@@ -318,10 +320,13 @@ describe("main CLI contract", () => {
 
 		const second = await prepareStartupModelsFile({
 			agentDir,
-			env: { LM_STUDIO_URL: "http://127.0.0.1:1234" },
+			env: { AG1_HOME: agentDir, LM_STUDIO_URL: "http://127.0.0.1:1234" },
 			fetchImpl: fetchImpl as typeof fetch,
 		});
-		expect(second.modelsData.providers.local).toBeUndefined();
+		expect(second.modelsData.providers.local).toBeDefined();
+		expect((second.modelsData.providers.local as any).models).toEqual([
+			expect.objectContaining({ id: "qwen-local", name: "qwen-local" }),
+		]);
 	});
 
 	it("stores NVIDIA api key as an env reference instead of persisting the secret value", async () => {
@@ -336,6 +341,109 @@ describe("main CLI contract", () => {
 
 		expect((result.modelsData.providers.nvidia as any).apiKey).toBe("NVIDIA_API_KEY");
 		expect(readFileSync(join(agentDir, "models.runtime.json"), "utf-8")).not.toContain("super-secret-token");
+	});
+
+	it("includes NVIDIA models when auth.json has saved NVIDIA auth without env", async () => {
+		const agentDir = createTempDir("main-cli-nvidia-saved-auth");
+		cleanupPaths.push(agentDir);
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ nvidia: { type: "api_key", key: "saved-test-token" } }),
+		);
+
+		const result = await prepareStartupModelsFile({
+			agentDir,
+			env: {},
+			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+		});
+
+		expect(result.modelsData.providers.nvidia).toBeDefined();
+		expect((result.modelsData.providers.nvidia as any).apiKey).toBe("NVIDIA_API_KEY");
+		expect(readFileSync(join(agentDir, "models.runtime.json"), "utf-8")).not.toContain("saved-test-token");
+	});
+
+	it("includes NVIDIA models when the local NVIDIA secret file exists without env", async () => {
+		const agentDir = createTempDir("main-cli-nvidia-secret-file");
+		const ag1Home = createTempDir("main-cli-nvidia-secret-home");
+		cleanupPaths.push(agentDir, ag1Home);
+		const secretDir = join(ag1Home, ".ag1-secrets");
+		mkdirSync(secretDir, { recursive: true });
+		writeFileSync(join(secretDir, "nvidia-api-key"), "local-secret-token\n");
+
+		const result = await prepareStartupModelsFile({
+			agentDir,
+			env: { AG1_HOME: ag1Home },
+			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+		});
+
+		expect(result.modelsData.providers.nvidia).toBeDefined();
+		expect((result.modelsData.providers.nvidia as any).apiKey).toBe("NVIDIA_API_KEY");
+		expect(readFileSync(join(agentDir, "models.runtime.json"), "utf-8")).not.toContain("local-secret-token");
+	});
+
+	it("adds Nemotron models discovered from the NVIDIA API model list", async () => {
+		const agentDir = createTempDir("main-cli-nvidia-discovery");
+		cleanupPaths.push(agentDir);
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({
+					data: [
+						{ id: "nvidia/nemotron-future-42b" },
+						{ id: "nvidia/other-model" },
+						{ id: "nvidia/nemotron-3-super-120b-a12b" },
+					],
+				}),
+			})
+			.mockResolvedValue({ ok: false });
+
+		const result = await prepareStartupModelsFile({
+			agentDir,
+			env: { NVIDIA_API_KEY: "super-secret-token" },
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+
+		const models = ((result.modelsData.providers.nvidia as any).models ?? []) as Array<{ id: string }>;
+		expect(models).toEqual(expect.arrayContaining([expect.objectContaining({ id: "nvidia/nemotron-future-42b" })]));
+		expect(models.some((model) => model.id === "nvidia/other-model")).toBe(false);
+		expect(readFileSync(join(agentDir, "models.runtime.json"), "utf-8")).not.toContain("super-secret-token");
+	});
+
+	it("reuses the default agent runtime local model list for fresh custom agent dirs", async () => {
+		const globalAgentDir = createTempDir("main-cli-global-agent");
+		const freshAgentDir = createTempDir("main-cli-fresh-agent");
+		cleanupPaths.push(globalAgentDir, freshAgentDir);
+
+		writeFileSync(
+			join(globalAgentDir, "models.runtime.json"),
+			JSON.stringify(
+				{
+					providers: {
+						local: {
+							baseUrl: "http://127.0.0.1:1234/v1",
+							api: "openai-completions",
+							apiKey: "local",
+							models: [{ id: "qwen/qwen3.5-9b", name: "qwen/qwen3.5-9b" }],
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = await prepareStartupModelsFile({
+			agentDir: freshAgentDir,
+			fallbackAgentDir: globalAgentDir,
+			env: { LM_STUDIO_URL: "http://127.0.0.1:1234" },
+			fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+		});
+
+		expect(result.modelsData.providers.local).toBeDefined();
+		expect((result.modelsData.providers.local as any).models).toEqual([
+			expect.objectContaining({ id: "qwen/qwen3.5-9b", name: "qwen/qwen3.5-9b" }),
+		]);
 	});
 
 	it("hydrates NVIDIA model pricing into the runtime registry", async () => {

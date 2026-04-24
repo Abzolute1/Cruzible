@@ -1,5 +1,5 @@
-import { type AssistantMessage } from "@mariozechner/pi-ai";
-import type { TUI } from "@mariozechner/pi-tui";
+import { type AssistantMessage } from "@ag1/ai";
+import type { TUI } from "@ag1/tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { InteractivePlanArtifact } from "../src/modes/interactive/interactive-plan-artifacts.js";

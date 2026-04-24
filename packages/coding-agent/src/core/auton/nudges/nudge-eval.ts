@@ -61,6 +61,19 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 
 	// Exploration cap: too many turns of pure tool-calling
 	if (turnIndex >= MAX_EXPLORATION_TURNS && !hasRecentText(context)) {
+		if (
+			hasRecentConcreteTaskProgress(toolCallHistory) ||
+			hasRecentFailedMutation(toolCallHistory) ||
+			hasRecentFailedVerification(toolCallHistory)
+		) {
+			return {
+				shouldNudge: true,
+				nudgeType: "continue",
+				shouldStop: false,
+				explanation:
+					"Turn count is high, but there is recent concrete progress, a failed verification, or a recoverable failed change attempt. Finish the next smallest repair-or-verify step instead of stopping mid-recovery.",
+			};
+		}
 		return {
 			shouldNudge: true,
 			nudgeType: "break_loop",
@@ -134,6 +147,38 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 
 	// ── Diminishing output detection ──
 	if (trendTracker?.isDiminishing()) {
+		if (hasRecentUnverifiedImplementationProgress(toolCallHistory)) {
+			return {
+				shouldNudge: true,
+				nudgeType: "continue",
+				shouldStop: false,
+				explanation: "Output is shrinking, but there is recent unverified implementation progress. Finish the next concrete verify-or-patch step instead of stopping.",
+			};
+		}
+		if (hasRecentFailedMutation(toolCallHistory)) {
+			return {
+				shouldNudge: true,
+				nudgeType: "continue",
+				shouldStop: false,
+				explanation: "Output is shrinking after a failed change attempt. Recover with the smallest valid edit or verification step next.",
+			};
+		}
+		if (hasRecentFailedVerification(toolCallHistory)) {
+			return {
+				shouldNudge: true,
+				nudgeType: "continue",
+				shouldStop: false,
+				explanation: "Output is shrinking right after a failed verification. Repair the reported blocker and rerun verification before stopping.",
+			};
+		}
+		if (!hasConcreteTaskProgress(toolCallHistory)) {
+			return {
+				shouldNudge: true,
+				nudgeType: "continue",
+				shouldStop: false,
+				explanation: "Output is shrinking, but no concrete task progress has happened yet. Keep going and make a change or run verification.",
+			};
+		}
 		return {
 			shouldNudge: true,
 			nudgeType: "break_loop",
@@ -180,6 +225,35 @@ export function getNudgeMessage(nudgeType: NudgeType): string {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+function classifyBashDetail(detail: string | undefined): "inspection" | "mutating" | "verification" | "other" {
+	if (!detail) return "other";
+	const normalized = detail.replace(/\s+/g, " ").trim();
+	if (isReliableVerificationBashCommand(normalized)) {
+		return "verification";
+	}
+	if (/(?:^|[;&]\s*)node\b/i.test(normalized)) {
+		return "other";
+	}
+	if (/(^|[;&|]\s*)(rm\b|mv\b|cp\b|touch\b|mkdir\b|pnpm\b|yarn\b|npm\s+(install|run|exec)\b|node\b|python\b|chmod\b|chown\b|git\s+(apply|checkout|reset|commit|rebase|merge)\b)/.test(normalized)) {
+		return "mutating";
+	}
+	if (/(^|[;&|]\s*)(pwd\b|ls\b|find\b|fd\b|rg\b|grep\b|git\s+status(\s|$)|git\s+diff(\s|$)|which\b|cat\b|head\b|tail\b|sed\b|awk\b)/.test(normalized)) {
+		return "inspection";
+	}
+	return "other";
+}
+
+function isReliableVerificationBashCommand(command: string): boolean {
+	if (!command) return false;
+	if (/\|\s*(head|tail)\b/i.test(command) && !/\bset\s+-o\s+pipefail\b/i.test(command)) {
+		return false;
+	}
+	return /(?:^|[;&]\s*)node\b[^\n;&|]*\b(?:--test|test|check|verify|lint|build)\b/i.test(command)
+		|| /(?:^|[;&]\s*)(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|lint|typecheck|build|check)|lint|typecheck|build|check)\b/i.test(command)
+		|| /(?:^|[;&]\s*)npx\s+(?:vitest|jest|playwright|eslint|tsc)\b/i.test(command)
+		|| /(?:^|[;&]\s*)(?:vitest|jest|pytest|cargo test|go test|playwright test|eslint|tsc|make\s+(?:test|lint|build|check))\b/i.test(command);
+}
 
 function hasDuplicateToolCalls(history: ToolOutcome[], threshold: number): boolean {
 	if (history.length < threshold) return false;
@@ -259,6 +333,58 @@ function hasMinimalText(context: NudgeContext): boolean {
 		return estimatedChars < MIN_TEXT_LENGTH;
 	}
 	return false;
+}
+
+function hasConcreteTaskProgress(history: ToolOutcome[]): boolean {
+	return history.some((entry) => {
+		const toolName = normalizeToolName(entry.tool);
+		return (
+			toolName === "write" ||
+			toolName === "edit" ||
+			toolName === "patch" ||
+			toolName === "multi_edit" ||
+			toolName === "str_replace_editor" ||
+			(toolName === "bash" &&
+				(classifyBashDetail(entry.detail) === "mutating" || classifyBashDetail(entry.detail) === "verification")) ||
+			toolName === "run" ||
+			toolName === "verify"
+		);
+	});
+}
+
+function hasRecentConcreteTaskProgress(history: ToolOutcome[], windowSize = 4): boolean {
+	return hasConcreteTaskProgress(history.slice(-windowSize));
+}
+
+function hasRecentFailedMutation(history: ToolOutcome[], windowSize = 4): boolean {
+	return history.slice(-windowSize).some((entry) => {
+		const toolName = normalizeToolName(entry.tool);
+		return !entry.success && (toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor");
+	});
+}
+
+function hasRecentFailedVerification(history: ToolOutcome[], windowSize = 4): boolean {
+	return history.slice(-windowSize).some((entry) => {
+		const toolName = normalizeToolName(entry.tool);
+		return !entry.success && (toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"));
+	});
+}
+
+function hasRecentUnverifiedImplementationProgress(history: ToolOutcome[], windowSize = 6): boolean {
+	const recent = history.slice(-windowSize);
+	let sawRecentMutation = false;
+	for (let index = recent.length - 1; index >= 0; index--) {
+		const entry = recent[index];
+		const toolName = normalizeToolName(entry.tool);
+		if (entry.success && (toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"))) {
+			return false;
+		}
+		if (entry.success && (toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor")) {
+			sawRecentMutation = true;
+			break;
+		}
+	}
+	return sawRecentMutation;
 }
 
 // ── Cooldown and Escalation ────────────────────────────────────────

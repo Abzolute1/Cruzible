@@ -1,7 +1,15 @@
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "@ag1/ai";
 import type { AgentSessionEvent } from "../agent-session.js";
 import type { AgentSessionRuntime } from "../agent-session-runtime.js";
 import { SessionDebugLogger } from "../session-debug-logger.js";
+import {
+	hasAutonomousLocalReferenceContext,
+	looksLikeAutonomousImplementationTask,
+	looksLikeAutonomousLocalAnswerTask,
+	looksLikeAutonomousPathLookupTask,
+	looksLikeAutonomousResearchTask,
+	looksLikeAutonomousVerifyOnlyTask,
+} from "../task-intent.js";
 import { attachAutonHook, type BudgetStatus } from "./auton-hook.js";
 import { getAutoCompactTrigger, selectCompactionPolicy } from "./compaction-policy.js";
 import {
@@ -23,7 +31,7 @@ import {
 } from "./ledger.js";
 import { evaluateNudgeWithCooldown, getNudgeMessage, type NudgeContext } from "./nudges/nudge-eval.js";
 import { OutputTrendTracker } from "./nudges/output-trend.js";
-import type { NudgeCooldownState, ToolOutcome } from "./nudges/types.js";
+import type { NudgeCooldownState, NudgeType, ToolOutcome } from "./nudges/types.js";
 
 export interface AutonomousRunConfig {
 	/** Maximum spend for a single autonomous run. 0 means unlimited. */
@@ -111,11 +119,14 @@ type BudgetControlDirective =
 	| { kind: "squeeze"; level: BudgetPressureLevel; detail: string };
 
 const MAX_AUTON_ITERATIONS = 200;
+const MIN_PROACTIVE_COMPACTION_TOKENS = 8_000;
+const MIN_PROACTIVE_COMPACTION_ITERATIONS = 4;
 const TERMINAL_STOP_REASONS = new Set(["end_turn", "stop"]);
 const TRUNCATED_STOP_REASONS = new Set(["max_tokens", "length"]);
 const EXPLICIT_COMPLETION_PATTERNS = [
 	/\b(task|work|implementation|fix|changes?)\s+(is\s+)?(complete|completed|done|finished)\b/i,
 	/\b(successfully\s+)?(completed|finished|resolved|implemented)\b/i,
+	/\b(fix(?:ed)?|change[sd]?|patch(?:ed)?)\b.*\b(verif(?:y|ied|ication)|tests?\s+pass(?:ed)?|verification\s+pass(?:ed)?)\b/i,
 	/\bno\s+(further|more)\s+(changes|work|action)\s+(are\s+)?needed\b/i,
 	/\bnothing\s+else\s+to\s+do\b/i,
 	/\ball\s+requested\s+work\s+(is\s+)?done\b/i,
@@ -126,22 +137,41 @@ const INCOMPLETE_PATTERNS = [
 	/\bshould\s+(now|next)\b/i,
 	/\bcan\s+(continue|proceed)\b/i,
 	/\bask(?:ing)?\s+for\s+confirmation\b/i,
+	/<tool_call>/i,
+	/\b(let me|i(?:'ll| will)|going to)\s+(run|rerun|check|verify|read|inspect|edit|patch|update|fix|apply)\b/i,
 	/\?\s*$/m,
 ];
+const VERIFIED_SUMMARY_CHANGE_PATTERNS = [
+	/\b(change[sd]?|fix(?:ed)?|update[sd]?|patch(?:ed)?|modif(?:y|ied)|preserv(?:e|ed)|implement(?:ed)?)\b/i,
+	/\b(file|parser|function|module|config|banner|test)\b/i,
+];
+const VERIFIED_SUMMARY_VERIFICATION_PATTERNS = [/\b(verif(?:y|ied|ication)|test(?:s)?|passed|pass(?:ing)?|node --test|npm test|check(?:ed)?)\b/i];
+const VERIFIED_SUMMARY_FILE_PATTERNS = [
+	/`[^`\n]+\.[a-z0-9]+`/i,
+	/\b(?:src|tests?|reference|docs|generated|cli)\/[^\s)`]+/i,
+	/\b[a-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|json|md)\b/i,
+];
+const DIRECT_ANSWER_PAYLOAD_PATTERNS = [
+	/`[^`\n]+`/,
+	/\b(?:src|tests?|packages|scripts|docs?|reference)\/[^\s)`]+/i,
+	/\bhttps?:\/\/\S+/i,
+	/\b(?:defined|implemented|located|found|lives)\s+(?:in|at)\b/i,
+	/\bthe\s+(?:file|directory|function|definition|path|difference|answer)\b/i,
+	/\bit\s+(?:is|lives|sits)\b/i,
+	/\bbecause\b/i,
+];
+const DIRECT_ANSWER_META_ONLY_PATTERNS = [
+	/\b(i|we)\s+(?:inspected|checked|looked(?:\s+through)?|reviewed|investigated|analyzed)\b/i,
+	/\bidentified\s+the\s+next\s+changes?\b/i,
+	/\bnext\s+changes?\b/i,
+	/\bnext\s+steps?\b/i,
+	/\bready\s+for\s+the\s+next\s+step\b/i,
+];
 const VERIFICATION_COMMAND_PATTERNS = [
-	/\b(test|tests)\b/i,
-	/\bvitest\b/i,
-	/\bjest\b/i,
-	/\bpytest\b/i,
-	/\bcargo test\b/i,
-	/\bgo test\b/i,
-	/\bplaywright test\b/i,
-	/\blint\b/i,
-	/\beslint\b/i,
-	/\btypecheck\b/i,
-	/\btsc\b/i,
-	/\bbuild\b/i,
-	/\bcheck\b/i,
+	/(?:^|[;&]\s*)node\b[^\n;&|]*\b(?:--test|test|check|verify|lint|build)\b/i,
+	/(?:^|[;&]\s*)(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|lint|typecheck|build|check)|lint|typecheck|build|check)\b/i,
+	/(?:^|[;&]\s*)npx\s+(?:vitest|jest|playwright|eslint|tsc)\b/i,
+	/(?:^|[;&]\s*)(?:vitest|jest|pytest|cargo test|go test|playwright test|eslint|tsc|make\s+(?:test|lint|build|check))\b/i,
 ];
 const READ_TOOL_NAMES = new Set(["read", "read_file"]);
 const MUTATING_TOOL_NAMES = new Set(["edit", "write", "str_replace_editor", "notebook_edit"]);
@@ -159,10 +189,20 @@ const RESEARCH_TASK_PATTERNS = [
 	/\b(research|search online|web search|search the web|look up|external source|citation|source url)\b/i,
 	/\b(compare|comparison|pricing|availability|compatibility)\b/i,
 ];
+const EXTERNAL_RESEARCH_PATTERNS = [
+	/\b(latest|current|today|recent|release|changelog|breaking changes?)\b/i,
+	/\b(research|search online|web search|search the web|look up|external source|citation|source url)\b/i,
+	/\b(compare|comparison|pricing|availability|compatibility)\b/i,
+];
+const DOCUMENTATION_RESEARCH_PATTERNS = [/\b(documentation|docs|api reference|reference|guide|manual|spec)\b/i];
 const VERIFY_ONLY_TASK_PATTERNS = [/\b(verify|verification|check|validate|review|inspect|assess|audit|confirm)\b/i];
 const IMPLEMENTATION_TASK_PATTERNS = [
-	/\b(fix|improve|update|change|modify|edit|implement|build|add|create|refactor|tighten|rewrite|replace)\b/i,
+	/\b(fix|debug|patch|repair|migrate|improve|update|change|modify|edit|implement|build|add|create|refactor|tighten|rewrite|replace)\b/i,
 ];
+const SELF_CONTAINED_WORKSPACE_PATTERNS = [/\bself-contained benchmark workspace\b/i, /\bstay inside this workspace\b/i];
+const LOCAL_VERIFICATION_COMMAND_PATTERNS = [/\bverification command\b/i, /\bintended verification command\b/i, /\bnode --test\b/i];
+const SINGLE_FILE_PRECISION_PATTERNS = [/\bonly the implementation file should need to change\b/i, /\bdo not touch generated files\b/i];
+const SELF_CONTAINED_SUMMARY_FILE_PATTERNS = [/\bsummary\.md\b/i, /\bnotes?\b/i, /\bdocs?\b/i, /\breport\b/i];
 
 const BUDGET_EXCEEDED_ERROR_PATTERNS = [/\b(?:cost|token|turn)\s+budget exceeded\b/i, /\bbudget limit reached\b/i];
 
@@ -189,6 +229,10 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 	debugLogger.start();
 
 	const previousSystemPrompt = session.agent.state.systemPrompt;
+	const previousAutoCompactionEnabled = session.autoCompactionEnabled;
+	if (previousAutoCompactionEnabled) {
+		session.setAutoCompactionEnabled(false);
+	}
 	const modelId = session.model?.id ?? "unknown";
 	const autonHook = attachAutonHook(runtimeHost, modelId, {
 		maxCostUsd: config.maxCostUsd ?? 0,
@@ -345,6 +389,7 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 						turnFileAccessHistory: fileAccessHistory,
 						assessment: turnAssessment,
 						verificationState,
+						lastAssistantText,
 					})
 				: undefined;
 			initialTurnIntentPending = false;
@@ -419,11 +464,29 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 						nudgeType: "none" as const,
 						shouldStop: false,
 					};
-			if (nudge.shouldStop) {
+			const bypassStopNudgeForVerifiedSummary = nudge.shouldStop
+				&& shouldBypassStopNudgeForVerifiedSummary({
+					ledger,
+					userMessage,
+					visualVerificationRelevant,
+					researchRelevant,
+				});
+			const effectiveNudge = bypassStopNudgeForVerifiedSummary
+				? {
+						...nudge,
+						shouldStop: false,
+						shouldNudge: false,
+						nudgeType: "none" as const,
+					}
+				: nudge;
+			if (nudge.shouldStop && !bypassStopNudgeForVerifiedSummary) {
 				process.stderr.write(`[Auton] Nudge engine says stop: ${nudge.stopReason}\n`);
 				ledger = { ...ledger, status: "nudge" };
 				stopReason = "nudge";
 				break;
+			}
+			if (bypassStopNudgeForVerifiedSummary) {
+				process.stderr.write(`[Auton] Bypassing stop nudge after verified completion evidence: ${nudge.stopReason}\n`);
 			}
 
 			const controlDirective = getIntentControlDirective(checkpointState, ledger);
@@ -460,9 +523,12 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 			]);
 
 			let continueMsg: string;
-			if (nudge.shouldNudge && nudge.nudgeType !== "none") {
-				continueMsg = appendLedgerContext(getNudgeMessage(nudge.nudgeType), promptLedger);
-				process.stderr.write(`[Auton] Nudge injected: ${nudge.nudgeType} — ${continueMsg.slice(0, 80)}...\n`);
+			if (effectiveNudge.shouldNudge && effectiveNudge.nudgeType !== "none") {
+				const nudgeMessage =
+					buildSelfContainedWorkspaceNudgeMessage(effectiveNudge.nudgeType, promptLedger, userMessage) ??
+					getNudgeMessage(effectiveNudge.nudgeType);
+				continueMsg = appendLedgerContext(nudgeMessage, promptLedger);
+				process.stderr.write(`[Auton] Nudge injected: ${effectiveNudge.nudgeType} — ${continueMsg.slice(0, 80)}...\n`);
 			} else if (
 				controlDirective.kind === "none" &&
 				(config.maxOutputPerTurn ?? 0) > 0 &&
@@ -547,6 +613,7 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 				turnFileAccessHistory,
 				assessment: promotedPostTurnAssessment,
 				verificationState: postTurnVerificationState,
+				lastAssistantText: postTurnAssistantText,
 			});
 			checkpointState = updateIntentCheckpointState(checkpointState, intentAssessment.outcome);
 			if (promotedPostTurnAssessment === "error") {
@@ -662,7 +729,11 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 				const contextWindow = session.contextWindow ?? 32768;
 				const policy = selectCompactionPolicy(contextWindow);
 				const trigger = getBudgetAdjustedCompactionTrigger(getAutoCompactTrigger(policy), checkpointState.budgetPressureLevel);
-				if (usage.tokens >= trigger) {
+				if (
+					usage.tokens >= trigger &&
+					usage.tokens >= MIN_PROACTIVE_COMPACTION_TOKENS &&
+					iterations >= MIN_PROACTIVE_COMPACTION_ITERATIONS
+				) {
 					process.stderr.write(`[Auton] Proactive compaction: ${usage.tokens} tokens >= ${trigger} trigger\n`);
 					await session.compact(buildAutonomousCompactionInstructions(ledger));
 				}
@@ -702,6 +773,9 @@ export async function runAutonomousSession(options: AutonomousRunOptions): Promi
 		process.stderr.write(`[Auton] ${finalCostSummary}\n`);
 		autonHook.dispose();
 		session.agent.state.systemPrompt = previousSystemPrompt;
+		if (session.autoCompactionEnabled !== previousAutoCompactionEnabled) {
+			session.setAutoCompactionEnabled(previousAutoCompactionEnabled);
+		}
 	}
 
 	const result: AutonomousRunResult = {
@@ -779,7 +853,7 @@ function getLastAssistantText(messages: Array<{ role?: string; content?: unknown
 		const content = message.content;
 		if (typeof content === "string") return content;
 		if (Array.isArray(content)) {
-			return content
+			const textContent = content
 				.filter((part): part is { type: "text"; text: string } => {
 					return (
 						typeof part === "object" &&
@@ -793,6 +867,22 @@ function getLastAssistantText(messages: Array<{ role?: string; content?: unknown
 				.map((part) => part.text)
 				.join("\n")
 				.trim();
+			if (textContent.length > 0) return textContent;
+			const thinkingContent = content
+				.filter((part): part is { type: "thinking"; thinking: string } => {
+					return (
+						typeof part === "object" &&
+						part !== null &&
+						"type" in part &&
+						part.type === "thinking" &&
+						"thinking" in part &&
+						typeof part.thinking === "string"
+					);
+				})
+				.map((part) => part.thinking)
+				.join("\n")
+				.trim();
+			if (thinkingContent.length > 0) return thinkingContent;
 		}
 	}
 	return "";
@@ -981,9 +1071,18 @@ function isVerificationOutcome(outcome: ToolOutcome): boolean {
 	if (VISUAL_VERIFICATION_TOOL_NAMES.has(toolName)) return true;
 	const detail = outcome.detail;
 	if (toolName === "bash" && typeof detail === "string") {
-		return VERIFICATION_COMMAND_PATTERNS.some((pattern) => pattern.test(detail));
+		return isReliableVerificationBashCommand(detail);
 	}
 	return false;
+}
+
+function isReliableVerificationBashCommand(detail: string): boolean {
+	const normalized = detail.replace(/\s+/g, " ").trim();
+	if (!normalized) return false;
+	if (/\|\s*(head|tail)\b/i.test(normalized) && !/\bset\s+-o\s+pipefail\b/i.test(normalized)) {
+		return false;
+	}
+	return VERIFICATION_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function isVisualVerificationOutcome(outcome: ToolOutcome): boolean {
@@ -1006,6 +1105,23 @@ function getVisualVerificationBlockingIssues(outcome: ToolOutcome): string[] {
 		if (first) issues.push(`failed requests: ${first.trim()}`);
 	}
 	return issues;
+}
+
+function getVerificationFailurePreview(outcome: ToolOutcome): string | undefined {
+	const detail = outcome.detail?.trim();
+	const metadata = outcome.metadata;
+	const previewCandidates = [
+		typeof metadata?.outputPreview === "string" ? metadata.outputPreview : undefined,
+		typeof metadata?.summary === "string" ? metadata.summary : undefined,
+		typeof metadata?.error === "string" ? metadata.error : undefined,
+	];
+	for (const candidate of previewCandidates) {
+		const normalized = candidate?.trim();
+		if (!normalized) continue;
+		if (detail && normalized.toLowerCase() === detail.toLowerCase()) continue;
+		return normalized.length <= 180 ? normalized : `${normalized.slice(0, 177)}...`;
+	}
+	return undefined;
 }
 
 function summarizeVisualBlockingIssues(issues: string[]): string {
@@ -1092,6 +1208,27 @@ function buildContinuationPrompt(
 			? "interact_then_screenshot"
 			: "screenshot_url or interact_then_screenshot";
 	const degradedTurnDirective = controlDirective.kind !== "none" && isDegradedTurnDirectiveDetail(controlDirective.detail);
+	const selfContainedWorkspaceTask = isSelfContainedWorkspaceTask(userMessage);
+	const singleFilePrecisionTask = isSingleFilePrecisionTask(userMessage);
+	const localVerificationCommand = extractLocalVerificationCommand(userMessage);
+	const misleadingSiblingTask = mentionsMisleadingSiblingWarning(userMessage);
+	const namedReferencePath = extractNamedWorkspacePath(userMessage, /^(?:reference|docs?|guides?|manuals?|specs?)\//i);
+	const latestReadSourceFile = getLatestReadWorkspaceFile(ledger, /^src\//i);
+	const latestReadTestFile = getLatestReadWorkspaceFile(ledger, /^tests?\//i);
+	const latestKnownSourceFile = getLatestKnownWorkspaceFile(ledger, /^src\//i);
+	const latestKnownTestFile = getLatestKnownWorkspaceFile(ledger, /^tests?\//i);
+	const latestReadReferenceFile = getLatestReadWorkspaceFile(ledger, /^reference\//i);
+	const committedReferenceSourceFile = getCommittedReferenceSourceFile(ledger);
+	const readSourceFiles = getWorkspaceFilesByPrefix(ledger.readFiles, /^src\//i);
+	const readTestFiles = getWorkspaceFilesByPrefix(ledger.readFiles, /^tests?\//i);
+	const taskRequiresTestUpdate = requiresTestUpdate(userMessage);
+	const initialTestUpdateMissing = taskNeedsInitialTestUpdate(ledger, userMessage);
+	const requestedTestCoverageRepair = getRequestedTestCoverageRepair(ledger, userMessage);
+	const failedRepairTargetFile = getFailedRepairTargetFile(ledger);
+	const failedRepairTargetAlreadyRead = failedRepairTargetFile ? ledger.readFiles.includes(failedRepairTargetFile) : false;
+	const verifierScriptPath = extractWorkspaceVerifierScriptPath(localVerificationCommand);
+	const verifierScriptUnread = verifierScriptPath ? !ledger.readFiles.includes(verifierScriptPath) : false;
+	const selfContainedSummaryRule = getSelfContainedSummaryResponseRule(userMessage);
 	const prompt = (() => {
 		if (shouldSearchFirst) {
 			return `Use webSearch first to find the most relevant current or authoritative sources for this task. Then use webFetch on the best result before making concrete claims.${preferredSourceHint} Preserve the source URLs in your notes and final summary.`;
@@ -1103,10 +1240,90 @@ function buildContinuationPrompt(
 			return `You have enough source-backed evidence for this research task. Stop browsing, synthesize the answer from the saved sources you already have, cite the supporting URLs directly, and note any remaining uncertainty instead of doing more web calls.${researchFindingHint}${sourceSummaryHint}`;
 		}
 		if (hasEnoughVisualEvidence) {
-			return `You have enough visual verification evidence for the current UI slice. Summarize the verified rendered result${visualSurfaceHint}, note any residual risks, and stop.${visualInteractionHint}${visualRecipeHint}${visualViewportHint}${visualAcceptanceHint}`;
+			return `You have enough visual verification evidence for the current UI slice. Summarize the verified rendered result${visualSurfaceHint}, note any residual risks, and stop.${visualInteractionHint}${visualRecipeHint}${visualViewportHint}${visualAcceptanceHint}${selfContainedSummaryRule}`;
 		}
 		if (hasEnoughImplementationEvidence) {
-			return `You have enough verification evidence for the current implementation slice. Summarize the verified result, note any residual risks, and stop.${sourceSummaryHint}`;
+			return `You have enough verification evidence for the current implementation slice. Do not call any more tools. Summarize the verified result, note any residual risks, and stop.${sourceSummaryHint}${selfContainedSummaryRule}`;
+		}
+		if (selfContainedWorkspaceTask && !shouldUseVisual && !shouldResearchOnline) {
+			const verifyItemActive = ledger.taskJournal.planItems.find((item) => item.key === "verify")?.status === "active";
+			const implementItemActive = ledger.taskJournal.planItems.find((item) => item.key === "implement")?.status === "active";
+			const inspectItemActive = ledger.taskJournal.planItems.find((item) => item.key === "inspect")?.status === "active";
+			if (namedReferencePath && latestReadReferenceFile !== namedReferencePath) {
+				return `The task already names the local reference \`${namedReferencePath}\`. Read that exact file now before any more ls, find, grep, or bash discovery. After that, read the single most likely implementation file under src/ directly. If the file stem is plausible but the exact extension is unknown, list src once and read the concrete file you find instead of guessing alternate extensions or using globs.`;
+			}
+			if (failedRepairTargetFile) {
+				return failedRepairTargetAlreadyRead
+					? `The previous edit on \`${failedRepairTargetFile}\` did not apply. Do not reread other files, do not restate the diagnosis, and do not run verification yet. Emit one valid edit tool call on \`${failedRepairTargetFile}\` now with at least one concrete replacement.${getStructuredEditCallHint()} After that successful edit, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}${selfContainedSummaryRule}`
+					: `The previous edit on \`${failedRepairTargetFile}\` did not apply. Read that same file now, then emit one valid edit tool call on \`${failedRepairTargetFile}\`. Do not inspect sibling/helper files or rerun discovery first.${getStructuredEditCallHint()} After the successful edit, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}${selfContainedSummaryRule}`;
+			}
+			if (requestedTestCoverageRepair) {
+				return `Verification already identified the remaining regression-test mismatch: ${requestedTestCoverageRepair.blocker}. Edit \`${requestedTestCoverageRepair.testFile}\` directly${requestedTestCoverageRepair.sourceFile ? ` using \`${requestedTestCoverageRepair.sourceFile}\` only as context` : ""}. Do not reread or rediscover files first. After that test edit, rerun ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}${selfContainedSummaryRule}`;
+			}
+			if (latestReadReferenceFile && readSourceFiles.length === 0 && ledger.recentMutations.length === 0) {
+				return `You already read the named local reference \`${latestReadReferenceFile}\`. Read the single most likely implementation file under src/ directly now. If the exact extension is unknown, list src once and read the concrete file you find instead of guessing alternate extensions or using globs. Do not do more ls, find, grep, or bash discovery first.`;
+			}
+			if (latestReadReferenceFile && committedReferenceSourceFile && ledger.recentMutations.length === 0) {
+				const helperWarning =
+					latestReadSourceFile && latestReadSourceFile !== committedReferenceSourceFile
+						? ` Do not pivot to \`${latestReadSourceFile}\` or another helper file unless a failing test, import path, or caller explicitly proves that \`${committedReferenceSourceFile}\` delegates the fix there.`
+						: " Do not pivot to another src dependency/helper file unless a failing test, import path, or caller explicitly proves that the first src file delegates the fix elsewhere.";
+				return `You already read the named local reference \`${latestReadReferenceFile}\` and the first plausible implementation file \`${committedReferenceSourceFile}\`. Commit to that implementation file now.${helperWarning} Emit one valid edit on \`${committedReferenceSourceFile}\`, then run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+			}
+			if (latestReadReferenceFile && latestReadSourceFile && readSourceFiles.length === 1 && ledger.recentMutations.length === 0) {
+				return `You already read the named local reference \`${latestReadReferenceFile}\` and the likely implementation file \`${latestReadSourceFile}\`. Commit to that implementation file now. Do not pivot to another src dependency/helper file unless a failing test, import path, or caller explicitly proves that the first src file delegates the fix elsewhere. Emit one valid edit on \`${latestReadSourceFile}\`, then run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+			}
+			if (initialTestUpdateMissing) {
+				return `This task explicitly requires a regression test change, and no test file has been updated yet. Before any verification or final summary, patch ${latestKnownTestFile ? `\`${latestKnownTestFile}\`` : "the required test under tests/"} now so it covers the requested behavior. Use the existing src change as context and avoid more rediscovery. After the test edit, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+			}
+			if (verifyItemActive) {
+				return `Run ${getVerificationCommandClause(localVerificationCommand)} now. Do not do more discovery or reread files first.${getVerificationMisuseWarning(localVerificationCommand)} After it passes, give a short summary and stop.${selfContainedSummaryRule}`;
+			}
+			if (implementItemActive && ledger.recentMutations.length === 0) {
+				if (singleFilePrecisionTask) {
+					if (latestReadSourceFile) {
+						return `This is a single-file precision patch. Only edit \`${latestReadSourceFile}\` and do not touch generated, reference, cli, or sibling paths. If a previous edit attempt failed, reread \`${latestReadSourceFile}\` once and then emit one minimal valid edit tool call on that same file now.${getStructuredEditCallHint()} After the edit, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+					}
+					return `This is a single-file precision patch. Read the relevant test under tests/ and the likely implementation file under src/ first. Do not guess wildcard or glob paths like \`tests/*.test.js\`; if the exact filename is unknown, list the directory once and then read the concrete file you found. Do not inspect generated, reference, cli, or sibling paths unless the test or verifier explicitly points there. If you already listed the workspace root, your next tool call must be a direct read, not another \`ls\`. Then emit one valid edit tool call on the confirmed src file.${getStructuredEditCallHint()} After that, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				if (taskRequiresTestUpdate && verifierScriptPath && verifierScriptUnread) {
+					return `This task uses a custom local verifier at \`${verifierScriptPath}\`. Read that verifier script once now so the patch and regression test match its exact expectations. Then patch the smallest required src/test change and run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				if (latestReadTestFile && readSourceFiles.length === 0) {
+					return `You already inspected \`${latestReadTestFile}\`. Derive the matching implementation path from that test and read the corresponding file under src/ directly now. Do not use ls, find, or bash discovery again. After that read, emit one valid edit tool call${taskRequiresTestUpdate ? " and only then update the matching test if the task requires it" : ""}, then run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				if (latestKnownSourceFile && !latestReadSourceFile) {
+					return `The concrete implementation target is already known as \`${latestKnownSourceFile}\`. Read that file now. Do not use ls, find, grep, or bash discovery again. After that read, emit one valid edit tool call${taskRequiresTestUpdate && latestKnownTestFile ? ` and then update \`${latestKnownTestFile}\` if the task requires the regression test` : ""}, then run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				if (taskRequiresTestUpdate && latestReadSourceFile && latestKnownTestFile && !latestReadTestFile) {
+					return `You already know the matching regression test file is \`${latestKnownTestFile}\`. Read it now so the required coverage matches \`${latestReadSourceFile}\`. Do not guess alternate test paths or rerun discovery first. After that read, patch the src/test pair directly and run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				if (latestReadTestFile && latestReadSourceFile) {
+					return `You already inspected \`${latestReadTestFile}\` and \`${latestReadSourceFile}\`. Stop discovery and patch the smallest required change now.${taskRequiresTestUpdate ? ` If the task also requires a regression test, update \`${latestReadTestFile}\` after the src change instead of rediscovering files.` : ""}${readSourceFiles.length > 1 ? ` You already read ${readSourceFiles.length} src files; do not open another one unless the latest src read explicitly delegates the fix.` : ""}${getStructuredEditCallHint()} After the edit${taskRequiresTestUpdate ? " sequence" : ""}, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+				}
+				return `The target is narrow enough for a small local patch. Stay inside \`.\` and use relative workspace paths only.${misleadingSiblingTask ? " If similarly named files exist, do not patch a sibling file until the failing test, caller, import path, or reference output confirms the true implementation target." : ""} Emit one valid edit tool call now for the smallest required change instead of more narration or shell discovery.${getStructuredEditCallHint()} After the edit, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+			}
+			if (inspectItemActive && ledger.recentMutations.length === 0) {
+				if (singleFilePrecisionTask) {
+					return `This is a single-file precision workspace task. Treat \`.\` as the workspace root and use relative paths only. Read the relevant test under tests/ and the most likely implementation file under src/ first.${latestReadTestFile ? ` You already inspected \`${latestReadTestFile}\`; use it to confirm the matching src file.` : ""} If you already listed the workspace root, your next tool call must be a direct read, not another \`ls\`. Do not inspect generated, reference, cli, or sibling directories unless the test or verifier explicitly points there. After those reads, patch only the confirmed src file.`;
+				}
+				if (latestKnownSourceFile && !latestReadSourceFile) {
+					return `The concrete implementation target is already known as \`${latestKnownSourceFile}\`. Read that file now. Do not use ls, find, grep, or bash discovery again.`;
+				}
+				if (taskRequiresTestUpdate && latestKnownTestFile && !latestReadTestFile && latestReadSourceFile) {
+					return `The matching regression test file is already known as \`${latestKnownTestFile}\`. Read it now so the required coverage matches \`${latestReadSourceFile}\`. Do not guess alternate test paths or rerun discovery first.`;
+				}
+				if (taskRequiresTestUpdate && verifierScriptPath && verifierScriptUnread) {
+					return `This is a small self-contained workspace task. Read the custom verifier script at \`${verifierScriptPath}\` once first so you know the exact regression-test expectations. Then read the relevant test and matching src file directly. Do not use ls, find, or bash loops to rediscover files.`;
+				}
+				if (latestReadTestFile && readSourceFiles.length === 0) {
+					return `This is a small self-contained workspace task. You already inspected \`${latestReadTestFile}\`. Use the import or failing assertion in that test to choose the matching src file directly. Do not use ls, find, or bash loops to rediscover files. Read the corresponding file under src/ now, then patch the smallest required change.`;
+				}
+				if (readTestFiles.length > 0 && readSourceFiles.length > 0) {
+					return `This is a small self-contained workspace task. You already have a relevant test and src file in hand. Do not expand discovery unless the latest src read explicitly points to one more helper. Make the next read or edit directly useful to the patch, then verify.`;
+				}
+				return `This is a small self-contained workspace task. Treat \`.\` as the workspace root and use relative paths only; do not jump to /home/alex/AG1 or another repo root. Stop broad shell discovery after the top-level listing. If you already listed the workspace root, your next tool call must be one direct read; do not call \`ls\` on subdirectories first. Do not grep for descriptive phrases or use bash/find loops to rediscover obvious local files. Read the most likely implementation file, relevant test, named reference, or verifier script directly under src/, tests?/, reference/, or scripts/.${misleadingSiblingTask ? " If similarly named files exist, confirm the real implementation path from the failing test, caller, import path, or reference output before editing any of them." : ""}`;
+			}
 		}
 		if (shouldReuseSources) {
 			return `You already have an authoritative source for this task. Reuse the fetched or preferred source you already have before doing any new web search or fetch.${researchFindingHint}${preferredSourceHint}${sourceSummaryHint}`;
@@ -1124,22 +1341,22 @@ function buildContinuationPrompt(
 		if (controlDirective.kind === "narrow_scope") {
 			if (degradedTurnDirective) {
 				return state.narrowScopePromptCount > 1
-					? `Recent turns keep degrading. Narrow scope aggressively to the smallest verifiable slice, keep the next response terse, avoid repeating prior analysis, and execute only that slice. Context: ${controlDirective.detail}`
-					: `Recent turns are degrading. Narrow scope to the smallest verifiable slice, keep the next response terse, and execute only that slice. Context: ${controlDirective.detail}`;
+					? `Recent turns keep degrading. Narrow scope aggressively to the smallest verifiable slice, keep the next response terse, avoid repeating prior analysis, and execute only that slice. If the next step is a code change, emit one valid edit tool call now instead of describing the patch. Context: ${controlDirective.detail}`
+					: `Recent turns are degrading. Narrow scope to the smallest verifiable slice, keep the next response terse, and execute only that slice. If the next step is a code change, emit one valid edit tool call now instead of describing the patch. Context: ${controlDirective.detail}`;
 			}
 			return state.narrowScopePromptCount > 1
-				? `The run is still off track. Narrow scope aggressively to the smallest verifiable slice, state that narrowed target, complete only that slice, and verify it before doing anything else. Context: ${controlDirective.detail}`
-				: `Repeated drift or failure means the current slice is too broad. Narrow scope to the smallest verifiable slice, state the narrowed target, execute it, and verify it before proceeding. Context: ${controlDirective.detail}`;
+				? `The run is still off track. Narrow scope aggressively to the smallest verifiable slice, state that narrowed target, complete only that slice, and verify it before doing anything else. If the next step is a code change, emit one valid edit tool call now instead of restating the patch in prose. Context: ${controlDirective.detail}`
+				: `Repeated drift or failure means the current slice is too broad. Narrow scope to the smallest verifiable slice, state the narrowed target, execute it, and verify it before proceeding. If the next step is a code change, emit one valid edit tool call now instead of restating the patch in prose. Context: ${controlDirective.detail}`;
 		}
 		if (controlDirective.kind === "replan") {
 			if (degradedTurnDirective) {
 				return state.replanPromptCount > 1
-					? `Recent turns keep degrading. Replan into 1-2 very small steps, keep the next response short, and execute only the first concrete step now. Context: ${controlDirective.detail}`
-					: `Recent turns are degrading. Replan into 1-2 very small steps, keep the next response short, and execute only the first concrete step now. Context: ${controlDirective.detail}`;
+					? `Recent turns keep degrading. Replan into 1-2 very small steps, keep the next response short, and execute only the first concrete step now. If that first step is a patch, emit one valid edit tool call immediately instead of more analysis. Context: ${controlDirective.detail}`
+					: `Recent turns are degrading. Replan into 1-2 very small steps, keep the next response short, and execute only the first concrete step now. If that first step is a patch, emit one valid edit tool call immediately instead of more analysis. Context: ${controlDirective.detail}`;
 			}
 			return state.replanPromptCount > 1
-				? `The run keeps drifting. Replan into 1-2 concrete steps, state the first step you will execute now, and then do it immediately. Context: ${controlDirective.detail}`
-				: `The run has drifted repeatedly. Replan into 1-2 concrete steps, choose the first one, and execute it now. Context: ${controlDirective.detail}`;
+				? `The run keeps drifting. Replan into 1-2 concrete steps, state the first step you will execute now, and then do it immediately. If the first step is a code change, emit one valid edit tool call instead of describing the patch. Context: ${controlDirective.detail}`
+				: `The run has drifted repeatedly. Replan into 1-2 concrete steps, choose the first one, and execute it now. If the first step is a code change, emit one valid edit tool call instead of describing the patch. Context: ${controlDirective.detail}`;
 		}
 		if (controlDirective.kind === "recover") {
 			if (degradedTurnDirective) {
@@ -1153,6 +1370,16 @@ function buildContinuationPrompt(
 					? "Your responses keep truncating. Continue from the exact point you stopped, avoid repeating yourself, and finish the task with concrete verification if possible."
 					: "Your last response was truncated. Continue from where you left off, finish the task, and use tools if they are needed.";
 			case "confirm_completion":
+				if (ledger.taskMode === "answer") {
+					return state.completionPromptCount > 1
+						? "Do not stop at a status update. Either provide the direct answer now and stop, or do one narrowly targeted read only if a specific evidence gap remains."
+						: "If the current evidence already answers the question, provide the direct answer now and stop. Otherwise do one narrowly targeted read only.";
+				}
+				if (ledger.verificationSatisfied || hasEnoughImplementationEvidence) {
+					return state.completionPromptCount > 1
+						? `Verification is already satisfied. Do not call any more tools. Provide the final short verified summary now, mention any residual risks only if they are real, and stop.${sourceSummaryHint}`
+						: `Verification is already satisfied. Do not call any more tools. Provide the final short verified summary now and stop.${sourceSummaryHint}`;
+				}
 				return state.completionPromptCount > 1
 					? `Do not stop at planning or vague status updates. Either continue making concrete progress with tools, or provide a final verified summary if the task is actually complete.${sourceSummaryHint}`
 					: `If the task is complete, provide a final summary with concrete verification and any remaining risks.${sourceSummaryHint} If it is not complete, continue working and use tools as needed.`;
@@ -1188,7 +1415,10 @@ function buildContinuationPrompt(
 					return `Continue by using ${visualToolHint} to verify the latest rendered UI before claiming completion.${visualInteractionHint}${visualRecipeHint}${visualViewportHint}`;
 				}
 				if (ledger.taskJournal.planItems.find((item) => item.key === "verify")?.status === "active") {
-					return "Continue by running verification on the latest changes before claiming completion.";
+					return `Continue by running verification on the latest changes before claiming completion.${selfContainedSummaryRule}`;
+				}
+				if (ledger.taskMode === "answer" && ledger.taskJournal.planItems.find((item) => item.key === "implement")?.status === "active") {
+					return "Continue by using the inspected local evidence to answer directly. Do not widen into implementation, verification, or more broad discovery unless a specific evidence gap remains.";
 				}
 				if (ledger.taskJournal.intentStatus === "failed") {
 					return ledger.taskJournal.lastIntentOutcome
@@ -1202,8 +1432,8 @@ function buildContinuationPrompt(
 				}
 				if (ledger.taskJournal.planItems.find((item) => item.key === "summarize")?.status === "active") {
 					return shouldUseVisual
-						? `The latest UI slice is already verified. Summarize the rendered result${visualSurfaceHint}, note any residual risks, and stop.${visualInteractionHint}${visualRecipeHint}${visualViewportHint}${visualAcceptanceHint}`
-						: `The latest implementation slice is already verified. Summarize the verified result, note any residual risks, and stop.${sourceSummaryHint}`;
+						? `The latest UI slice is already verified. Summarize the rendered result${visualSurfaceHint}, note any residual risks, and stop.${visualInteractionHint}${visualRecipeHint}${visualViewportHint}${visualAcceptanceHint}${selfContainedSummaryRule}`
+						: `The latest implementation slice is already verified. Summarize the verified result, note any residual risks, and stop.${sourceSummaryHint}${selfContainedSummaryRule}`;
 				}
 				return "Continue working on the task. Proceed to the next step. Do not ask for confirmation — you are in autonomous mode.";
 		}
@@ -1217,6 +1447,41 @@ function appendLedgerContext(
 	mode: "continuation" | "full" = "continuation",
 ): string {
 	return `${prompt}\n\n${mode === "full" ? formatAutonomousPromptLedger(ledger) : formatAutonomousContinuationLedger(ledger)}`;
+}
+
+function buildSelfContainedWorkspaceNudgeMessage(
+	nudgeType: NudgeType,
+	ledger: AutonomousRunLedger,
+	userMessage: string,
+): string | undefined {
+	if (!isSelfContainedWorkspaceTask(userMessage)) return undefined;
+	const localVerificationCommand = extractLocalVerificationCommand(userMessage);
+	const initialTestUpdateMissing = taskNeedsInitialTestUpdate(ledger, userMessage);
+	const latestKnownTestFile = getLatestKnownWorkspaceFile(ledger, /^tests?\//i);
+	const requestedTestCoverageRepair = getRequestedTestCoverageRepair(ledger, userMessage);
+	const selfContainedSummaryRule = getSelfContainedSummaryResponseRule(userMessage);
+	if (requestedTestCoverageRepair) {
+		return `Verification already identified the remaining regression-test mismatch: ${requestedTestCoverageRepair.blocker}. Edit \`${requestedTestCoverageRepair.testFile}\` directly${requestedTestCoverageRepair.sourceFile ? ` using \`${requestedTestCoverageRepair.sourceFile}\` only as context` : ""}. Do not reread or rediscover files first. After that test edit, rerun the intended verification command${localVerificationCommand ? ` (${localVerificationCommand})` : ""} and stop once it passes.${selfContainedSummaryRule}`;
+	}
+	if (initialTestUpdateMissing) {
+		return `This task still requires a regression test update. Patch ${latestKnownTestFile ? `\`${latestKnownTestFile}\`` : "the required test under tests/"} now before any verification step. Use the existing src change as context, do not reread or rediscover files first, then run the intended verification command${localVerificationCommand ? ` (${localVerificationCommand})` : ""}.${selfContainedSummaryRule}`;
+	}
+	switch (nudgeType) {
+		case "continue":
+			if (ledger.taskJournal.planItems.find((item) => item.key === "verify")?.status === "active") {
+				return `Run the intended local verification now${localVerificationCommand ? ` (${localVerificationCommand})` : ""}. Do not do more discovery or reread files first. After it passes, give a short summary and stop.${selfContainedSummaryRule}`;
+			}
+			return "Continue with the next direct workspace step only. Do not elaborate on findings. Read the most relevant local file, or emit one concrete edit or verification tool call now.";
+		case "pivot":
+			return "Change strategy inside the workspace. Stop broad shell discovery and do not narrate. Use the failing test, import path, caller, or reference file to pick the next local file directly, then patch or verify immediately.";
+		case "break_loop":
+			if (ledger.verificationSatisfied) {
+				return `The current slice is already verified. Stop exploring, give the short verified summary now, and end the run.${selfContainedSummaryRule}`;
+			}
+			return undefined;
+		default:
+			return undefined;
+	}
 }
 
 function buildTurnIntent(
@@ -1243,6 +1508,14 @@ function buildTurnIntent(
 	const shouldSummarizeResearchNow = hasEnoughResearchEvidence && isResearchOnlyLedger(ledger);
 	const hasEnoughVisualEvidence = shouldUseVisual && hasSufficientVisualEvidence(ledger, userMessage);
 	const hasEnoughImplementationEvidence = !shouldUseVisual && hasSufficientCodingVerificationEvidence(ledger, userMessage);
+	const initialTestUpdateMissing = taskNeedsInitialTestUpdate(ledger, userMessage);
+	const requestedTestCoverageRepair = getRequestedTestCoverageRepair(ledger, userMessage);
+	const latestKnownSourceFile = getLatestKnownWorkspaceFile(ledger, /^src\//i);
+	const latestKnownTestFile = getLatestKnownWorkspaceFile(ledger, /^tests?\//i);
+	const latestReadSourceFile = getLatestReadWorkspaceFile(ledger, /^src\//i);
+	const latestReadTestFile = getLatestReadWorkspaceFile(ledger, /^tests?\//i);
+	const latestReadReferenceFile = getLatestReadWorkspaceFile(ledger, /^reference\//i);
+	const committedReferenceSourceFile = getCommittedReferenceSourceFile(ledger);
 	const visualSurface = visualTarget?.surface ? ` for the ${visualTarget.surface}` : "";
 	const visualAcceptance = visualTarget?.acceptanceCriteria?.[0];
 	const visualTool =
@@ -1335,6 +1608,17 @@ function buildTurnIntent(
 			expectedVerification: `Cite supporting source URLs${ledger.research?.preferredSourceUrls.length ? ` such as ${ledger.research.preferredSourceUrls.slice(0, 2).join(", ")}` : ""}`,
 		};
 	}
+	if (
+		ledger.taskMode === "answer" &&
+		!shouldUseVisual &&
+		(ledger.readFiles.length > 0 || ledger.currentFocus || ledger.taskJournal.planItems.find((item) => item.key === "inspect")?.status === "completed")
+	) {
+		return {
+			plannedNextStep: "Answer directly from the inspected evidence, note any important caveats, and stop.",
+			stepRationale: "This task only needs a direct answer, so once the relevant local evidence is in hand the run should stop exploring and respond clearly.",
+			expectedVerification: undefined,
+		};
+	}
 	if (hasEnoughVisualEvidence) {
 		return {
 			plannedNextStep: `Summarize the verified rendered UI${visualSurface}, note any residual risks, and stop.${visualInteractionSuffix}`,
@@ -1408,6 +1692,22 @@ function buildTurnIntent(
 	}
 
 	const verifyItem = ledger.taskJournal.planItems.find((item) => item.key === "verify");
+	const inspectItem = ledger.taskJournal.planItems.find((item) => item.key === "inspect");
+	if (requestedTestCoverageRepair) {
+		return {
+			plannedNextStep: `Edit ${requestedTestCoverageRepair.testFile} so it satisfies: ${requestedTestCoverageRepair.blocker}. Then rerun verification.`,
+			stepRationale: "The verifier already identified the remaining regression-test mismatch, so the run should repair that known test file directly instead of rediscovering context.",
+			expectedVerification: ledger.lastVerificationDetail ?? "The previously failing verification should pass after the test update",
+		};
+	}
+	if (initialTestUpdateMissing) {
+		const latestTestFile = getLatestKnownWorkspaceFile(ledger, /^tests?\//i) ?? "the matching test under tests/";
+		return {
+			plannedNextStep: `Update ${latestTestFile} with the requested regression coverage, then rerun verification.`,
+			stepRationale: "The task explicitly asked for a test change, so source-only progress is not enough to move into verification or stopping.",
+			expectedVerification: ledger.lastVerificationDetail ?? "Run the requested verification after the test update",
+		};
+	}
 	if (verifyItem?.status === "blocked") {
 		const failedVerificationDetail = ledger.verificationFailures[ledger.verificationFailures.length - 1]?.replace(
 			/^failed verification:\s*/i,
@@ -1435,8 +1735,64 @@ function buildTurnIntent(
 					: "A passing verification command after the latest mutation"),
 		};
 	}
+	if (inspectItem?.status === "active" && ledger.recentMutations.length === 0) {
+		if (latestKnownSourceFile && !latestReadSourceFile) {
+			return {
+				plannedNextStep: `Read ${latestKnownSourceFile} now. Do not rediscover files first.`,
+				stepRationale: "A concrete implementation target is already known from prior discovery, so the next step should inspect that file directly instead of broadening the search.",
+				expectedVerification: "After the change, run the relevant test, lint, build, or verify command",
+			};
+		}
+		if (taskNeedsInitialTestUpdate(ledger, userMessage) && latestKnownTestFile && !latestReadTestFile && latestReadSourceFile) {
+			return {
+				plannedNextStep: `Read ${latestKnownTestFile} now so the requested regression coverage matches ${latestReadSourceFile}. Do not rediscover files first.`,
+				stepRationale: "The task requires a test update and the concrete test file is already known, so the next step should inspect that file directly instead of guessing alternate paths.",
+				expectedVerification: ledger.lastVerificationDetail ?? "Run the requested verification after the test update",
+			};
+		}
+	}
 	const implementItem = ledger.taskJournal.planItems.find((item) => item.key === "implement");
 	if (implementItem?.status === "active") {
+		if (ledger.taskMode === "implementation" && ledger.recentMutations.length === 0) {
+			if (committedReferenceSourceFile && latestReadReferenceFile) {
+				return {
+					plannedNextStep: `Patch ${committedReferenceSourceFile} now. Do not rediscover files first.`,
+					stepRationale: "After reading the named local reference and the first plausible implementation file, the run should commit to that implementation target instead of drifting into helper files.",
+					expectedVerification: ledger.lastVerificationDetail ?? "After the change, run the relevant test, lint, build, or verify command",
+				};
+			}
+			if (latestKnownSourceFile && !latestReadSourceFile) {
+				return {
+					plannedNextStep: `Read ${latestKnownSourceFile} now, then patch it directly. Do not rediscover files first.`,
+					stepRationale: "A concrete implementation target is already known from prior discovery, so the next step should inspect that file directly instead of repeating shell discovery.",
+					expectedVerification: "After the change, run the relevant test, lint, build, or verify command",
+				};
+			}
+			if (taskNeedsInitialTestUpdate(ledger, userMessage) && latestKnownTestFile && !latestReadTestFile) {
+				return {
+					plannedNextStep: `Read ${latestKnownTestFile} now so the required regression coverage matches the implementation, then patch it directly. Do not rediscover files first.`,
+					stepRationale: "The task requires a test update and the concrete test file is already known, so the next step should go straight there instead of guessing alternate paths.",
+					expectedVerification: ledger.lastVerificationDetail ?? "Run the requested verification after the test update",
+				};
+			}
+			if (latestReadSourceFile) {
+				return {
+					plannedNextStep:
+						taskNeedsInitialTestUpdate(ledger, userMessage) && latestKnownTestFile
+							? `Patch ${latestReadSourceFile} now. Then update ${latestKnownTestFile} with the requested regression coverage before rerunning verification.`
+							: `Patch ${latestReadSourceFile} now. Do not rediscover files first.`,
+					stepRationale: "The run already has the relevant implementation context in hand, so the next step should be a direct code change rather than more inspection.",
+					expectedVerification: "After the change, run the relevant test, lint, build, or verify command",
+				};
+			}
+		}
+		if (ledger.taskMode === "answer") {
+			return {
+				plannedNextStep: "Answer directly from the inspected evidence, and do not add more discovery unless a specific gap remains.",
+				stepRationale: "The run already has enough local context to answer, so another exploration step would only add churn.",
+				expectedVerification: undefined,
+			};
+		}
 		return {
 			plannedNextStep: "Make the next concrete code change.",
 			stepRationale: "The run has enough context to move from inspection into implementation.",
@@ -1461,6 +1817,13 @@ function buildTurnIntent(
 		};
 	}
 	if (assessment === "confirm_completion") {
+		if (ledger.taskMode === "answer") {
+			return {
+				plannedNextStep: "If the current evidence already answers the question, provide the direct answer now and stop. Otherwise do one narrowly targeted read only.",
+				stepRationale: "Answer-only tasks should stop once they have enough evidence, not expand into open-ended autonomy.",
+				expectedVerification: undefined,
+			};
+		}
 		return {
 			plannedNextStep: "Either continue with concrete tool-driven work or provide a final verified summary.",
 			stepRationale: "The last turn looked like a status update rather than confirmed task completion.",
@@ -1528,15 +1891,43 @@ function shouldUseResearch(
 	userMessage: string,
 ): boolean {
 	if (!researchToolsAvailable) return false;
-	if (RESEARCH_TASK_PATTERNS.some((pattern) => pattern.test(userMessage))) return true;
+	const localReferenceContext = hasAutonomousLocalReferenceContext(userMessage);
+	const externalResearchRequest = EXTERNAL_RESEARCH_PATTERNS.some((pattern) => pattern.test(userMessage));
+	const documentationResearchRequest =
+		DOCUMENTATION_RESEARCH_PATTERNS.some((pattern) => pattern.test(userMessage)) && !localReferenceContext;
+	const implementationRequest = IMPLEMENTATION_TASK_PATTERNS.some((pattern) => pattern.test(userMessage));
+	if (implementationRequest && !externalResearchRequest && !documentationResearchRequest) return false;
+	if (externalResearchRequest || documentationResearchRequest) return true;
 	if (ledger.research && (ledger.research.searchQueries.length > 0 || ledger.research.fetchedUrls.length > 0)) return true;
-	if (ledger.currentFocus && /\b(docs|documentation|api|reference|research|source|latest|current)\b/i.test(ledger.currentFocus)) {
+	if (
+		ledger.currentFocus &&
+		/\b(docs|documentation|api|reference|research|source|latest|current)\b/i.test(ledger.currentFocus) &&
+		!localReferenceContext
+	) {
 		return true;
 	}
-	if (ledger.residualRisks.some((risk) => /\b(source|citation|documentation|api|current|latest|release)\b/i.test(risk))) {
+	if (
+		ledger.residualRisks.some((risk) => /\b(source|citation|documentation|api|current|latest|release)\b/i.test(risk)) &&
+		!localReferenceContext
+	) {
 		return true;
 	}
 	return false;
+}
+
+function extractNamedWorkspacePath(userMessage: string, prefixPattern: RegExp): string | undefined {
+	for (const match of userMessage.matchAll(/`((?:\.\/)?[^`\n]+)`/g)) {
+		const raw = match[1]?.trim();
+		if (!raw) continue;
+		const normalized = raw.replace(/^\.\//, "");
+		if (prefixPattern.test(normalized)) return normalized;
+	}
+	for (const match of userMessage.matchAll(/\b((?:reference|docs?|guides?|manuals?|specs?|src|tests?|scripts)\/[^\s)`]+)/g)) {
+		const raw = match[1]?.trim();
+		if (!raw) continue;
+		if (prefixPattern.test(raw)) return raw;
+	}
+	return undefined;
 }
 
 function hasReusableResearchSource(ledger: AutonomousRunLedger): boolean {
@@ -1560,16 +1951,49 @@ function isVerificationOnlyTask(goal: string): boolean {
 }
 
 function hasSufficientCodingVerificationEvidence(ledger: AutonomousRunLedger, goal: string): boolean {
-	if (!ledger.verificationSatisfied) return false;
-	if (ledger.lastActionType !== "verification") return false;
+	if (!hasVerifiedImplementationReadyToSummarize(ledger, goal)) return false;
 	const summarizeItem = ledger.taskJournal.planItems.find((item) => item.key === "summarize");
 	if (summarizeItem?.status !== "active" && summarizeItem?.status !== "completed") return false;
+	return true;
+}
+
+function hasVerifiedImplementationReadyToSummarize(ledger: AutonomousRunLedger, goal: string): boolean {
+	if (!ledger.verificationSatisfied) return false;
+	if (ledger.lastActionType !== "verification") return false;
+	if (taskStillNeedsRequestedTestCoverage(ledger, goal)) return false;
 	return (
 		ledger.touchedFiles.length > 0 ||
 		ledger.recentMutations.length > 0 ||
 		ledger.verificationFailures.length > 0 ||
 		isVerificationOnlyTask(goal)
 	);
+}
+
+function hasVerifiedSummaryAnswer(
+	text: string,
+	goal: string,
+	options: { verificationSatisfied?: boolean } = {},
+): boolean {
+	const normalized = text.trim();
+	if (normalized.length < 40) return false;
+	if (INCOMPLETE_PATTERNS.some((pattern) => pattern.test(normalized))) return false;
+	const mentionsChange = VERIFIED_SUMMARY_CHANGE_PATTERNS.some((pattern) => pattern.test(normalized));
+	const mentionsVerification = VERIFIED_SUMMARY_VERIFICATION_PATTERNS.some((pattern) => pattern.test(normalized));
+	if (!mentionsChange || !mentionsVerification) return false;
+	const mentionsConcreteTarget = VERIFIED_SUMMARY_FILE_PATTERNS.some((pattern) => pattern.test(normalized));
+	return Boolean(options.verificationSatisfied) || isVerificationOnlyTask(goal) || mentionsConcreteTarget;
+}
+
+function hasSufficientDirectAnswer(text: string, goal: string): boolean {
+	const normalized = text.trim();
+	if (normalized.length < 35) return false;
+	if (IMPLEMENTATION_TASK_PATTERNS.some((pattern) => pattern.test(goal))) return false;
+	if (INCOMPLETE_PATTERNS.some((pattern) => pattern.test(normalized))) return false;
+	const hasPayload = DIRECT_ANSWER_PAYLOAD_PATTERNS.some((pattern) => pattern.test(normalized));
+	if (!hasPayload) return false;
+	const isMetaOnly = DIRECT_ANSWER_META_ONLY_PATTERNS.some((pattern) => pattern.test(normalized));
+	if (!isMetaOnly) return true;
+	return /(?:\b(?:src|tests?|packages|scripts|docs?|reference)\/[^\s)`]+|`[^`\n]+`|\bhttps?:\/\/\S+)/i.test(normalized);
 }
 
 function hasSufficientVisualEvidence(ledger: AutonomousRunLedger, goal: string): boolean {
@@ -1581,9 +2005,241 @@ function hasSufficientVisualEvidence(ledger: AutonomousRunLedger, goal: string):
 	return ledger.touchedFiles.length > 0 || ledger.recentMutations.length > 0 || isVerificationOnlyTask(goal);
 }
 
+function shouldBypassStopNudgeForVerifiedSummary(options: {
+	ledger: AutonomousRunLedger;
+	userMessage: string;
+	visualVerificationRelevant: boolean;
+	researchRelevant: boolean;
+}): boolean {
+	const summarizeReady = options.ledger.taskJournal.planItems.find((item) => item.key === "summarize")?.status === "active";
+	if (!summarizeReady) return false;
+	if (options.visualVerificationRelevant) {
+		return hasSufficientVisualEvidence(options.ledger, options.userMessage);
+	}
+	if (options.researchRelevant && isResearchOnlyLedger(options.ledger)) {
+		return hasSufficientResearchEvidence(options.ledger.research);
+	}
+	return hasVerifiedImplementationReadyToSummarize(options.ledger, options.userMessage);
+}
+
+function plannedStepPrefersConcreteMutation(plannedStep: string): boolean {
+	return plannedStep.includes("execute only that slice")
+		|| plannedStep.includes("make the next concrete code change")
+		|| plannedStep.includes("execute it immediately")
+		|| plannedStep.includes("finish the current slice without exploring new scope");
+}
+
+function isSelfContainedWorkspaceTask(userMessage: string): boolean {
+	const implementationRequest = IMPLEMENTATION_TASK_PATTERNS.some((pattern) => pattern.test(userMessage));
+	return (
+		implementationRequest &&
+		SELF_CONTAINED_WORKSPACE_PATTERNS.some((pattern) => pattern.test(userMessage)) &&
+		LOCAL_VERIFICATION_COMMAND_PATTERNS.some((pattern) => pattern.test(userMessage))
+	);
+}
+
+function isSingleFilePrecisionTask(userMessage: string): boolean {
+	return isSelfContainedWorkspaceTask(userMessage) && SINGLE_FILE_PRECISION_PATTERNS.every((pattern) => pattern.test(userMessage));
+}
+
+function requiresTestUpdate(userMessage: string): boolean {
+	return /\b(add|update)\b[\s\S]{0,80}\b(regression\s+test|test)\b/i.test(userMessage);
+}
+
+function taskNeedsInitialTestUpdate(ledger: AutonomousRunLedger, userMessage: string): boolean {
+	if (!requiresTestUpdate(userMessage)) return false;
+	return ledger.touchedFiles.length > 0 && !ledger.touchedFiles.some((file) => /^tests?\//i.test(file));
+}
+
+function taskStillNeedsRequestedTestCoverage(ledger: AutonomousRunLedger, userMessage: string): boolean {
+	return taskNeedsInitialTestUpdate(ledger, userMessage) || getRequestedTestCoverageRepair(ledger, userMessage) !== undefined;
+}
+
+function mentionsMisleadingSiblingWarning(userMessage: string): boolean {
+	return /\b(misleading|similarly named)\b/i.test(userMessage);
+}
+
+function extractLocalVerificationCommand(userMessage: string): string | undefined {
+	const fencedMatch = userMessage.match(/intended verification command is:\s*`([^`]+)`/i);
+	if (fencedMatch?.[1]) return fencedMatch[1].trim();
+	const plainMatch = userMessage.match(/verification command is:\s*([^\n]+)/i);
+	if (plainMatch?.[1]) return plainMatch[1].trim();
+	return undefined;
+}
+
+function extractWorkspaceVerifierScriptPath(localVerificationCommand: string | undefined): string | undefined {
+	if (!localVerificationCommand) return undefined;
+	const match = localVerificationCommand.match(/\b(scripts\/[^\s&;|`]+)/i);
+	return match?.[1];
+}
+
+function getLatestReadWorkspaceFile(ledger: AutonomousRunLedger, prefixPattern: RegExp): string | undefined {
+	for (let i = ledger.readFiles.length - 1; i >= 0; i--) {
+		const candidate = ledger.readFiles[i];
+		if (prefixPattern.test(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+function getLatestTouchedWorkspaceFile(ledger: AutonomousRunLedger, prefixPattern: RegExp): string | undefined {
+	for (let i = ledger.touchedFiles.length - 1; i >= 0; i--) {
+		const candidate = ledger.touchedFiles[i];
+		if (prefixPattern.test(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+function getLatestKnownWorkspaceFile(ledger: AutonomousRunLedger, prefixPattern: RegExp): string | undefined {
+	if (ledger.discoveryTargetFile && prefixPattern.test(ledger.discoveryTargetFile)) {
+		return ledger.discoveryTargetFile;
+	}
+	const discoveredFiles = ledger.discoveredFiles ?? [];
+	for (let i = discoveredFiles.length - 1; i >= 0; i--) {
+		const candidate = discoveredFiles[i];
+		if (prefixPattern.test(candidate)) return candidate;
+	}
+	return getLatestTouchedWorkspaceFile(ledger, prefixPattern) ?? getLatestReadWorkspaceFile(ledger, prefixPattern);
+}
+
+function getCommittedReferenceSourceFile(ledger: AutonomousRunLedger): string | undefined {
+	const readFiles = ledger.readFiles ?? [];
+	const firstReferenceIndex = readFiles.findIndex((file) => /^reference\//i.test(file));
+	if (firstReferenceIndex < 0) return undefined;
+	for (let i = firstReferenceIndex + 1; i < readFiles.length; i++) {
+		const candidate = readFiles[i];
+		if (/^src\//i.test(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+function getFailedRepairTargetFile(ledger: AutonomousRunLedger): string | undefined {
+	const candidates = [
+		ledger.taskJournal.activeSubtask,
+		ledger.currentFocus,
+		ledger.taskJournal.nextAction,
+		ledger.taskJournal.plannedNextStep,
+	];
+	for (const candidate of candidates) {
+		if (!candidate || !/failed change|valid edit on the same target/i.test(candidate)) continue;
+		const match = candidate.match(/\b((?:src|tests?|scripts|reference|cli|generated)\/[^\s`:)]+)/i);
+		if (match?.[1]) return match[1];
+	}
+	return undefined;
+}
+
+function getWorkspaceFilesByPrefix(files: string[], prefixPattern: RegExp): string[] {
+	const seen = new Set<string>();
+	const matches: string[] = [];
+	for (const file of files) {
+		if (!prefixPattern.test(file) || seen.has(file)) continue;
+		seen.add(file);
+		matches.push(file);
+	}
+	return matches;
+}
+
+function extractLatestVerificationFailureCue(ledger: AutonomousRunLedger): string | undefined {
+	const latestFailure = ledger.verificationFailures[ledger.verificationFailures.length - 1];
+	if (!latestFailure) return undefined;
+	const withoutPrefix = latestFailure.replace(/^failed verification:\s*/i, "").trim();
+	if (withoutPrefix.length === 0) return undefined;
+	const parts = withoutPrefix.split(/\s+—\s+/);
+	const candidate = (parts.at(-1) ?? withoutPrefix).trim();
+	return candidate.length > 0 ? candidate : undefined;
+}
+
+function getRequestedTestCoverageRepair(
+	ledger: AutonomousRunLedger,
+	userMessage: string,
+): { blocker: string; testFile: string; sourceFile?: string } | undefined {
+	if (!requiresTestUpdate(userMessage)) return undefined;
+	const failureCue = extractLatestVerificationFailureCue(ledger);
+	if (!failureCue) return undefined;
+	if (!/\b(missing|expected|required|needs?)\b[\s\S]{0,80}\b(regression\s+test|test|coverage|case|assert(?:ion)?|snapshot|fixture)\b/i.test(failureCue)) {
+		return undefined;
+	}
+	const testFile = getLatestKnownWorkspaceFile(ledger, /^tests?\//i);
+	if (!testFile) return undefined;
+	return {
+		blocker: failureCue,
+		testFile,
+		sourceFile: getLatestKnownWorkspaceFile(ledger, /^src\//i),
+	};
+}
+
+function getSelfContainedSummaryResponseRule(userMessage: string): string {
+	if (!isSelfContainedWorkspaceTask(userMessage)) return "";
+	if (SELF_CONTAINED_SUMMARY_FILE_PATTERNS.some((pattern) => pattern.test(userMessage))) return "";
+	return " Return the short final summary as visible assistant text, not only in thinking/reasoning. Do not create or edit SUMMARY.md, notes, docs, markdown reports, or any other workspace file unless the task explicitly asks for a file change.";
+}
+
+function getVerificationCommandClause(localVerificationCommand: string | undefined): string {
+	return localVerificationCommand
+		? `the intended verification command exactly once, verbatim (\`${localVerificationCommand}\`)`
+		: "the intended verification command once";
+}
+
+function getVerificationMisuseWarning(localVerificationCommand: string | undefined): string {
+	return localVerificationCommand
+		? " Do not rewrite it to a narrower path, append extra args, use previews, subsets, piped variants, or rerun it after the first passing result."
+		: " Do not rerun it after the first passing result.";
+}
+
+function extractExpectedChangedPathsFromPrompt(userMessage: string): string[] {
+	const match = userMessage.match(/^- expected changed paths:\s*([^\n]+)/im);
+	if (!match?.[1]) return [];
+	return match[1]
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function getStructuredEditCallHint(): string {
+	return " Use one native `edit` tool call with `path` and an `edits` array containing at least one `{ oldText, newText }` replacement. Do not emit XML or prose instead of the structured edit arguments.";
+}
+
+function getExactVerificationOnceRule(localVerificationCommand: string | undefined, userMessage: string): string {
+	const expectedChangedPaths = extractExpectedChangedPathsFromPrompt(userMessage);
+	const requiresMultipleEdits = expectedChangedPaths.length > 1 || requiresTestUpdate(userMessage);
+	const verificationPoint = requiresMultipleEdits
+		? "After the required source/test mutations are complete"
+		: "After the first successful mutation";
+	return ` ${verificationPoint}, run ${getVerificationCommandClause(localVerificationCommand)}.${getVerificationMisuseWarning(localVerificationCommand)}`;
+}
+
 function buildInitialAutonomousPrompt(userMessage: string, researchToolsAvailable: boolean): string {
+	if (isSelfContainedWorkspaceTask(userMessage)) {
+		const misleadingSiblingGuidance = mentionsMisleadingSiblingWarning(userMessage)
+			? " Treat similarly named files as traps: before editing, confirm the real implementation path from the failing test, caller, import path, or reference output. Do not patch a sibling file just because the filename stem matches."
+			: "";
+		const namedReferencePath = extractNamedWorkspacePath(userMessage, /^(?:reference|docs?|guides?|manuals?|specs?)\//i);
+		const namedReferenceGuidance = namedReferencePath
+			? ` The task already names the local reference \`${namedReferencePath}\`; read that exact file before any directory listing or other discovery. Then read the single most likely implementation file under \`src/\` directly. If the file stem is plausible but the exact extension is unknown, list the directory once and read the concrete file you find instead of guessing \`.js\`/\`.mjs\` or using globs.`
+			: "";
+		const singleFilePrecisionGuidance = isSingleFilePrecisionTask(userMessage)
+			? " This is a single-file precision patch. Start by reading the relevant test under `tests/` and the likely implementation file under `src/`. Do not guess wildcard or glob paths like `tests/*.test.js`; if the exact filename is unknown, list the directory once and then read the concrete file you found. Do not inspect `generated/`, `reference/`, `cli/`, or sibling directories unless the test or verifier explicitly points there. Do not call `ls` more than once before the first read, and do not turn the top-level listing into more subdirectory `ls` calls. Once the correct `src/...` file is confirmed, patch only that file."
+			: "";
+		return `${userMessage}\n\nThis is a self-contained local patch/debug task. Stay inside the workspace and do not use webSearch/webFetch. Treat \`.\` as the workspace root and use relative workspace paths like \`src/...\`, \`tests/...\`, \`reference/...\`, or \`scripts/...\`; do not jump to /home/alex/AG1 or any repo root outside the fixture. After at most one top-level listing, stop shell-style file hunting. If you choose to list once, do it once only, and make your very next tool call a direct \`read\` of one relevant file instead of more \`ls\`. Do not list subdirectories like \`src/\`, \`tests/\`, \`test/\`, \`cli/\`, or \`reference/\` before that first read. Do not grep for descriptive phrases or use bash/find loops to rediscover obvious local files. Prefer one direct read of the most likely implementation file, relevant test, named reference, or verifier script under src/, tests?/, reference/, or scripts/.${namedReferenceGuidance}${misleadingSiblingGuidance}${singleFilePrecisionGuidance} Once the target file is clear, emit one concrete edit immediately instead of narrating the patch.${getExactVerificationOnceRule(extractLocalVerificationCommand(userMessage), userMessage)} Then give a short summary and stop.${getSelfContainedSummaryResponseRule(userMessage)}`;
+	}
+	if (looksLikeAutonomousVerifyOnlyTask(userMessage)) {
+		return `${userMessage}\n\nThis is a local inspection or review task. Do not edit files unless the user explicitly asks for a fix. Start with one directly relevant file, test, or verifier artifact, gather concrete findings, then answer with those findings and stop.`;
+	}
+	if (looksLikeAutonomousLocalAnswerTask(userMessage)) {
+		const answerFirstHint = looksLikeAutonomousPathLookupTask(userMessage)
+			? " If the user only asked for the location or exact path, answer as soon as one decisive hit identifies it."
+			: "";
+		return `${userMessage}\n\nThis is an answer-only local workspace task. Stay in local tools and avoid web research. Externalize one focused discovery or read step first, then answer directly once the evidence is decisive.${answerFirstHint} Do not widen into implementation or extra verification unless the prompt explicitly requires changes.`;
+	}
 	if (!researchToolsAvailable) return userMessage;
-	if (!RESEARCH_TASK_PATTERNS.some((pattern) => pattern.test(userMessage))) return userMessage;
+	const localReferenceContext = hasAutonomousLocalReferenceContext(userMessage);
+	const externalResearchRequest =
+		EXTERNAL_RESEARCH_PATTERNS.some((pattern) => pattern.test(userMessage))
+		|| (!localReferenceContext && looksLikeAutonomousResearchTask(userMessage));
+	const documentationResearchRequest =
+		DOCUMENTATION_RESEARCH_PATTERNS.some((pattern) => pattern.test(userMessage)) && !localReferenceContext;
+	const implementationRequest = looksLikeAutonomousImplementationTask(userMessage);
+	if (implementationRequest && !externalResearchRequest && !documentationResearchRequest) return userMessage;
+	if (!externalResearchRequest && !documentationResearchRequest) return userMessage;
 	return `${userMessage}\n\nIf this requires current or external information, use webSearch first, then webFetch the most relevant URL, and keep the source URLs available in your notes.`;
 }
 
@@ -1763,6 +2419,7 @@ function assessTurnIntent(options: {
 	turnFileAccessHistory: ToolOutcome[];
 	assessment: TurnAssessmentKind;
 	verificationState: VerificationCheckpointState;
+	lastAssistantText: string;
 }): { outcome: "on_track" | "drifted" | "failed"; detail: string } {
 	const verifyItem = options.plannedLedger.taskJournal.planItems.find((item) => item.key === "verify");
 	const implementItem = options.plannedLedger.taskJournal.planItems.find((item) => item.key === "implement");
@@ -1774,8 +2431,12 @@ function assessTurnIntent(options: {
 	const webSearchAttempt = options.turnToolHistory.find((outcome) => outcome.tool.toLowerCase() === "websearch");
 	const webFetchAttempt = options.turnToolHistory.find((outcome) => outcome.tool.toLowerCase() === "webfetch");
 	const mutation = options.turnToolHistory.find((outcome) => isMutatingOutcome(outcome) && outcome.success);
+	const failedMutation = options.turnToolHistory.find((outcome) => isMutatingOutcome(outcome) && !outcome.success);
 	const inspection = options.turnFileAccessHistory.find((outcome) => READ_TOOL_NAMES.has(outcome.tool.toLowerCase()) && outcome.success);
 	const visualPhase = options.plannedLedger.visualIteration?.phase;
+	const selfContainedWorkspaceTask = isSelfContainedWorkspaceTask(options.plannedLedger.goal);
+	const hasReadTestFile = options.plannedLedger.readFiles.some((file) => /^tests?\//i.test(file));
+	const readSourceFileCount = getWorkspaceFilesByPrefix(options.plannedLedger.readFiles, /^src\//i).length;
 
 	if (visualPhase === "baseline_capture") {
 		if (visualVerificationAttempt) {
@@ -1823,9 +2484,12 @@ function assessTurnIntent(options: {
 				detail: `verification matched intent: ${verificationAttempt.detail ?? verificationAttempt.file ?? verificationAttempt.tool}`,
 			};
 		}
+		const verificationFailurePreview = getVerificationFailurePreview(verificationAttempt);
 		return {
 			outcome: "failed",
-			detail: `verification failed: ${verificationAttempt.detail ?? verificationAttempt.file ?? verificationAttempt.tool}`,
+			detail: verificationFailurePreview
+				? `verification failed: ${verificationFailurePreview}`
+				: `verification failed: ${verificationAttempt.detail ?? verificationAttempt.file ?? verificationAttempt.tool}`,
 		};
 	}
 	if (verifyItem?.status === "blocked") {
@@ -1893,11 +2557,34 @@ function assessTurnIntent(options: {
 	}
 	if (mutation) {
 		return {
-			outcome: implementItem?.status === "active" || implementItem?.status === "completed" ? "on_track" : "drifted",
+			outcome:
+				implementItem?.status === "active" ||
+				implementItem?.status === "completed" ||
+				plannedStepPrefersConcreteMutation(plannedStep)
+					? "on_track"
+					: "drifted",
 			detail: `mutation matched intent: ${mutation.detail ?? mutation.file ?? mutation.tool}`,
 		};
 	}
+	if (failedMutation) {
+		return {
+			outcome: "failed",
+			detail: `edit failed: ${failedMutation.detail ?? failedMutation.file ?? failedMutation.tool}`,
+		};
+	}
 	if (inspection) {
+		if (
+			selfContainedWorkspaceTask &&
+			implementItem?.status === "active" &&
+			options.plannedLedger.recentMutations.length === 0 &&
+			hasReadTestFile &&
+			readSourceFileCount > 0
+		) {
+			return {
+				outcome: "drifted",
+				detail: `expected a concrete edit after local test+src inspection, but got another inspection: ${inspection.detail ?? inspection.file ?? inspection.tool}`,
+			};
+		}
 		return {
 			outcome: inspectItem?.status === "active" || implementItem?.status === "active" ? "on_track" : "drifted",
 			detail: `inspection matched intent: ${inspection.detail ?? inspection.file ?? inspection.tool}`,
@@ -1907,6 +2594,16 @@ function assessTurnIntent(options: {
 		return {
 			outcome: "on_track",
 			detail: "completion matched the planned summarize step",
+		};
+	}
+	if (
+		hasVerifiedSummaryAnswer(options.lastAssistantText, options.plannedLedger.goal, {
+			verificationSatisfied: options.verificationState.hasVerificationCheckpoint,
+		})
+	) {
+		return {
+			outcome: "on_track",
+			detail: "verified summary matched the intended completion step",
 		};
 	}
 	if (
@@ -1960,16 +2657,36 @@ function promoteEvidenceBackedCompletion(
 		!!options.visualVerificationRelevant && hasSufficientVisualEvidence(projectedLedger, options.userMessage);
 	const hasImplementationStopEvidence =
 		!options.visualVerificationRelevant && hasSufficientCodingVerificationEvidence(projectedLedger, options.userMessage);
+	const hasVerifiedSummaryStopEvidence =
+		!options.visualVerificationRelevant &&
+		hasVerifiedSummaryAnswer(options.lastAssistantText, options.userMessage, {
+			verificationSatisfied: options.verificationSatisfied,
+		});
+	const hasDirectAnswerStopEvidence =
+		projectedLedger.taskMode === "answer" && hasSufficientDirectAnswer(options.lastAssistantText, options.userMessage);
 
 	if (assessment === "confirm_verification") {
-		if (hasResearchStopEvidence || hasVisualStopEvidence || hasImplementationStopEvidence) {
+		if (
+			hasResearchStopEvidence ||
+			hasVisualStopEvidence ||
+			hasVerifiedSummaryStopEvidence ||
+			hasDirectAnswerStopEvidence
+		) {
 			return "complete";
+		}
+		if (hasImplementationStopEvidence) {
+			return "confirm_completion";
 		}
 		return assessment;
 	}
 
 	if (assessment !== "continue" && assessment !== "confirm_completion") return assessment;
-	if (hasVisualStopEvidence || hasImplementationStopEvidence) return "complete";
+	if (hasVisualStopEvidence || hasVerifiedSummaryStopEvidence || hasDirectAnswerStopEvidence) {
+		return "complete";
+	}
+	if (hasImplementationStopEvidence) {
+		return "confirm_completion";
+	}
 	return assessment;
 }
 
@@ -1989,21 +2706,31 @@ function buildLedgerEvents(options: {
 }): AutonomousLedgerEvent[] {
 	const events: AutonomousLedgerEvent[] = [];
 	const latestRead = findLatestSuccessfulReadOutcome(options.fileAccessHistory);
-	if (latestRead?.detail || latestRead?.file) {
-		events.push({ type: "inspection_complete", detail: latestRead.detail ?? latestRead.file });
+	const latestFailedMutation = findAnchoredFailedMutationOutcome(options.toolHistory, options.fileAccessHistory);
+	const latestReadDetail = summarizeOutcomeForLedgerEvent(latestRead);
+	if (latestReadDetail) {
+		events.push({ type: "inspection_complete", detail: latestReadDetail });
 	}
 	const latestMutation = findLatestSuccessfulMutationOutcome(options.toolHistory);
-	if (latestMutation?.detail || latestMutation?.file) {
-		events.push({ type: "implementation_changed", detail: latestMutation.detail ?? latestMutation.file });
+	const latestMutationDetail = summarizeOutcomeForLedgerEvent(latestMutation);
+	if (latestMutationDetail) {
+		events.push({ type: "implementation_changed", detail: latestMutationDetail });
+	}
+	const latestFailedMutationDetail = summarizeOutcomeForLedgerEvent(latestFailedMutation);
+	if (latestFailedMutationDetail) {
+		events.push({ type: "mutation_repair_required", detail: latestFailedMutationDetail });
 	}
 	if (options.visualFailureDetail) {
 		events.push({ type: "verification_failed", detail: options.visualFailureDetail });
 	} else {
 	const latestFailedVerification = findLatestFailedVerificationOutcome(options.toolHistory);
 		if (latestFailedVerification?.detail) {
-			events.push({ type: "verification_failed", detail: latestFailedVerification.detail });
+			events.push({
+				type: "verification_failed",
+				detail: normalizeLedgerEventDetail(latestFailedVerification.detail) ?? latestFailedVerification.detail,
+			});
 		} else if (latestMutation && !options.verificationSatisfied) {
-			events.push({ type: "verification_required", detail: latestMutation.detail ?? latestMutation.file });
+			events.push({ type: "verification_required", detail: latestMutationDetail });
 		} else if (options.visualVerificationRelevant && !options.verificationSatisfied) {
 			events.push({ type: "verification_required", detail: "visual verification pending" });
 		}
@@ -2027,6 +2754,75 @@ function buildLedgerEvents(options: {
 	return events;
 }
 
+function findAnchoredFailedMutationOutcome(
+	toolHistory: ToolOutcome[],
+	fileAccessHistory: ToolOutcome[],
+): ToolOutcome | undefined {
+	const latestFailedMutation = findLatestFailedMutationOutcome(toolHistory);
+	if (!latestFailedMutation) return undefined;
+	if (findLatestSuccessfulMutationOutcome(toolHistory)) return latestFailedMutation;
+
+	const readReferenceFiles = getWorkspaceFilesByPrefix(
+		fileAccessHistory
+			.filter((outcome) => outcome.success && outcome.tool.toLowerCase() === "read" && typeof outcome.file === "string")
+			.map((outcome) => outcome.file!),
+		/^reference\//i,
+	);
+	const readSourceFiles = getWorkspaceFilesByPrefix(
+		fileAccessHistory
+			.filter((outcome) => outcome.success && outcome.tool.toLowerCase() === "read" && typeof outcome.file === "string")
+			.map((outcome) => outcome.file!),
+		/^src\//i,
+	);
+	if (readReferenceFiles.length === 0 || readSourceFiles.length !== 1) return latestFailedMutation;
+
+	const committedSourceFile = readSourceFiles[0];
+	if (latestFailedMutation.file === committedSourceFile || latestFailedMutation.detail === committedSourceFile) {
+		return latestFailedMutation;
+	}
+
+	return {
+		...latestFailedMutation,
+		file: committedSourceFile,
+		detail: committedSourceFile,
+	};
+}
+
+function summarizeOutcomeForLedgerEvent(outcome: ToolOutcome | undefined): string | undefined {
+	if (!outcome) return undefined;
+	if (isMutatingOutcome(outcome)) {
+		return normalizeLedgerEventDetail(outcome.file) ?? normalizeLedgerEventDetail(outcome.detail);
+	}
+	return normalizeLedgerEventDetail(outcome.detail) ?? normalizeLedgerEventDetail(outcome.file);
+}
+
+function normalizeLedgerEventDetail(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const normalized = value.replace(/\\/g, "/").replace(/\s+/g, " ").trim();
+	if (!normalized) return undefined;
+
+	const withoutWorkspaceCd = normalized.replace(
+		/^cd\s+(?:\/?(?:tmp|home)\/[^\s;&|]+\/workspace)\s*&&\s*/i,
+		"",
+	);
+	if (withoutWorkspaceCd !== normalized) return withoutWorkspaceCd;
+
+	const relativePatterns = [
+		/(?:^|\/)(src\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(tests?\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(reference\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(scripts\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(cli\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(generated\/[^\s)`"'<>]+)/i,
+	];
+	for (const pattern of relativePatterns) {
+		const match = normalized.match(pattern);
+		if (match?.[1]) return match[1];
+	}
+	if (/(?:^|\/)SUMMARY\.md$/i.test(normalized)) return "SUMMARY.md";
+	return normalized;
+}
+
 function findLatestSuccessfulReadOutcome(fileAccessHistory: ToolOutcome[]): ToolOutcome | undefined {
 	for (let i = fileAccessHistory.length - 1; i >= 0; i--) {
 		const outcome = fileAccessHistory[i];
@@ -2041,6 +2837,16 @@ function findLatestSuccessfulMutationOutcome(toolHistory: ToolOutcome[]): ToolOu
 	for (let i = toolHistory.length - 1; i >= 0; i--) {
 		const outcome = toolHistory[i];
 		if (outcome.success && isMutatingOutcome(outcome)) {
+			return outcome;
+		}
+	}
+	return undefined;
+}
+
+function findLatestFailedMutationOutcome(toolHistory: ToolOutcome[]): ToolOutcome | undefined {
+	for (let i = toolHistory.length - 1; i >= 0; i--) {
+		const outcome = toolHistory[i];
+		if (!outcome.success && isMutatingOutcome(outcome)) {
 			return outcome;
 		}
 	}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@ag1/ai";
 import { AgentSessionRetryCoordinator } from "../src/core/agent-session-retry-coordinator.js";
 import { AgentSessionRecoveryArbiter } from "../src/core/agent-session-recovery-arbiter.js";
 import { SettingsManager } from "../src/core/settings-manager.js";

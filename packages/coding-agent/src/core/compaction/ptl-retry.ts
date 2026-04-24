@@ -5,7 +5,7 @@
  * the oldest messages and retries. This is a recovery mechanism, not a compaction strategy.
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@ag1/agent-core";
 import { estimateTokens } from "./compaction.js";
 
 /** Fraction of droppable messages to drop when token gap is unparseable. */

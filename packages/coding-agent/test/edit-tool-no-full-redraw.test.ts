@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container, type Terminal, Text, TUI } from "@mariozechner/pi-tui";
+import { Container, type Terminal, Text, TUI } from "@ag1/tui";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
@@ -57,7 +57,7 @@ describe("edit tool TUI rendering", () => {
 	});
 
 	it("renders the large diff only in the settled result without triggering a full TUI redraw", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-edit-redraw-"));
+		const dir = await mkdtemp(join(tmpdir(), "ag1-edit-redraw-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "large-edit.txt");
 		await writeFile(

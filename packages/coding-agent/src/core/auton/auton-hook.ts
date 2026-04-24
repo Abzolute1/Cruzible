@@ -1,9 +1,9 @@
 // Auton — Cost Tracking and Budget Status Hook
 //
-// Wires cost tracking and budget status into Pi's AgentSession lifecycle.
+// Wires cost tracking and budget status into AG1's AgentSession lifecycle.
 // Provides: cost tracking, budget status reporting, and behavioral prompt injection.
 
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@ag1/ai";
 import type { AgentSessionEvent, AgentSessionEventListener } from "../agent-session.js";
 import { AUTON_BEHAVIORAL_PROMPT } from "./behavioral-prompt.js";
 import { type CompactionPolicy, selectCompactionPolicy } from "./compaction-policy.js";

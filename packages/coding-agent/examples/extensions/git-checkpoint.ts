@@ -5,28 +5,28 @@
  * When forking, offers to restore code to that point in history.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@ag1/coding-agent";
 
-export default function (pi: ExtensionAPI) {
+export default function (ag1: ExtensionAPI) {
 	const checkpoints = new Map<string, string>();
 	let currentEntryId: string | undefined;
 
 	// Track the current entry ID when user messages are saved
-	pi.on("tool_result", async (_event, ctx) => {
+	ag1.on("tool_result", async (_event, ctx) => {
 		const leaf = ctx.sessionManager.getLeafEntry();
 		if (leaf) currentEntryId = leaf.id;
 	});
 
-	pi.on("turn_start", async () => {
+	ag1.on("turn_start", async () => {
 		// Create a git stash entry before LLM makes changes
-		const { stdout } = await pi.exec("git", ["stash", "create"]);
+		const { stdout } = await ag1.exec("git", ["stash", "create"]);
 		const ref = stdout.trim();
 		if (ref && currentEntryId) {
 			checkpoints.set(currentEntryId, ref);
 		}
 	});
 
-	pi.on("session_before_fork", async (event, ctx) => {
+	ag1.on("session_before_fork", async (event, ctx) => {
 		const ref = checkpoints.get(event.entryId);
 		if (!ref) return;
 
@@ -41,12 +41,12 @@ export default function (pi: ExtensionAPI) {
 		]);
 
 		if (choice?.startsWith("Yes")) {
-			await pi.exec("git", ["stash", "apply", ref]);
+			await ag1.exec("git", ["stash", "apply", ref]);
 			ctx.ui.notify("Code restored to checkpoint", "info");
 		}
 	});
 
-	pi.on("agent_end", async () => {
+	ag1.on("agent_end", async () => {
 		// Clear checkpoints after agent completes
 		checkpoints.clear();
 	});

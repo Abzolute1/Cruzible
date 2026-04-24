@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import { Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { spawnSync } from "child_process";
 import { existsSync } from "fs";
@@ -17,6 +17,65 @@ function toPosixPath(value: string): string {
 	return value.split(path.sep).join("/");
 }
 
+function toWorkspaceRelativePath(candidatePath: string, searchPath: string, cwd: string): string {
+	const normalizedCandidate = toPosixPath(candidatePath.replace(/\/$/, ""));
+	const normalizedSearchPath = toPosixPath(searchPath.replace(/\/$/, ""));
+	const normalizedCwd = toPosixPath(cwd.replace(/\/$/, ""));
+
+	let absolutePath = normalizedCandidate;
+	if (!path.isAbsolute(absolutePath)) {
+		absolutePath = toPosixPath(path.resolve(normalizedSearchPath, absolutePath));
+	}
+
+	let relative = toPosixPath(path.relative(normalizedCwd, absolutePath));
+	if (!relative || relative.startsWith("..")) {
+		relative = normalizedCandidate;
+	}
+	return candidatePath.endsWith("/") && !relative.endsWith("/") ? `${relative}/` : relative;
+}
+
+function findPathRank(entry: string): number {
+	const normalized = toPosixPath(entry).toLowerCase();
+	let score = 0;
+	const isDirectory = normalized.endsWith("/");
+	const ext = path.posix.extname(normalized.replace(/\/$/, ""));
+
+	if (isDirectory) score += 20;
+
+	const scriptLikeExtensions = new Set([".mjs", ".cjs", ".js", ".ts", ".tsx", ".py", ".sh"]);
+	const dataExtensions = new Set([".json", ".jsonl", ".csv", ".log", ".txt", ".md"]);
+
+	if (scriptLikeExtensions.has(ext)) score -= 50;
+	if (dataExtensions.has(ext)) score += 25;
+
+	if (
+		normalized.startsWith("scripts/") ||
+		normalized.includes("/scripts/") ||
+		normalized.startsWith("src/") ||
+		normalized.includes("/src/") ||
+		normalized.startsWith("packages/") ||
+		normalized.includes("/packages/")
+	) {
+		score -= 35;
+	}
+
+	if (
+		normalized.includes("history/") ||
+		normalized.includes("history-test/") ||
+		normalized.includes("/debug/") ||
+		normalized.includes("benchmark-history") ||
+		normalized.includes("__pycache__")
+	) {
+		score += 80;
+	}
+
+	if (normalized.includes("compare")) score -= 20;
+	if (normalized.includes("benchmark")) score -= 10;
+
+	score += Math.min(normalized.length, 140);
+	return score;
+}
+
 const findSchema = Type.Object({
 	pattern: Type.String({
 		description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
@@ -32,6 +91,10 @@ const DEFAULT_LIMIT = 1000;
 export interface FindToolDetails {
 	truncation?: TruncationResult;
 	resultLimitReached?: number;
+	resultCount?: number;
+	firstMatchPath?: string;
+	firstMatchIsDirectory?: boolean;
+	dominantFileDirectory?: string;
 }
 
 /**
@@ -63,8 +126,8 @@ function formatFindFollowupNotice(
 	if (results.length !== 1 || options.resultLimitReached || options.byteTruncated) return undefined;
 	const [result] = results;
 	if (!result) return undefined;
-	if (result.endsWith("/")) return `[1 directory match; next: ls ${result}]`;
-	return `[1 match; next: read ${result} or grep inside it]`;
+	if (result.endsWith("/")) return `[1 directory match in ${result}; if the directory itself answers the question, answer now; otherwise next: ls ${result}]`;
+	return `[1 match in ${result}; if the user only asked which file/path, answer now; otherwise next: read ${result} limit=120]`;
 }
 
 function formatFindCall(
@@ -127,6 +190,37 @@ function formatFindNotice(limit: number, options: { resultLimitReached?: boolean
 	return `[${parts.join("; ")}]`;
 }
 
+function formatFindNoMatchNotice(pattern: string, searchDir?: string): string {
+	const notices = ["no matches"];
+	const anchorTerms = [...new Set((pattern.match(/[A-Za-z0-9]+/g) ?? []).map((term) => term.toLowerCase()))]
+		.filter((term) => term.length >= 3 && term !== "home" && term !== "alex");
+	const normalizedDir = searchDir?.replace(/\\/g, "/").toLowerCase() ?? "";
+	if (anchorTerms.length >= 3) {
+		notices.push(
+			"pattern may be too specific; if you are looking for sibling files or roles, retry with the strongest shared anchor or common prefix instead of one filename containing every term",
+		);
+		notices.push("retry with the shared anchor itself before falling back to one role-specific term");
+		notices.push(
+			"if the question is really about which directory holds sibling scripts/files, stop broadening wildcard filenames and inspect the likely shared parent directory instead, for example `scripts/` or one repo-root listing",
+		);
+	}
+	if (anchorTerms.length >= 2) {
+		notices.push(
+			"if this is a command/script lookup, retry the strongest action stem with a likely extension, for example `*archive*.mjs`, instead of another multi-term permutation",
+		);
+	}
+	if (
+		normalizedDir.includes("/packages/coding-agent/scripts")
+		&& (anchorTerms.includes("benchmark") || anchorTerms.includes("archive") || anchorTerms.includes("compare") || anchorTerms.includes("runner"))
+	) {
+		notices.push(
+			"for benchmark harness command scripts in this repo, do not stay in packages/coding-agent/scripts after a miss; pivot to repo-root `scripts/` and retry a stronger anchor like `harness-benchmark-*` or `*archive*.mjs`",
+		);
+	}
+	notices.push("if matches later cluster under one directory, answer from that shared parent directory instead of expanding discovery");
+	return `[${notices.join("; ")}]`;
+}
+
 export function createFindToolDefinition(
 	cwd: string,
 	options?: FindToolOptions,
@@ -141,6 +235,8 @@ export function createFindToolDefinition(
 			"Use find when the filename or path is uncertain instead of guessing where a file lives.",
 			"After a path-not-found error from read, switch to find or ls before retrying.",
 			"Use find to narrow candidate files, then read or grep the matches.",
+			"If find returns one decisive path for a pure location question, answer immediately instead of running another search.",
+			"For sibling script/file roles, do not search for one filename containing every role term; use the shared anchor or inspect the likely shared parent directory such as `scripts/`.",
 		],
 		parameters: findSchema,
 		async execute(
@@ -178,7 +274,7 @@ export function createFindToolDefinition(
 							signal?.removeEventListener("abort", onAbort);
 							if (results.length === 0) {
 								resolve({
-									content: [{ type: "text", text: "(no matches)" }],
+									content: [{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` }],
 									details: undefined,
 								});
 								return;
@@ -188,12 +284,36 @@ export function createFindToolDefinition(
 							const relativized = results.map((p) => {
 								if (p.startsWith(searchPath)) return toPosixPath(p.slice(searchPath.length + 1));
 								return toPosixPath(path.relative(searchPath, p));
+							}).map((entry) => toWorkspaceRelativePath(entry, searchPath, cwd)).sort((a, b) => {
+								const rankDiff = findPathRank(a) - findPathRank(b);
+								if (rankDiff !== 0) return rankDiff;
+								return a.localeCompare(b);
 							});
 							const resultLimitReached = relativized.length >= effectiveLimit;
 							const rawOutput = relativized.join("\n");
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};
+							details.resultCount = relativized.length;
+							if (relativized[0]) {
+								details.firstMatchPath = relativized[0];
+								details.firstMatchIsDirectory = relativized[0].endsWith("/");
+							}
+							const fileDirectories = relativized
+								.filter((entry) => !entry.endsWith("/"))
+								.map((entry) => {
+									const dir = path.posix.dirname(entry);
+									return dir === "." ? "" : dir;
+								})
+								.filter((dir) => dir.length > 0);
+							if (fileDirectories.length > 0) {
+								const counts = new Map<string, number>();
+								for (const dir of fileDirectories) {
+									counts.set(dir, (counts.get(dir) ?? 0) + 1);
+								}
+								const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+								if (dominant) details.dominantFileDirectory = dominant;
+							}
 							if (resultLimitReached) {
 								details.resultLimitReached = effectiveLimit;
 							}
@@ -268,7 +388,7 @@ export function createFindToolDefinition(
 						}
 						if (!output) {
 							resolve({
-								content: [{ type: "text", text: "(no matches)" }],
+								content: [{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` }],
 								details: undefined,
 							});
 							return;
@@ -287,14 +407,40 @@ export function createFindToolDefinition(
 								relativePath = path.relative(searchPath, line);
 							}
 							if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
-							relativized.push(toPosixPath(relativePath));
+							relativized.push(toWorkspaceRelativePath(toPosixPath(relativePath), searchPath, cwd));
 						}
+
+						relativized.sort((a, b) => {
+							const rankDiff = findPathRank(a) - findPathRank(b);
+							if (rankDiff !== 0) return rankDiff;
+							return a.localeCompare(b);
+						});
 
 						const resultLimitReached = relativized.length >= effectiveLimit;
 						const rawOutput = relativized.join("\n");
 						const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 						let resultOutput = truncation.content;
 						const details: FindToolDetails = {};
+						details.resultCount = relativized.length;
+						if (relativized[0]) {
+							details.firstMatchPath = relativized[0];
+							details.firstMatchIsDirectory = relativized[0].endsWith("/");
+						}
+						const fileDirectories = relativized
+							.filter((entry) => !entry.endsWith("/"))
+							.map((entry) => {
+								const dir = path.posix.dirname(entry);
+								return dir === "." ? "" : dir;
+							})
+							.filter((dir) => dir.length > 0);
+						if (fileDirectories.length > 0) {
+							const counts = new Map<string, number>();
+							for (const dir of fileDirectories) {
+								counts.set(dir, (counts.get(dir) ?? 0) + 1);
+							}
+							const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+							if (dominant) details.dominantFileDirectory = dominant;
+						}
 						if (resultLimitReached) {
 							details.resultLimitReached = effectiveLimit;
 						}

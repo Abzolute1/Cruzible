@@ -22,9 +22,9 @@ import type {
 	AgentState,
 	AgentTool,
 	ThinkingLevel,
-} from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
-import { isContextOverflow } from "@mariozechner/pi-ai";
+} from "@ag1/agent-core";
+import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@ag1/ai";
+import { isContextOverflow } from "@ag1/ai";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { AgentSessionBashCoordinator } from "./agent-session-bash-coordinator.js";
@@ -87,7 +87,10 @@ import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import type { SourceInfo } from "./source-info.js";
 import { buildSystemPrompt } from "./system-prompt.js";
+import type { TaskPolicy } from "./task-policy.js";
+import { ToolOrchestrator } from "./tool-orchestrator.js";
 import type { BashOperations } from "./tools/bash.js";
+import { getResearchUrlHint } from "./tools/research-intent.js";
 import { type TurnDegradationSeverity } from "./turn-health.js";
 import { type XmlFallbackSeverity } from "./xml-tool-parser.js";
 
@@ -203,6 +206,8 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional tool safety policy. Disabled by default so SDK/tests remain opt-in. */
 	toolSafety?: ToolSafetyPolicy;
+	/** Optional controlled-runtime tool policy. Disabled by default. */
+	toolPolicy?: TaskPolicy;
 }
 
 export interface ExtensionBindings {
@@ -251,6 +256,185 @@ export interface SessionStats {
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
+}
+
+type WebResearchCoverageKind = "current_events" | "docs" | "pricing" | "release" | "error";
+
+interface WebResearchRuntimeFetch {
+	url: string;
+	host: string;
+	path: string;
+	status?: string;
+	coverageKind?: WebResearchCoverageKind;
+	coverageComplete?: boolean;
+	authoritative?: boolean;
+}
+
+interface WebResearchRuntimeState {
+	searchQueries: string[];
+	fetches: WebResearchRuntimeFetch[];
+	placeholderHosts: Map<string, string[]>;
+	completedCoverageKinds: Set<WebResearchCoverageKind>;
+	authoritativeCompletedCoverageKinds: Set<WebResearchCoverageKind>;
+	missingCoverageByKind: Map<WebResearchCoverageKind, string[]>;
+}
+
+function createWebResearchRuntimeState(): WebResearchRuntimeState {
+	return {
+		searchQueries: [],
+		fetches: [],
+		placeholderHosts: new Map(),
+		completedCoverageKinds: new Set(),
+		authoritativeCompletedCoverageKinds: new Set(),
+		missingCoverageByKind: new Map(),
+	};
+}
+
+function getStringArg(args: unknown, key: string): string | undefined {
+	if (!args || typeof args !== "object") return undefined;
+	const value = (args as Record<string, unknown>)[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function normalizeWebResearchValue(value: string | undefined): string | undefined {
+	const normalized = value?.trim().toLowerCase().replace(/\s+/g, " ");
+	return normalized || undefined;
+}
+
+function normalizeWebResearchUrl(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = new URL(trimmed);
+		parsed.hash = "";
+		if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) {
+			parsed.port = "";
+		}
+		return parsed.toString().replace(/\/$/, "").toLowerCase();
+	} catch {
+		return normalizeWebResearchValue(trimmed);
+	}
+}
+
+function parseWebResearchUrl(value: string | undefined): { normalized: string; host: string; path: string } | undefined {
+	const normalized = normalizeWebResearchUrl(value);
+	if (!normalized) return undefined;
+	try {
+		const parsed = new URL(normalized);
+		return {
+			normalized,
+			host: parsed.hostname.toLowerCase().replace(/^www\./, ""),
+			path: normalizeWebResearchPath(parsed.pathname),
+		};
+	} catch {
+		return {
+			normalized,
+			host: "",
+			path: normalizeWebResearchPath(normalized),
+		};
+	}
+}
+
+function normalizeWebResearchPath(path: string): string {
+	const cleaned = path.trim().toLowerCase().replace(/\/+/g, "/").replace(/\/$/, "");
+	return cleaned || "/";
+}
+
+const WEB_RESEARCH_GENERIC_TERMS = new Set([
+	"about",
+	"best",
+	"brief",
+	"briefly",
+	"current",
+	"find",
+	"happened",
+	"latest",
+	"news",
+	"recent",
+	"research",
+	"search",
+	"source",
+	"sources",
+	"strongest",
+	"summarize",
+	"summary",
+	"the",
+	"weeks",
+]);
+
+function getWebResearchTerms(value: string | undefined): Set<string> {
+	const normalized = normalizeWebResearchValue(value);
+	if (!normalized) return new Set();
+	return new Set(
+		normalized
+			.match(/[a-z0-9][a-z0-9.-]*/g)
+			?.filter((term) => term.length >= 3 && !WEB_RESEARCH_GENERIC_TERMS.has(term)) ?? [],
+	);
+}
+
+function isNearDuplicateWebSearch(previousQuery: string, nextQuery: string): boolean {
+	if (previousQuery === nextQuery) return true;
+	const previousTerms = getWebResearchTerms(previousQuery);
+	const nextTerms = getWebResearchTerms(nextQuery);
+	if (previousTerms.size === 0 || nextTerms.size === 0) return false;
+	let overlap = 0;
+	for (const term of nextTerms) {
+		if (previousTerms.has(term)) overlap++;
+	}
+	const newTerms = [...nextTerms].filter((term) => !previousTerms.has(term));
+	return overlap >= 3 && newTerms.length === 0;
+}
+
+function isBroadWebResearchQueryAfterSpecific(previousQuery: string, nextQuery: string): boolean {
+	const previousTerms = getWebResearchTerms(previousQuery);
+	const nextTerms = getWebResearchTerms(nextQuery);
+	if (previousTerms.size < 4 || nextTerms.size === 0 || nextTerms.size >= previousTerms.size) return false;
+	let overlap = 0;
+	for (const term of nextTerms) {
+		if (previousTerms.has(term)) overlap++;
+	}
+	return overlap >= Math.max(2, nextTerms.size - 1);
+}
+
+function areWebResearchPathsMateriallyDifferent(previousPath: string, nextPath: string): boolean {
+	const previousSegments = previousPath.split("/").filter(Boolean);
+	const nextSegments = nextPath.split("/").filter(Boolean);
+	if (previousPath === nextPath) return false;
+	if (previousSegments.length === 0 || nextSegments.length === 0) return false;
+	if (previousSegments[0] !== nextSegments[0]) return true;
+	if (previousSegments.length >= 2 && nextSegments.length >= 2 && previousSegments[1] !== nextSegments[1]) return true;
+	return false;
+}
+
+function extractWebResearchCoverageKind(value: unknown): WebResearchCoverageKind | undefined {
+	if (value === "current_events" || value === "docs" || value === "pricing" || value === "release" || value === "error") {
+		return value;
+	}
+	return undefined;
+}
+
+function getWebResearchCoverageFromDetails(details: unknown): {
+	kind?: WebResearchCoverageKind;
+	complete: boolean;
+	missing: string[];
+} {
+	if (!details || typeof details !== "object") {
+		return { complete: false, missing: [] };
+	}
+	const record = details as Record<string, unknown>;
+	const coverage = record.coverage && typeof record.coverage === "object" ? record.coverage as Record<string, unknown> : undefined;
+	const kind = extractWebResearchCoverageKind(coverage?.kind) ?? extractWebResearchCoverageKind(record.coverageKind);
+	const missing = Array.isArray(coverage?.missing)
+		? coverage.missing.filter((entry): entry is string => typeof entry === "string")
+		: [];
+	const present = Array.isArray(coverage?.present)
+		? coverage.present.filter((entry): entry is string => typeof entry === "string")
+		: [];
+	return {
+		kind,
+		complete: Boolean(kind && present.length > 0 && missing.length === 0),
+		missing,
+	};
 }
 
 // ============================================================================
@@ -302,6 +486,11 @@ export class AgentSession {
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _toolSafety: ToolSafetyPolicy | undefined;
+	private _toolOrchestrator: ToolOrchestrator | undefined;
+	private _controlledToolTurnKey = "";
+	private _controlledToolCallsThisTurn = 0;
+	private readonly _webResearchBudgetDisabled = process.env.AG1_DISABLE_WEB_RESEARCH_BUDGET === "1";
+	private _webResearchRuntimeState: WebResearchRuntimeState = createWebResearchRuntimeState();
 
 	/** Custom context window override (tokens), set via /set-context. Overrides model.contextWindow. */
 	private _customContextWindow: number | undefined;
@@ -339,6 +528,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._toolSafety = config.toolSafety;
+		this._toolOrchestrator = config.toolPolicy ? new ToolOrchestrator({ cwd: this._cwd, policy: config.toolPolicy }) : undefined;
 		this._eventDispatcher = new AgentSessionEventDispatcher(this.sessionManager, () => this._extensionRunner);
 		this._recoveryArbiter = new AgentSessionRecoveryArbiter();
 		this._compactionCoordinator = new AgentSessionCompactionCoordinator({
@@ -527,12 +717,14 @@ export class AgentSession {
 					this.agent.state.systemPrompt = prompt;
 				},
 				prompt: (messages) => this.agent.prompt(messages),
+				continue: () => this.agent.continue(),
 			},
 			sessionManager: this.sessionManager,
 			getActiveToolNames: () => this.getActiveToolNames(),
 			getTool: (name) => this._toolRegistry.get(name),
 			getExtensionRunner: () => this._extensionRunner,
 			evaluateToolSafety: (toolName, args) => this._evaluateToolSafety(toolName, args),
+			noteToolResult: (observation) => this._toolOrchestrator?.noteToolResult(observation),
 			emit: (event) => this._emit(event),
 			waitForRetry: () => this.waitForRetry(),
 		});
@@ -584,6 +776,10 @@ export class AgentSession {
 		return this._toolSafety;
 	}
 
+	setToolPolicy(policy: TaskPolicy | undefined): void {
+		this._toolOrchestrator = policy ? new ToolOrchestrator({ cwd: this.sessionManager.getCwd(), policy }) : undefined;
+	}
+
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		apiKey: string;
 		headers?: Record<string, string>;
@@ -619,7 +815,10 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+		this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }) => {
+			const batchBlock = this._evaluateControlledToolBatch(assistantMessage);
+			if (batchBlock) return batchBlock;
+
 			const runner = this._extensionRunner;
 			if (!runner?.hasHandlers("tool_call")) {
 				const safetyResult = await this._evaluateToolSafety(toolCall.name, args);
@@ -650,6 +849,33 @@ export class AgentSession {
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 			// Track structured tool calls (for XML fallback detection)
 			this._xmlCoordinator.noteStructuredToolCall();
+			this._toolOrchestrator?.noteToolResult({
+				toolName: toolCall.name,
+				args,
+				result,
+				isError,
+			});
+			this._recordWebResearchToolResult(toolCall.name, args, result, isError);
+			const controlledStopDecision = this._toolOrchestrator?.getStopDecision();
+			const controlledNextAction =
+				!isError && !(controlledStopDecision?.shouldStop && controlledStopDecision.finalAnswerOnly)
+					? this._toolOrchestrator?.getNextActionHint()
+					: undefined;
+			const controlledGuidanceText =
+				!isError && controlledStopDecision?.shouldStop && controlledStopDecision.finalAnswerOnly
+					? "\nControlled runtime: verification is complete. Do not call more tools. Provide the final summary now."
+					: controlledNextAction
+						? `\nControlled runtime: next required action: ${controlledNextAction}. Use exactly one tool call; do not call any other tool before this.`
+						: undefined;
+			const controlledGuidanceContent = controlledGuidanceText
+				? [
+						...(Array.isArray(result.content) ? result.content : []),
+						{
+							type: "text" as const,
+							text: controlledGuidanceText,
+						},
+					]
+				: undefined;
 
 			// Track tool failures for resilience (always, regardless of extensions)
 			if (isError) {
@@ -672,7 +898,7 @@ export class AgentSession {
 
 			const runner = this._extensionRunner;
 			if (!runner?.hasHandlers("tool_result")) {
-				return undefined;
+				return controlledGuidanceContent ? { content: controlledGuidanceContent } : undefined;
 			}
 
 			const hookResult = await runner.emitToolResult({
@@ -686,14 +912,42 @@ export class AgentSession {
 			});
 
 			if (!hookResult || isError) {
-				return undefined;
+				return controlledGuidanceContent ? { content: controlledGuidanceContent } : undefined;
 			}
 
 			return {
-				content: hookResult.content,
+				content: controlledGuidanceText
+					? [
+							...(hookResult.content ?? []),
+							{
+								type: "text" as const,
+								text: controlledGuidanceText,
+							},
+						]
+					: hookResult.content,
 				details: hookResult.details,
 			};
 		};
+	}
+
+	private _evaluateControlledToolBatch(assistantMessage: AssistantMessage): { block: true; reason: string } | undefined {
+		if (!this._toolOrchestrator) return undefined;
+		const toolCalls = assistantMessage.content.filter((block) => block.type === "toolCall");
+		if (toolCalls.length <= 1) return undefined;
+		const turnKey = toolCalls.map((toolCall) => `${toolCall.id}:${toolCall.name}`).join("|");
+		if (turnKey !== this._controlledToolTurnKey) {
+			this._controlledToolTurnKey = turnKey;
+			this._controlledToolCallsThisTurn = 0;
+		}
+		if (this._controlledToolCallsThisTurn > 0) {
+			return {
+				block: true,
+				reason:
+					"Controlled runtime: multiple tool calls in one assistant turn are blocked. Wait for the previous tool result and continue with exactly one next action.",
+			};
+		}
+		this._controlledToolCallsThisTurn++;
+		return undefined;
 	}
 
 	/**
@@ -704,6 +958,21 @@ export class AgentSession {
 	 * instead of throwing or tearing down the run.
 	 */
 	private async _evaluateToolSafety(toolName: string, args: unknown): Promise<{ block: true; reason: string } | undefined> {
+		const orchestrationDecision = this._toolOrchestrator?.evaluate(toolName, args);
+		if (orchestrationDecision && !orchestrationDecision.allow) {
+			return {
+				block: true,
+				reason: orchestrationDecision.nextAction
+					? `${orchestrationDecision.reason}\nNext allowed action: ${orchestrationDecision.nextAction}`
+					: orchestrationDecision.reason,
+			};
+		}
+
+		const webBudgetDecision = this._evaluateWebResearchBudget(toolName, args);
+		if (webBudgetDecision) {
+			return webBudgetDecision;
+		}
+
 		const policy = this._toolSafety;
 		if (!policy) {
 			return undefined;
@@ -738,6 +1007,177 @@ export class AgentSession {
 			block: true,
 			reason: `User denied ${toolName} execution.`,
 		};
+	}
+
+	private _evaluateWebResearchBudget(toolName: string, args: unknown): { block: true; reason: string } | undefined {
+		if (this._webResearchBudgetDisabled) return undefined;
+		const normalizedTool = toolName.toLowerCase();
+		if (normalizedTool !== "websearch" && normalizedTool !== "webfetch") return undefined;
+
+		const history = this._collectCurrentTurnWebResearchCalls();
+		const runtimeState = this._webResearchRuntimeState;
+		if (normalizedTool === "websearch") {
+			const query = normalizeWebResearchValue(getStringArg(args, "query"));
+			const duplicateQuery = query
+				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) => isNearDuplicateWebSearch(entry, query))
+				: undefined;
+			if (duplicateQuery) {
+				return {
+					block: true,
+					reason:
+						"Web research budget: a duplicate or near-duplicate webSearch query already ran in the current user turn. Use prior results, fetch the strongest listed URL, or run a materially narrower query with new missing terms instead of repeating the same search.",
+				};
+			}
+			const broaderAfterSpecific = query
+				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) => isBroadWebResearchQueryAfterSpecific(entry, query))
+				: undefined;
+			if (broaderAfterSpecific) {
+				return {
+					block: true,
+					reason:
+						"Web research budget: a broader webSearch query would discard specificity from an earlier search in the current user turn. Use prior results or run a targeted follow-up query for the missing coverage slot instead.",
+				};
+			}
+		}
+
+		if (normalizedTool === "webfetch") {
+			const parsedUrl = parseWebResearchUrl(getStringArg(args, "url"));
+			const url = parsedUrl?.normalized;
+			const sameUrlCount = url ? history.webFetchUrls.filter((entry) => entry === url).length : 0;
+			const runtimeSameUrlCount = url ? runtimeState.fetches.filter((entry) => entry.url === url).length : 0;
+			if (sameUrlCount > 0 || runtimeSameUrlCount > 0) {
+				return {
+					block: true,
+					reason:
+						"Web research budget: this URL has already been fetched in the current user turn. Reuse the previous fetch result instead of fetching it again.",
+				};
+			}
+			if (parsedUrl?.host) {
+				const placeholderPaths = runtimeState.placeholderHosts.get(parsedUrl.host) ?? [];
+				const repeatedPlaceholderHost = placeholderPaths.some((path) => !areWebResearchPathsMateriallyDifferent(path, parsedUrl.path));
+				if (repeatedPlaceholderHost) {
+					return {
+						block: true,
+						reason:
+							"Web research budget: this host already returned placeholder/interstitial content in the current user turn. Choose a different host or a materially different URL path instead of retrying the same blocked source.",
+					};
+				}
+			}
+			const requestedKind = parsedUrl ? this._inferWebFetchCoverageKindForUrl(parsedUrl.normalized) : undefined;
+			if (
+				(requestedKind === "current_events" || requestedKind === undefined)
+				&& runtimeState.completedCoverageKinds.has("current_events")
+			) {
+				return {
+					block: true,
+					reason:
+						"Web research budget: current-events coverage is already complete for this turn. Answer from the fetched evidence instead of fetching another article.",
+				};
+			}
+			const docsComplete =
+				(requestedKind === "docs" && runtimeState.authoritativeCompletedCoverageKinds.has("docs"))
+				|| (requestedKind === "pricing" && runtimeState.authoritativeCompletedCoverageKinds.has("pricing"));
+			if (docsComplete) {
+				return {
+					block: true,
+					reason:
+						"Web research budget: authoritative docs/pricing coverage is already complete for this turn. Answer from the existing authoritative fetch instead of fetching another docs page.",
+				};
+			}
+		}
+
+		return undefined;
+	}
+
+	private _collectCurrentTurnWebResearchCalls(): {
+		webSearchQueries: string[];
+		webFetchUrls: string[];
+	} {
+		const webSearchQueries: string[] = [];
+		const webFetchUrls: string[] = [];
+		const messages = this.agent.state.messages;
+		let skippedCurrentAssistantMessage = false;
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index] as any;
+			if (message?.role === "user") break;
+			if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+			if (!skippedCurrentAssistantMessage) {
+				skippedCurrentAssistantMessage = true;
+				continue;
+			}
+			for (const item of message.content) {
+				if (!item || item.type !== "toolCall") continue;
+				const name = typeof item.name === "string" ? item.name.toLowerCase() : "";
+				if (name === "websearch") {
+					const query = normalizeWebResearchValue(getStringArg(item.arguments, "query"));
+					if (query) webSearchQueries.push(query);
+				} else if (name === "webfetch") {
+					const url = normalizeWebResearchUrl(getStringArg(item.arguments, "url"));
+					if (url) webFetchUrls.push(url);
+				}
+			}
+		}
+		return {
+			webSearchQueries: webSearchQueries.reverse(),
+			webFetchUrls: webFetchUrls.reverse(),
+		};
+	}
+
+	private _inferWebFetchCoverageKindForUrl(url: string): WebResearchCoverageKind | undefined {
+		const hintKind = extractWebResearchCoverageKind(getResearchUrlHint(url)?.coverageKind);
+		if (hintKind) return hintKind;
+		if (/pricing|billing|cost/i.test(url)) return "pricing";
+		if (/changelog|release|releases|migration|upgrade/i.test(url)) return "release";
+		if (/issues?|stackoverflow|error|bug/i.test(url)) return "error";
+		if (/docs?|reference|api|manual|learn/i.test(url)) return "docs";
+		return undefined;
+	}
+
+	private _recordWebResearchToolResult(toolName: string, args: unknown, result: unknown, isError: boolean): void {
+		if (this._webResearchBudgetDisabled || isError) return;
+		const normalizedTool = toolName.toLowerCase();
+		if (normalizedTool !== "websearch" && normalizedTool !== "webfetch") return;
+
+		if (normalizedTool === "websearch") {
+			const query = normalizeWebResearchValue(getStringArg(args, "query"));
+			if (query && !this._webResearchRuntimeState.searchQueries.includes(query)) {
+				this._webResearchRuntimeState.searchQueries.push(query);
+			}
+			return;
+		}
+
+		const parsedUrl = parseWebResearchUrl(getStringArg(args, "url"));
+		if (!parsedUrl) return;
+		const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+		const detailsRecord = details && typeof details === "object" ? details as Record<string, unknown> : {};
+		const coverage = getWebResearchCoverageFromDetails(details);
+		const coverageKind = coverage.kind ?? this._inferWebFetchCoverageKindForUrl(parsedUrl.normalized);
+		const status = typeof detailsRecord.status === "string" ? detailsRecord.status : undefined;
+		const authoritative = detailsRecord.authoritative === true;
+		const fetchRecord: WebResearchRuntimeFetch = {
+			url: parsedUrl.normalized,
+			host: parsedUrl.host,
+			path: parsedUrl.path,
+			status,
+			coverageKind,
+			coverageComplete: coverage.complete,
+			authoritative,
+		};
+		this._webResearchRuntimeState.fetches.push(fetchRecord);
+		if (status === "placeholder" && parsedUrl.host) {
+			const paths = this._webResearchRuntimeState.placeholderHosts.get(parsedUrl.host) ?? [];
+			paths.push(parsedUrl.path);
+			this._webResearchRuntimeState.placeholderHosts.set(parsedUrl.host, paths);
+		}
+		if (coverageKind && coverage.complete) {
+			this._webResearchRuntimeState.completedCoverageKinds.add(coverageKind);
+			if (authoritative) {
+				this._webResearchRuntimeState.authoritativeCompletedCoverageKinds.add(coverageKind);
+			}
+		}
+		if (coverageKind && coverage.missing.length > 0) {
+			this._webResearchRuntimeState.missingCoverageByKind.set(coverageKind, coverage.missing);
+		}
 	}
 
 	// =========================================================================
@@ -1036,6 +1476,8 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			modelProvider: this.model?.provider,
+			contextWindow: this.contextWindow,
 		});
 	}
 
@@ -1045,7 +1487,7 @@ export class AgentSession {
 
 	/**
 	 * Send a prompt to the agent.
-	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
+	 * - Handles extension commands immediately, even during streaming
 	 * - Expands file-based prompt templates by default
 	 * - During streaming, queues via steer() or followUp() based on streamingBehavior option
 	 * - Validates model and API key before sending (when not streaming)
@@ -1082,8 +1524,19 @@ export class AgentSession {
 	}
 
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		this._webResearchRuntimeState = createWebResearchRuntimeState();
 		const promptOptions: AgentSessionPromptOptions | undefined = options;
 		await this._promptCoordinator.prompt(text, promptOptions);
+	}
+
+	/**
+	 * Trigger XML fallback processing outside the normal prompt lifecycle.
+	 * Useful for single-shot/headless flows where a weak model may emit XML in a
+	 * final assistant message before the outer prompt promise settles cleanly.
+	 */
+	async recoverXmlToolCallsNow(): Promise<void> {
+		await this._eventLoopCoordinator.wait();
+		await this._processXmlToolCalls();
 	}
 
 	/**
@@ -1273,6 +1726,12 @@ export class AgentSession {
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
+			if (message.display === false) {
+				// Keep only the most recent hidden runtime hint of a given type for the next turn.
+				this._pendingNextTurnMessages = this._pendingNextTurnMessages.filter(
+					(existing) => !(existing.display === false && existing.customType === message.customType),
+				);
+			}
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
 			if (options?.deliverAs === "followUp") {
@@ -1283,6 +1742,12 @@ export class AgentSession {
 		} else if (options?.triggerTurn) {
 			await this.agent.prompt(appMessage);
 		} else {
+			if (message.display === false) {
+				// Hidden runtime/control messages are ephemeral steering state; keep the newest one in live session state.
+				this.agent.state.messages = this.agent.state.messages.filter(
+					(existing) => !(existing.role === "custom" && existing.display === false && existing.customType === message.customType),
+				);
+			}
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
 				message.customType,

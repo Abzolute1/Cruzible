@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentMessage } from "@ag1/agent-core";
+import { Text } from "@ag1/tui";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { SessionDebugArtifacts } from "../../core/session-debug-logger.js";

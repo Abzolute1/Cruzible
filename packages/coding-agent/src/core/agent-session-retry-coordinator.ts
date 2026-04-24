@@ -1,6 +1,6 @@
-import type { Agent } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { isContextOverflow } from "@mariozechner/pi-ai";
+import type { Agent } from "@ag1/agent-core";
+import type { AssistantMessage } from "@ag1/ai";
+import { isContextOverflow } from "@ag1/ai";
 import { sleep } from "../utils/sleep.js";
 import { canReplayContinue } from "./agent-session-continue-replay.js";
 import type { AgentSessionEvent } from "./agent-session.js";

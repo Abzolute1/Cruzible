@@ -29,15 +29,15 @@ function findSkillDirectories(cwd: string): string[] {
 	const skills: string[] = [];
 
 	// Search in common skill locations:
-	// 1. .pi/skills/ in the project
+	// 1. .ag1/skills/ in the project
 	// 2. .skills/ in the project
-	// 3. .pi/skills/ in home directory
+	// 3. .ag1/skills/ in home directory
 	// 4. Any directory containing a SKILL.md file
 
 	const candidates = [
-		join(cwd, ".pi", "skills"),
+		join(cwd, ".ag1", "skills"),
 		join(cwd, ".skills"),
-		join(process.env.HOME || "", ".pi", "skills"),
+		join(process.env.HOME || "", ".ag1", "skills"),
 		join(cwd, "skills"),
 	];
 
@@ -150,8 +150,8 @@ function searchForSkillMd(startDir: string): string[] {
 		try {
 			const entries = readdirSync(dir);
 			for (const entry of entries) {
-				// Skip hidden dirs (except .pi) and known large/irrelevant directories
-				if (entry.startsWith(".") && entry !== ".pi") continue;
+				// Skip hidden dirs (except AG1/legacy skill directories) and known large/irrelevant directories
+				if (entry.startsWith(".") && entry !== ".ag1") continue;
 				if (skipDirs.has(entry)) continue;
 
 				const fullPath = join(dir, entry);
@@ -322,7 +322,7 @@ export const skillToolDefinition: ToolDefinition<typeof skillParamsSchema, undef
 							content: [
 								{
 									type: "text",
-									text: "No skills found.\n\nSkills are defined in SKILL.md files.\nPlace them in:\n- .pi/skills/<name>/SKILL.md\n- .skills/<name>/SKILL.md\n- skills/<name>/SKILL.md\n- Or any subdirectory containing SKILL.md",
+									text: "No skills found.\n\nSkills are defined in SKILL.md files.\nPlace them in:\n- .ag1/skills/<name>/SKILL.md\n- .skills/<name>/SKILL.md\n- skills/<name>/SKILL.md\n- Or any subdirectory containing SKILL.md",
 								},
 							],
 							details: undefined,

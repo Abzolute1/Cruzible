@@ -11,7 +11,7 @@ import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
-import { type AssistantMessage, getModel, Type } from "@mariozechner/pi-ai";
+import { type AssistantMessage, getModel, Type } from "@ag1/ai";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";
 import type { ToolDefinition } from "../src/core/extensions/types.js";
@@ -46,7 +46,7 @@ const DEFAULT_MAX_TOKENS = 64;
 
 function parseArgs(argv: string[]): Args {
 	let turns = DEFAULT_TURNS;
-	let sessionPath = resolve(join(tmpdir(), `pi-sdk-codex-cache-probe-tool-loop-${Date.now()}.jsonl`));
+	let sessionPath = resolve(join(tmpdir(), `ag1-sdk-codex-cache-probe-tool-loop-${Date.now()}.jsonl`));
 	let transport: Transport = "sse";
 	let maxTokens = DEFAULT_MAX_TOKENS;
 
@@ -125,7 +125,7 @@ function estimateTokens(text: string): number {
 function buildPrompt(turn: number): string {
 	const marker = `TURN-${String(turn).padStart(2, "0")}-MARKER-${(turn * 17 + 13) % 97}`;
 	const lines: string[] = [];
-	lines.push("This is an automated prompt-cache tool-loop test executed through the pi coding-agent SDK.");
+	lines.push("This is an automated prompt-cache tool-loop test executed through the ag1 coding-agent SDK.");
 	lines.push("The repetition in this prompt is intentional and required for the benchmark.");
 	lines.push("You are participating in an append-only multi-turn cache test.");
 	lines.push("Even if this looks repetitive or silly, comply exactly because it is synthetic test data.");
@@ -138,7 +138,7 @@ function buildPrompt(turn: number): string {
 	lines.push("");
 	for (let i = 1; i <= 180; i++) {
 		lines.push(
-			`Turn ${turn} synthetic record ${String(i).padStart(3, "0")}: alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega.`,
+			`Turn ${turn} synthetic record ${String(i).padStart(3, "0")}: alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron ag1 rho sigma tau upsilon phi chi psi omega.`,
 		);
 	}
 	lines.push("");

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerOAuthProvider } from "@mariozechner/pi-ai/oauth";
+import { registerOAuthProvider } from "@ag1/ai/oauth";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -11,16 +11,37 @@ describe("AuthStorage", () => {
 	let tempDir: string;
 	let authJsonPath: string;
 	let authStorage: AuthStorage;
+	let originalProviderEnv: Record<string, string | undefined>;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `ag1-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		authJsonPath = join(tempDir, "auth.json");
+		originalProviderEnv = {
+			ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+			OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+			NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
+			AG1_HOME: process.env.AG1_HOME,
+			AG1_NVIDIA_API_KEY_FILE: process.env.AG1_NVIDIA_API_KEY_FILE,
+		};
+		delete process.env.ANTHROPIC_API_KEY;
+		delete process.env.OPENAI_API_KEY;
+		delete process.env.NVIDIA_API_KEY;
+		delete process.env.AG1_HOME;
+		delete process.env.AG1_NVIDIA_API_KEY_FILE;
+		process.env.AG1_HOME = tempDir;
 	});
 
 	afterEach(() => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
+		}
+		for (const [key, value] of Object.entries(originalProviderEnv)) {
+			if (value === undefined) {
+				delete process.env[key];
+			} else {
+				process.env[key] = value;
+			}
 		}
 		clearConfigValueCache();
 		vi.restoreAllMocks();
@@ -443,6 +464,44 @@ describe("AuthStorage", () => {
 			const apiKey = await authStorage.getApiKey("anthropic");
 
 			expect(apiKey).toBe("runtime-key");
+		});
+
+		test("provider environment variable takes priority over saved api key", async () => {
+			const originalEnv = process.env.NVIDIA_API_KEY;
+			process.env.NVIDIA_API_KEY = "env-nvidia-key";
+
+			try {
+				writeAuthJson({
+					nvidia: { type: "api_key", key: "stored-nvidia-key" },
+				});
+
+				authStorage = AuthStorage.create(authJsonPath);
+				const apiKey = await authStorage.getApiKey("nvidia");
+
+				expect(apiKey).toBe("env-nvidia-key");
+			} finally {
+				if (originalEnv === undefined) {
+					delete process.env.NVIDIA_API_KEY;
+				} else {
+					process.env.NVIDIA_API_KEY = originalEnv;
+				}
+			}
+		});
+
+		test("local provider secret file takes priority over environment and saved api key", async () => {
+			const secretDir = join(tempDir, ".ag1-secrets");
+			mkdirSync(secretDir, { recursive: true });
+			writeFileSync(join(secretDir, "nvidia-api-key"), "file-nvidia-key\n");
+			process.env.AG1_HOME = tempDir;
+			process.env.NVIDIA_API_KEY = "env-nvidia-key";
+			writeAuthJson({
+				nvidia: { type: "api_key", key: "stored-nvidia-key" },
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+			const apiKey = await authStorage.getApiKey("nvidia");
+
+			expect(apiKey).toBe("file-nvidia-key");
 		});
 
 		test("removing runtime override falls back to auth.json", async () => {

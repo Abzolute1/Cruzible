@@ -1,5 +1,5 @@
 {
-	"name": "@mariozechner/pi-tui",
+	"name": "@ag1/tui",
 	"version": "0.65.2",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",
@@ -28,7 +28,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/badlogic/pi-mono.git",
+		"url": "git+https://github.com/ag1-ai/ag1.git",
 		"directory": "packages/tui"
 	},
 	"engines": {

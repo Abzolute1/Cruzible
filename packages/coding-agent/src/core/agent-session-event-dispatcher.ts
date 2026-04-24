@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent } from "@ag1/agent-core";
 import { appendResearchArtifactFromToolResult } from "./research-artifacts.js";
 import type { SessionManager } from "./session-manager.js";
 import type {

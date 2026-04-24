@@ -5,9 +5,9 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
-import { completeSimple } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { Model } from "@ag1/ai";
+import { completeSimple } from "@ag1/ai";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -17,6 +17,7 @@ import {
 import { buildTaggedPromptBundle, buildTaggedPromptSection } from "../prompt-sections.js";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.js";
 import { estimateTokens } from "./compaction.js";
+import { createContextHygieneCopy } from "./micro-compact.js";
 import {
 	computeFileLists,
 	createFileOps,
@@ -190,7 +191,7 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 
 	// First pass: collect file ops from ALL entries (even if they don't fit in token budget)
 	// This ensures we capture cumulative file tracking from nested branch summaries
-	// Only extract from pi-generated summaries (fromHook !== true), not extension-generated ones
+	// Only extract from core-generated summaries (fromHook !== true), not extension-generated ones
 	for (const entry of entries) {
 		if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
 			const details = entry.details as BranchSummaryDetails;
@@ -248,6 +249,8 @@ Summary of that exploration:
 
 const BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
 
+Assume older bulky tool results and hidden runtime guidance may already be trimmed. Preserve only the state needed for another agent to resume the branch.
+
 Use this EXACT format:
 
 ## Goal
@@ -270,8 +273,17 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
+## Files & Evidence
+- [Key files, symbols, URLs, commands, or evidence discovered on this branch]
+
+## Verification
+- [Checks run, test results, or "(not run)"]
+
 ## Next Steps
 1. [What should happen next to continue this work]
+
+## Open Questions
+- [Unknowns, blockers, or "(none)"]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
@@ -299,7 +311,7 @@ export async function generateBranchSummary(
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(messages);
+	const llmMessages = convertToLlm(createContextHygieneCopy(messages, 0));
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt

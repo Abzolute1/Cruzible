@@ -312,12 +312,12 @@ Clarifying Questions
 
 	test("uses yes or no selector options for binary clarification questions with example paths", () => {
 		const artifact = extractInteractivePlanArtifact({
-			goal: "Create a tiny smoke-test file at /tmp/crucible-planmode-smoke.txt containing exactly hello and then verify it.",
+			goal: "Create a tiny smoke-test file at /tmp/ag1-planmode-smoke.txt containing exactly hello and then verify it.",
 			assistantText: `Summary
 
 Clarifying Questions
 
-1. Would you like me to create this file inside the session workspace instead? (e.g. /home/alex/AG1/tmp/crucible-planmode-smoke.txt)`,
+1. Would you like me to create this file inside the session workspace instead? (e.g. /home/alex/AG1/tmp/ag1-planmode-smoke.txt)`,
 		});
 
 		expect(artifact).toBeTruthy();

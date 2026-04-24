@@ -30,9 +30,9 @@ describe("agentToolDefinition", () => {
 		spawnMock.mockReset();
 	});
 
-	test("uses the current cruzible launcher path for child agents", async () => {
+	test("uses the current ag1 launcher path for child agents", async () => {
 		const originalArgv1 = process.argv[1];
-		process.argv[1] = "/usr/local/bin/cruzible";
+		process.argv[1] = "/usr/local/bin/ag1";
 
 		try {
 			const child = createFakeChild();
@@ -49,7 +49,7 @@ describe("agentToolDefinition", () => {
 
 			await vi.waitFor(() => {
 				expect(spawnMock).toHaveBeenCalledWith(
-					"/usr/local/bin/cruzible",
+					"/usr/local/bin/ag1",
 					expect.arrayContaining(["--print", "--non-interactive", "inspect the repo"]),
 					expect.objectContaining({ cwd: "/tmp" }),
 				);

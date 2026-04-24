@@ -1,6 +1,6 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import type { ImageContent, TextContent } from "@ag1/ai";
+import { Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
@@ -24,6 +24,15 @@ export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
+	progress?: {
+		startLine: number;
+		endLine: number;
+		totalLines: number;
+		hasMore: boolean;
+		nextOffset?: number;
+		completion: "complete" | "partial";
+		reason: "complete" | "user_limit" | "line_limit" | "byte_limit" | "line_too_large";
+	};
 }
 
 /**
@@ -157,6 +166,7 @@ export function createReadToolDefinition(
 			"Use find to locate files when the path is uncertain before retrying read.",
 			"Use grep to locate symbols or strings before opening candidate files with read.",
 			"Use ls to inspect directories before reading files inside them.",
+			"After grep or find identifies the target, prefer a narrow read with offset/limit around the relevant range instead of reopening large files from the top.",
 		],
 		parameters: readSchema,
 		async execute(
@@ -247,7 +257,18 @@ export function createReadToolDefinition(
 										// First line alone exceeds the byte limit. Point the model at a bash fallback.
 										const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
 										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
-										details = { truncation };
+										details = {
+											truncation,
+											progress: {
+												startLine: startLineDisplay,
+												endLine: startLineDisplay,
+												totalLines: totalFileLines,
+												hasMore: startLineDisplay <= totalFileLines,
+												nextOffset: startLineDisplay,
+												completion: "partial",
+												reason: "line_too_large",
+											},
+										};
 									} else if (truncation.truncated) {
 										// Truncation occurred. Build an actionable continuation notice.
 										const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
@@ -260,7 +281,18 @@ export function createReadToolDefinition(
 											nextOffset,
 											truncatedBy: truncation.truncatedBy === "lines" ? "lines" : "bytes",
 										})}`;
-										details = { truncation };
+										details = {
+											truncation,
+											progress: {
+												startLine: startLineDisplay,
+												endLine: endLineDisplay,
+												totalLines: totalFileLines,
+												hasMore: nextOffset <= totalFileLines,
+												nextOffset,
+												completion: "partial",
+												reason: truncation.truncatedBy === "lines" ? "line_limit" : "byte_limit",
+											},
+										};
 									} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
 										// User-specified limit stopped early, but the file still has more content.
 										const nextOffset = startLine + userLimitedLines + 1;
@@ -270,9 +302,36 @@ export function createReadToolDefinition(
 											totalLines: allLines.length,
 											nextOffset,
 										})}`;
+										details = {
+											progress: {
+												startLine: startLineDisplay,
+												endLine: startLine + userLimitedLines,
+												totalLines: totalFileLines,
+												hasMore: nextOffset <= totalFileLines,
+												nextOffset,
+												completion: "partial",
+												reason: "user_limit",
+											},
+										};
 									} else {
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
+									const outputLineCount =
+										truncation.content.length === 0
+											? 0
+											: truncation.content.split("\n").length;
+									const endLineDisplay =
+										outputLineCount > 0 ? startLineDisplay + outputLineCount - 1 : startLineDisplay;
+									details = {
+										progress: {
+											startLine: startLineDisplay,
+											endLine: endLineDisplay,
+											totalLines: totalFileLines,
+											hasMore: false,
+											completion: "complete",
+											reason: "complete",
+										},
+									};
 								}
 								content = [{ type: "text", text: outputText }];
 							}

@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@ag1/agent-core";
 import type { AgentSessionEvent } from "./agent-session.js";
 import type { ExtensionRunner } from "./extensions/index.js";
 import { appendResearchArtifactFromToolResult } from "./research-artifacts.js";
@@ -17,12 +17,19 @@ export interface AgentSessionXmlCoordinatorOptions {
 		getSystemPrompt: () => string;
 		setSystemPrompt: (prompt: string) => void;
 		prompt: (messages: any[]) => Promise<void>;
+		continue: () => Promise<void>;
 	};
 	sessionManager: SessionManager;
 	getActiveToolNames: () => string[];
 	getTool: (name: string) => AgentTool | undefined;
 	getExtensionRunner: () => ExtensionRunner | undefined;
 	evaluateToolSafety: (toolName: string, args: Record<string, unknown>) => Promise<{ block: boolean; reason: string } | undefined>;
+	noteToolResult?: (observation: {
+		toolName: string;
+		args: Record<string, unknown>;
+		result?: unknown;
+		isError: boolean;
+	}) => void;
 	emit: (event: AgentSessionEvent) => void;
 	waitForRetry: () => Promise<void>;
 }
@@ -31,12 +38,14 @@ export class AgentSessionXmlCoordinator {
 	private structuredToolCallCountThisPrompt = 0;
 	private xmlToolCallIteration = 0;
 	private readonly maxXmlToolCallIterations = 3;
+	private readonly processedAssistantTurnKeys = new Set<string>();
 
 	constructor(private readonly options: AgentSessionXmlCoordinatorOptions) {}
 
 	resetForPrompt(): void {
 		this.structuredToolCallCountThisPrompt = 0;
 		this.xmlToolCallIteration = 0;
+		this.processedAssistantTurnKeys.clear();
 	}
 
 	noteStructuredToolCall(): void {
@@ -62,15 +71,18 @@ export class AgentSessionXmlCoordinator {
 			textContent = content;
 		} else if (Array.isArray(content)) {
 			textContent = content
-				.filter((c: any) => c.type === "text")
-				.map((c: any) => c.text || "")
-				.join("");
+				.filter((c: any) => c.type === "text" || c.type === "thinking")
+				.map((c: any) => (c.type === "thinking" ? c.thinking || "" : c.text || ""))
+				.join("\n");
 		}
 		if (!textContent.trim()) return;
+		const assistantTurnKey = `${String((lastAssistantMsg as { timestamp?: unknown }).timestamp ?? "")}:${textContent}`;
+		if (this.processedAssistantTurnKeys.has(assistantTurnKey)) return;
 
 		const activeToolNames = this.options.getActiveToolNames();
 		const xmlCalls = parseXmlToolCalls(textContent, activeToolNames);
 		if (xmlCalls.length === 0) return;
+		this.processedAssistantTurnKeys.add(assistantTurnKey);
 
 		const xmlAnalysis = analyzeXmlFallbackTurn({
 			callCount: xmlCalls.length,
@@ -100,13 +112,15 @@ export class AgentSessionXmlCoordinator {
 		}
 
 		const previousSystemPrompt = this.options.agentState.getSystemPrompt();
-		const recoveryPrompt = buildXmlFallbackRecoveryPrompt(xmlAnalysis);
+		const recoveryPrompt = buildXmlFallbackRecoveryPrompt(xmlAnalysis, {
+			toolNames: xmlCalls.map((xmlCall) => xmlCall.name),
+		});
 		if (recoveryPrompt) {
 			this.options.agentState.setSystemPrompt(`${previousSystemPrompt}\n\n${recoveryPrompt}`);
 		}
 		this.structuredToolCallCountThisPrompt = 0;
 		try {
-			await this.options.agentState.prompt([]);
+			await this.options.agentState.continue();
 			await this.options.waitForRetry();
 		} finally {
 			if (recoveryPrompt) {
@@ -149,7 +163,10 @@ export class AgentSessionXmlCoordinator {
 			return;
 		}
 
-		const safetyBlock = await this.options.evaluateToolSafety(xmlCall.name, xmlCall.arguments as Record<string, unknown>);
+		const preparedArguments = tool.prepareArguments
+			? tool.prepareArguments(xmlCall.arguments) as Record<string, unknown>
+			: xmlCall.arguments as Record<string, unknown>;
+		const safetyBlock = await this.options.evaluateToolSafety(xmlCall.name, preparedArguments);
 		if (safetyBlock) {
 			await this.appendToolResult(
 				xmlCall,
@@ -163,21 +180,27 @@ export class AgentSessionXmlCoordinator {
 		}
 
 		try {
-			const result = await tool.execute(xmlCall.id, xmlCall.arguments as any, undefined);
+			const result = await tool.execute(xmlCall.id, preparedArguments as any, undefined);
 			if (extensionRunner?.hasHandlers("tool_result")) {
 				await extensionRunner
 					.emitToolResult({
 						type: "tool_result",
 						toolName: xmlCall.name,
 						toolCallId: xmlCall.id,
-						input: xmlCall.arguments as Record<string, unknown>,
+						input: preparedArguments,
 						content: result.content,
 						details: result.details,
 						isError: false,
 					})
 					.catch(() => {});
 			}
-			await this.appendToolResult(xmlCall, result, false);
+			this.options.noteToolResult?.({
+				toolName: xmlCall.name,
+				args: preparedArguments,
+				result,
+				isError: false,
+			});
+			await this.appendToolResult(xmlCall, result, false, preparedArguments);
 		} catch (error) {
 			const errorResult = {
 				content: [
@@ -203,7 +226,13 @@ export class AgentSessionXmlCoordinator {
 					.catch(() => {});
 			}
 
-			await this.appendToolResult(xmlCall, errorResult, true);
+			this.options.noteToolResult?.({
+				toolName: xmlCall.name,
+				args: preparedArguments,
+				result: errorResult,
+				isError: true,
+			});
+			await this.appendToolResult(xmlCall, errorResult, true, preparedArguments);
 		}
 	}
 
@@ -211,6 +240,7 @@ export class AgentSessionXmlCoordinator {
 		xmlCall: XmlToolCall,
 		result: { content: any[]; details?: any },
 		isError: boolean,
+		args: Record<string, unknown> = xmlCall.arguments as Record<string, unknown>,
 	): Promise<void> {
 		const toolResult = {
 			role: "toolResult" as const,
@@ -226,7 +256,7 @@ export class AgentSessionXmlCoordinator {
 			type: "tool_execution_start",
 			toolCallId: xmlCall.id,
 			toolName: xmlCall.name,
-			args: xmlCall.arguments as Record<string, unknown>,
+			args,
 		});
 
 		this.options.emit({

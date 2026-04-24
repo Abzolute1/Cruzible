@@ -1,10 +1,11 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Container, Text } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import { Container, Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
 import type { ToolDefinition } from "../extensions/types.js";
+import { normalizePatchIntent } from "../patch-intent.js";
 import {
 	applyEditsToNormalizedContent,
 	detectLineEnding,
@@ -47,6 +48,7 @@ export type EditToolInput = Static<typeof editSchema>;
 type LegacyEditToolInput = EditToolInput & {
 	oldText?: unknown;
 	newText?: unknown;
+	edits?: unknown;
 };
 
 export interface EditToolDetails {
@@ -86,14 +88,48 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	}
 
 	const args = input as LegacyEditToolInput;
-	if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
-		return input as EditToolInput;
+	const normalizedPatch = normalizePatchIntent(args);
+	if (normalizedPatch && !Array.isArray(args.edits) && typeof args.oldText !== "string" && typeof args.newText !== "string") {
+		return {
+			path: normalizedPatch.path,
+			edits: normalizedPatch.replacements,
+		};
 	}
 
-	const edits = Array.isArray(args.edits) ? [...args.edits] : [];
+	const parsedEdits = parseEditsArgument(args.edits);
+	if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
+		return parsedEdits === args.edits ? input as EditToolInput : { ...args, edits: parsedEdits } as EditToolInput;
+	}
+
+	const edits = Array.isArray(parsedEdits) ? [...parsedEdits] : [];
 	edits.push({ oldText: args.oldText, newText: args.newText });
 	const { oldText: _oldText, newText: _newText, ...rest } = args;
 	return { ...rest, edits } as EditToolInput;
+}
+
+function isReplacementEdit(value: unknown): value is Edit {
+	return Boolean(
+		value &&
+			typeof value === "object" &&
+			typeof (value as { oldText?: unknown }).oldText === "string" &&
+			typeof (value as { newText?: unknown }).newText === "string",
+	);
+}
+
+function parseEditsArgument(value: unknown): unknown {
+	if (Array.isArray(value)) return value;
+	if (typeof value !== "string") return value;
+
+	const trimmed = value.trim();
+	if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return value;
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (Array.isArray(parsed) && parsed.every(isReplacementEdit)) return parsed;
+		if (isReplacementEdit(parsed)) return [parsed];
+	} catch {
+		// Keep the original value so normal validation reports the bad shape.
+	}
+	return value;
 }
 
 function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {

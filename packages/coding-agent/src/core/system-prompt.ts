@@ -22,6 +22,10 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Optional active model provider for prompt-shape tuning. */
+	modelProvider?: string;
+	/** Optional active model context window for prompt-shape tuning. */
+	contextWindow?: number;
 }
 
 function appendContextFiles(prompt: string, contextFiles: Array<{ path: string; content: string }>): string {
@@ -33,14 +37,18 @@ function appendContextFiles(prompt: string, contextFiles: Array<{ path: string; 
 	return next;
 }
 
-function buildPiDocsSection(readmePath: string, docsPath: string, examplesPath: string): string {
+function buildAg1DocsSection(readmePath: string, docsPath: string, examplesPath: string): string {
 	return [
-		"Pi docs: only for pi-specific work.",
+		"AG1 docs: only for AG1-specific work.",
 		`README ${readmePath}`,
 		`Docs ${docsPath}`,
 		`Examples ${examplesPath}`,
 		"Follow markdown cross-references before implementing.",
 	].join("\n");
+}
+
+function buildCompactAg1DocsSection(readmePath: string, docsPath: string, examplesPath: string): string {
+	return `AG1 docs only for AG1-specific work: README ${readmePath} | Docs ${docsPath} | Examples ${examplesPath}`;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -54,6 +62,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		modelProvider,
+		contextWindow,
 	} = options;
 	const resolvedCwd = cwd ?? process.cwd();
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -91,6 +101,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
+	const compactPromptProfile = modelProvider === "local" || ((contextWindow ?? 0) > 0 && (contextWindow ?? 0) <= 64_000);
 
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
@@ -147,11 +158,17 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	const roleLine = hasMutatingTools
-		? "You are an expert coding assistant inside pi. Use the available tools to inspect code, run commands, edit files, and answer precisely."
-		: hasReadOnlyExploration
-			? "You are an expert coding assistant inside pi. Use the available read-only and research tools to inspect evidence and answer precisely."
-			: "You are an expert coding assistant inside pi. Answer precisely using only the available context."
+	const roleLine = compactPromptProfile
+		? hasMutatingTools
+			? "You are a coding assistant inside AG1. Use tools sparingly, inspect evidence carefully, and answer precisely."
+			: hasReadOnlyExploration
+				? "You are a coding assistant inside AG1. Use the available read-only/research tools sparingly and answer precisely."
+				: "You are a coding assistant inside AG1. Answer precisely using only the available context."
+		: hasMutatingTools
+			? "You are an expert coding assistant inside AG1. Use the available tools to inspect code, run commands, edit files, and answer precisely."
+			: hasReadOnlyExploration
+				? "You are an expert coding assistant inside AG1. Use the available read-only and research tools to inspect evidence and answer precisely."
+				: "You are an expert coding assistant inside AG1. Answer precisely using only the available context."
 
 	let prompt = `${roleLine}
 
@@ -161,7 +178,7 @@ ${toolsList}
 Guidelines:
 ${guidelines}
 
-${buildPiDocsSection(readmePath, docsPath, examplesPath)}`;
+${compactPromptProfile ? buildCompactAg1DocsSection(readmePath, docsPath, examplesPath) : buildAg1DocsSection(readmePath, docsPath, examplesPath)}`;
 
 	if (appendSection) {
 		prompt += appendSection;

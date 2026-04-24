@@ -1,5 +1,4 @@
-import { resolveToCwd } from "./tools/path-utils.js";
-import { isContainedPath } from "./tools/path-utils.js";
+import { isContainedPath, resolveToCwd } from "./tools/path-utils.js";
 
 export type SafetyMode = "disabled" | "interactive" | "planning" | "autonomous" | "headless";
 export type SafetyRisk = "low" | "medium" | "high" | "critical";
@@ -30,6 +29,7 @@ export interface ToolSafetyDecision {
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const PLANNING_EXPLORATION_TOOLS = new Set(["read", "grep", "find", "ls", "webSearch", "webFetch"]);
 const FILE_MUTATION_TOOLS = new Set(["write", "edit", "notebook_edit", "NotebookEdit"]);
+const BRACED_HOME_TOKEN = "$" + "{HOME}";
 
 const FORBIDDEN_SHELL_RULES: Array<{ pattern: RegExp; reason: string }> = [
 	{
@@ -65,7 +65,14 @@ const FORBIDDEN_SHELL_RULES: Array<{ pattern: RegExp; reason: string }> = [
 		reason: "Fork bombs are not allowed.",
 	},
 ];
-const ALLOWED_SYSTEM_PATH_PREFIXES = ["/bin/", "/usr/bin/", "/usr/local/bin/", "/nix/store/", "/opt/homebrew/bin/", "/snap/bin/"];
+const ALLOWED_SYSTEM_PATH_PREFIXES = [
+	"/bin/",
+	"/usr/bin/",
+	"/usr/local/bin/",
+	"/nix/store/",
+	"/opt/homebrew/bin/",
+	"/snap/bin/",
+];
 const HEADLESS_READ_ONLY_GUIDANCE = "Use read, grep, find, ls, webSearch, or webFetch instead.";
 
 function trimForDisplay(value: string, max = 240): string {
@@ -80,7 +87,8 @@ function getToolPath(args: unknown): string | undefined {
 	if (!args || typeof args !== "object") {
 		return undefined;
 	}
-	const maybePath = (args as { path?: unknown; file_path?: unknown }).path ?? (args as { file_path?: unknown }).file_path;
+	const maybePath =
+		(args as { path?: unknown; file_path?: unknown }).path ?? (args as { file_path?: unknown }).file_path;
 	return typeof maybePath === "string" ? maybePath : undefined;
 }
 
@@ -113,7 +121,8 @@ function normalizeShellPathToken(token: string): string {
 }
 
 function findOutOfWorkspaceShellPath(command: string, cwd: string): string | undefined {
-	const pathTokenPattern = /(?:^|[\s=:(])((?:\/|(?:\.\.\/)+)[^\s"'`|&;<>)]*)/g;
+	const pathTokenPattern =
+		/(?:^|[\s=:(['"`])((?:\/|~(?:\/|$)|(?:\$HOME|\$\{HOME\})(?:\/|$)|(?:\.\.\/)+)[^\s"'`|&;<>)]*)/g;
 
 	for (const match of command.matchAll(pathTokenPattern)) {
 		const rawToken = match[1];
@@ -121,6 +130,17 @@ function findOutOfWorkspaceShellPath(command: string, cwd: string): string | und
 
 		const token = normalizeShellPathToken(rawToken);
 		if (!token || token === "/") continue;
+
+		if (
+			token === "~" ||
+			token.startsWith("~/") ||
+			token === "$HOME" ||
+			token === BRACED_HOME_TOKEN ||
+			token.startsWith("$HOME/") ||
+			token.startsWith(`${BRACED_HOME_TOKEN}/`)
+		) {
+			return token;
+		}
 
 		if (token.startsWith("/")) {
 			if (ALLOWED_SYSTEM_PATH_PREFIXES.some((prefix) => token.startsWith(prefix))) {
@@ -230,7 +250,7 @@ function evaluateBashTool(args: unknown, policy: ToolSafetyPolicy): ToolSafetyDe
 				policy,
 				"bash",
 				"high",
-				"Approve bash command execution?",
+				"Unrestricted shell execution",
 				`Command:\n${trimForDisplay(command, 600)}\n\nWorking directory: ${policy.cwd}\n\nBash is unrestricted and may modify files, install packages, or invoke external programs.`,
 			),
 		};
@@ -239,7 +259,8 @@ function evaluateBashTool(args: unknown, policy: ToolSafetyPolicy): ToolSafetyDe
 	if (policy.mode === "planning") {
 		return {
 			allow: false,
-			reason: "Bash execution is blocked in planning mode. Planning mode is read-only and should produce a plan, not execute commands.",
+			reason:
+				"Bash execution is blocked in planning mode. Planning mode is read-only and should produce a plan, not execute commands.",
 		};
 	}
 

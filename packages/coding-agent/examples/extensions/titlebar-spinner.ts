@@ -5,21 +5,21 @@
  * Uses `ctx.ui.setTitle()` to update the terminal title via the extension API.
  *
  * Usage:
- *   pi --extension examples/extensions/titlebar-spinner.ts
+ *   ag1 --extension examples/extensions/titlebar-spinner.ts
  */
 
 import path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@ag1/coding-agent";
 
 const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-function getBaseTitle(pi: ExtensionAPI): string {
+function getBaseTitle(ag1: ExtensionAPI): string {
 	const cwd = path.basename(process.cwd());
-	const session = pi.getSessionName();
+	const session = ag1.getSessionName();
 	return session ? `π - ${session} - ${cwd}` : `π - ${cwd}`;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (ag1: ExtensionAPI) {
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let frameIndex = 0;
 
@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
 			timer = null;
 		}
 		frameIndex = 0;
-		ctx.ui.setTitle(getBaseTitle(pi));
+		ctx.ui.setTitle(getBaseTitle(ag1));
 	}
 
 	function startAnimation(ctx: ExtensionContext) {
@@ -37,22 +37,22 @@ export default function (pi: ExtensionAPI) {
 		timer = setInterval(() => {
 			const frame = BRAILLE_FRAMES[frameIndex % BRAILLE_FRAMES.length];
 			const cwd = path.basename(process.cwd());
-			const session = pi.getSessionName();
+			const session = ag1.getSessionName();
 			const title = session ? `${frame} π - ${session} - ${cwd}` : `${frame} π - ${cwd}`;
 			ctx.ui.setTitle(title);
 			frameIndex++;
 		}, 80);
 	}
 
-	pi.on("agent_start", async (_event, ctx) => {
+	ag1.on("agent_start", async (_event, ctx) => {
 		startAnimation(ctx);
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	ag1.on("agent_end", async (_event, ctx) => {
 		stopAnimation(ctx);
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	ag1.on("session_shutdown", async (_event, ctx) => {
 		stopAnimation(ctx);
 	});
 }

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@ag1/agent-core";
 import { Type } from "@sinclair/typebox";
 
 export interface NotebookEditToolOptions {

@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"$schema": "https://raw.githubusercontent.com/ag1-ai/ag1/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
 	"name": "light",
 	"vars": {
 		"teal": "#496f67",

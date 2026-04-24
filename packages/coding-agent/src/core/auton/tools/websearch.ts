@@ -100,7 +100,7 @@ export const webSearchToolDefinition: ToolDefinition<typeof webSearchParamsSchem
 				const response = await fetch(url, {
 					signal,
 					headers: {
-						"User-Agent": "Mozilla/5.0 (compatible; Pi-Agent/1.0)",
+						"User-Agent": "Mozilla/5.0 (compatible; AG1-Agent/1.0)",
 					},
 				});
 

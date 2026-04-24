@@ -1,4 +1,4 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@ag1/tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
@@ -21,6 +21,7 @@ function createSession(options: {
 	reasoning?: boolean;
 	thinkingLevel?: string;
 	usage?: AssistantUsage;
+	rawMessages?: any[];
 }): AgentSession {
 	const usage = options.usage;
 	const entries =
@@ -51,6 +52,27 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
+		messages:
+			options.rawMessages ??
+			[
+				{
+					role: "user",
+					content: [{ type: "text", text: "Hello" }],
+				},
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "World" }],
+					usage: usage ?? {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { total: 0 },
+					},
+					stopReason: "stop",
+				},
+			],
 		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3, tokens: 24_600 }),
 		modelRegistry: {
 			isUsingOAuth: () => false,
@@ -130,7 +152,7 @@ describe("FooterComponent width handling", () => {
 		const lines = footer.render(160);
 		const footerLine = stripAnsi(lines[0] ?? "");
 		expect(lines).toHaveLength(1);
-		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("live ctx 25k");
 		expect(footerLine).toContain("Σ↓ 12k");
 		expect(footerLine).toContain("Σ↑ 6.8k");
 		expect(footerLine).toContain("context 12.3%/200k");
@@ -156,11 +178,40 @@ describe("FooterComponent width handling", () => {
 		const footerLine = stripAnsi(lines[0] ?? "");
 		expect(lines).toHaveLength(1);
 		expect(footerLine).toContain("context 12.3%/200k");
-		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("live ctx 25k");
 		expect(footerLine).toContain("Σ↓ 6.2k");
 		expect(footerLine).toContain("Σ↑ 621");
 		expect(footerLine).toContain("api $0.000");
 		expect(footerLine).toContain("Local");
 		expect(footerLine).toContain("lm-studio");
+	});
+
+	it("shows raw context separately when it materially exceeds live context", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: {
+				input: 6200,
+				output: 621,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0 },
+			},
+			rawMessages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "hello" }],
+				},
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "A".repeat(140_000) }],
+				},
+			],
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		const lines = footer.render(220);
+		const footerLine = stripAnsi(lines[0] ?? "");
+		expect(footerLine).toContain("live ctx 25k");
+		expect(footerLine).toContain("raw ctx 35k");
 	});
 });

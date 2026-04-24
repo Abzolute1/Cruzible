@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, spawnSync } from "child_process";
-import type { Component } from "@mariozechner/pi-tui";
+import type { Component } from "@ag1/tui";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { getShareViewerUrl } from "../../config.js";
 import { BorderedLoader } from "./components/bordered-loader.js";

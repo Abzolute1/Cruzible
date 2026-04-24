@@ -1,4 +1,4 @@
-import type { Agent } from "@mariozechner/pi-agent-core";
+import type { Agent } from "@ag1/agent-core";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import type { BashExecutionMessage } from "./messages.js";
 import type { SessionManager } from "./session-manager.js";

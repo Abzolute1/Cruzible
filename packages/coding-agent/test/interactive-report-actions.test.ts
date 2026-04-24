@@ -11,7 +11,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { RESEARCH_ARTIFACT_ENTRY_TYPE } from "../src/core/research-artifacts.js";
 
 describe("interactive-report-actions", () => {
-	const debugLogPath = "/tmp/crucible-debug-report-test.log";
+	const debugLogPath = "/tmp/ag1-debug-report-test.log";
 
 	beforeEach(() => {
 		initTheme("dark", false);

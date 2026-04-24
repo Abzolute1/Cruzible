@@ -4,24 +4,24 @@
  * Adjusts command, cwd, and env before execution.
  *
  * Usage:
- *   pi -e ./bash-spawn-hook.ts
+ *   ag1 -e ./bash-spawn-hook.ts
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createBashTool } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@ag1/coding-agent";
+import { createBashTool } from "@ag1/coding-agent";
 
-export default function (pi: ExtensionAPI) {
+export default function (ag1: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	const bashTool = createBashTool(cwd, {
 		spawnHook: ({ command, cwd, env }) => ({
 			command: `source ~/.profile\n${command}`,
 			cwd,
-			env: { ...env, PI_SPAWN_HOOK: "1" },
+			env: { ...env, AG1_SPAWN_HOOK: "1" },
 		}),
 	});
 
-	pi.registerTool({
+	ag1.registerTool({
 		...bashTool,
 		execute: async (id, params, signal, onUpdate, _ctx) => {
 			return bashTool.execute(id, params, signal, onUpdate);

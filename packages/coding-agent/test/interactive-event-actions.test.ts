@@ -1,4 +1,4 @@
-import { Container } from "@mariozechner/pi-tui";
+import { Container } from "@ag1/tui";
 import { describe, expect, test, vi } from "vitest";
 import {
 	handleInteractiveCompactionEnd,

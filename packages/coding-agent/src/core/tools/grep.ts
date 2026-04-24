@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import { Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { spawn } from "child_process";
 import { readFileSync, statSync } from "fs";
@@ -8,6 +8,7 @@ import path from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
+import { looksLikeGuidanceTrapPath } from "./guidance-trap-paths.js";
 import { resolveContainedPath } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -41,6 +42,13 @@ export interface GrepToolDetails {
 	truncation?: TruncationResult;
 	matchLimitReached?: number;
 	linesTruncated?: boolean;
+	matchCount?: number;
+	uniqueFileCount?: number;
+	firstMatchPath?: string;
+	firstMatchLine?: number;
+	recoveryPattern?: string;
+	recoveryPath?: string;
+	recoveryRequired?: boolean;
 }
 
 /**
@@ -68,6 +76,151 @@ function toToolPath(filePath: string, cwd: string): string {
 	const relative = path.relative(cwd, filePath).replace(/\\/g, "/");
 	if (relative && !relative.startsWith("..")) return relative;
 	return filePath.replace(/\\/g, "/");
+}
+
+function grepPathRank(filePath: string, cwd: string): number {
+	const normalized = toToolPath(filePath, cwd).toLowerCase();
+	let score = 0;
+	const isHarnessBenchmarkScript = /(^|\/)scripts\/harness-benchmark-[^/]+\.mjs$/.test(normalized);
+
+	const sourceExtensions = new Set([
+		".ts",
+		".tsx",
+		".js",
+		".jsx",
+		".mjs",
+		".cjs",
+		".py",
+		".go",
+		".rs",
+		".java",
+		".kt",
+		".rb",
+		".php",
+		".swift",
+		".cpp",
+		".cc",
+		".cxx",
+		".c",
+		".h",
+		".hpp",
+	]);
+	const docsExtensions = new Set([".md", ".mdx", ".rst", ".txt"]);
+	const ext = path.extname(normalized);
+
+	if (sourceExtensions.has(ext)) score -= 60;
+	else if (docsExtensions.has(ext)) score += 80;
+
+	if (
+		normalized.includes("/src/") ||
+		normalized.startsWith("src/") ||
+		normalized.includes("/packages/") ||
+		normalized.includes("/lib/") ||
+		normalized.includes("/app/")
+	) {
+		score -= 40;
+	}
+
+	if (
+		normalized.includes("/test/") ||
+		normalized.includes("/tests/") ||
+		normalized.endsWith(".test.ts") ||
+		normalized.endsWith(".test.tsx") ||
+		normalized.endsWith(".spec.ts") ||
+		normalized.endsWith(".spec.tsx") ||
+		normalized.endsWith(".test.js") ||
+		normalized.endsWith(".spec.js")
+	) {
+		score += 110;
+	}
+
+	if (
+		normalized.includes("readme") ||
+		normalized.includes("mission") ||
+		normalized.includes("plan") ||
+		normalized.includes("audit") ||
+		normalized.includes("checkpoint") ||
+		normalized.includes("todo")
+	) {
+		score += 60;
+	}
+	if (normalized.includes("benchmark") && !isHarnessBenchmarkScript) score += 60;
+
+	if (
+		normalized.includes("/fixtures/") ||
+		normalized.includes("new_files-copy") ||
+		normalized.includes("/history/") ||
+		normalized.includes("/archive/")
+	) {
+		score += 120;
+	}
+
+	if (
+		normalized.includes("/core/") ||
+		normalized.includes("/system-prompt") ||
+		normalized.includes("/prompt")
+	) {
+		score -= 20;
+	}
+
+	if (normalized.includes("/tools/")) score -= 20;
+	if (normalized.includes("/auton/")) score += 25;
+	if (isHarnessBenchmarkScript) score -= 140;
+
+	if (
+		normalized.includes("research-output") ||
+		normalized.includes("prompt-intent-steering") ||
+		normalized.includes("benchmark-scenarios")
+	) {
+		score += 180;
+	}
+
+	score += Math.min(normalized.length, 120);
+	return score;
+}
+
+function grepLineRank(lineText: string, pattern?: string): number {
+	const normalized = lineText.trim().toLowerCase();
+	let score = 0;
+
+	if (/^\s*export\s+(async\s+)?function\b/.test(normalized)) score -= 140;
+	else if (/^\s*export\s+(class|interface|type|const)\b/.test(normalized)) score -= 120;
+	else if (/^\s*(async\s+)?function\b/.test(normalized)) score -= 80;
+	else if (/^\s*(class|interface|type|const)\b/.test(normalized)) score -= 60;
+
+	if (/^\s*import\b/.test(normalized)) score += 120;
+	if (/\b(describe|it|test)\s*\(/.test(normalized)) score += 120;
+	if (/^\s*\/\//.test(normalized)) score += 20;
+	if (/\blines\.push\s*\(/.test(normalized)) score += 140;
+	if (/\bfor prompts about\b/.test(normalized)) score += 220;
+	if (/\blikely implementation symbol\b/.test(normalized)) score += 220;
+	if (/\bintent steering\b/.test(normalized)) score += 180;
+	if (/"prompt"\s*:/.test(normalized)) score += 160;
+	if (/"description"\s*:/.test(normalized)) score += 140;
+	if (/"tags"\s*:/.test(normalized)) score += 120;
+	if (/`[^`]*\$\{[^`]+\}[^`]*`/.test(lineText)) score += 40;
+	if (/["'`](?:[^"'`]*\s){4,}[^"'`]*["'`]/.test(lineText)) score += 70;
+
+	const normalizedPattern = pattern?.trim().toLowerCase() ?? "";
+	if (normalizedPattern.includes("current-events")) {
+		if (/\bnormalizecurrenteventsquery\b/i.test(lineText)) score -= 260;
+		else if (/\bnormalize[a-z0-9_]*current[a-z0-9_]*events[a-z0-9_]*\b/i.test(normalized)) score -= 180;
+		else if (/\bnormalize\b/.test(normalized)) score -= 80;
+	}
+	if (normalizedPattern.includes("score per 1k tokens")) {
+		if (/\bscoreper1ktokens\b/i.test(lineText) || /\bscore_per_1k_tokens\b/i.test(lineText)) score -= 240;
+	}
+	if (normalizedPattern.includes("scoreper1ktokens") || normalizedPattern.includes("score_per_1k_tokens")) {
+		if (/\bscorePer1kTokens\b/.test(lineText)) score -= 280;
+		if (/^\s*const\s+scorePer1kTokens\b/.test(lineText) || /^\s*let\s+scorePer1kTokens\b/.test(lineText)) score -= 120;
+		if (/"score_per_1k_tokens"\s*:/.test(lineText)) score += 260;
+	}
+	if (normalizedPattern.includes("normalization")) {
+		if (/^\s*export\s+(async\s+)?function\s+normalize/i.test(normalized)) score -= 120;
+		else if (/^\s*(async\s+)?function\s+normalize/i.test(normalized)) score -= 80;
+	}
+
+	return score;
 }
 
 function formatGrepCall(
@@ -145,8 +298,140 @@ function formatGrepFollowupNotice(
 	const match = matches[0];
 	if (!match) return undefined;
 	const target = toToolPath(match.filePath, cwd);
-	const offset = Math.max(1, match.lineNumber - 5);
-	return `[1 match in ${target}:${match.lineNumber}; next: read ${target} offset=${offset}]`;
+	const offset = Math.max(1, match.lineNumber - 20);
+	return `[1 match in ${target}:${match.lineNumber}; if the user only asked which file/path, answer now; otherwise next: read ${target} offset=${offset} limit=120]`;
+}
+
+function extractLiteralAlternatives(pattern: string): string[] {
+	return pattern
+		.split("|")
+		.map((part) => part.trim())
+		.filter((part) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(part));
+}
+
+function extractLeadingIdentifierFromRegexishPattern(pattern: string): string | undefined {
+	const match = pattern.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)/);
+	return match?.[1];
+}
+
+function formatNoMatchNotice(options: { literal?: boolean; pattern: string }): string {
+	const notices = ["no matches"];
+	if (options.literal && /[|()[\]{}.*+?^$\\]/.test(options.pattern)) {
+		notices.push("literal=true with regex-like pattern; retry with a simpler literal or disable literal");
+		const leadingIdentifier = extractLeadingIdentifierFromRegexishPattern(options.pattern);
+		if (leadingIdentifier) {
+			notices.push(
+				`for definition lookups, retry the exact symbol name ${leadingIdentifier} first without regex-like suffixes, assignment patterns, or added punctuation`,
+			);
+		}
+		const alternatives = extractLiteralAlternatives(options.pattern);
+		if (alternatives.length >= 2) {
+			notices.push(
+				`if these are alternative identifiers, retry one identifier at a time, starting with ${alternatives[0]}, and keep the search inside likely implementation/reporting paths like scripts/ or src/ instead of broadening to prose`,
+			);
+		} else if (options.pattern.includes("|")) {
+			notices.push(
+				"if this was meant as alternative identifiers, retry one identifier at a time and keep the search inside likely implementation/reporting paths like scripts/ or src/ instead of broadening to prose",
+			);
+		}
+	}
+	notices.push("if the user asked which file/script defines something, prefer find on filenames before broad content grep");
+	notices.push("for local code lookups, retry with a narrower source path like src/ or packages/*/src before reading docs");
+	return `[${notices.join("; ")}]`;
+}
+
+interface SemanticRecovery {
+	notice: string;
+	preferredMatchPath?: string;
+	preferredMatchLine?: number;
+	recoveryPattern?: string;
+	recoveryPath?: string;
+	recoveryRequired?: boolean;
+}
+
+function buildSemanticRecovery(
+	matches: Array<{ filePath: string; lineNumber: number; lineText: string }>,
+	cwd: string,
+	pattern: string,
+): SemanticRecovery | undefined {
+	const normalizedPattern = pattern.trim().toLowerCase();
+	if (normalizedPattern.includes("current-events")) {
+		const preferredSymbolMatch = matches.find(
+			(match) => /\bnormalizeCurrentEventsQuery\b/i.test(match.lineText)
+				&& !looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)),
+		) ?? matches.find((match) => /\bnormalizeCurrentEventsQuery\b/i.test(match.lineText));
+		const preferredImplementationMatch = matches.find((match) => {
+			const toolPath = toToolPath(match.filePath, cwd);
+			return !looksLikeGuidanceTrapPath(toolPath)
+				&& /(?:^|\/)(websearch|research-intent)\.ts$/i.test(toolPath);
+		});
+		const onlyTrapPaths = matches.every((match) => looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)));
+		const preferredMatch = preferredSymbolMatch ?? preferredImplementationMatch;
+		if (preferredMatch) {
+			const preferredPath = toToolPath(preferredMatch.filePath, cwd);
+			const offset = Math.max(1, preferredMatch.lineNumber - 20);
+			return {
+				notice: `[descriptive current-events normalization lookup; use the implementation match first at ${preferredPath}:${preferredMatch.lineNumber}; next: read ${preferredPath} offset=${offset} limit=120]`,
+				preferredMatchPath: preferredPath,
+				preferredMatchLine: preferredMatch.lineNumber,
+			};
+		}
+		if (onlyTrapPaths) {
+			return {
+				notice: "[descriptive current-events normalization lookup; do not read the guidance/test hit first; next: grep normalizeCurrentEventsQuery path=packages/coding-agent/src/core/tools or src/core/tools]",
+				recoveryPattern: "normalizeCurrentEventsQuery",
+				recoveryPath: "packages/coding-agent/src/core/tools",
+				recoveryRequired: true,
+			};
+		}
+	}
+	if (normalizedPattern.includes("score per 1k tokens")) {
+		const onlyTrapPaths = matches.every((match) => looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)));
+		if (onlyTrapPaths) {
+			return {
+				notice: "[metric-phrase lookup hit guidance or UI prose, not the computation; next: grep scorePer1kTokens path=scripts or grep score_per_1k_tokens path=scripts]",
+				recoveryPattern: "scorePer1kTokens",
+				recoveryPath: "scripts",
+				recoveryRequired: true,
+			};
+		}
+	}
+	if (normalizedPattern.includes("scoreper1ktokens") || normalizedPattern.includes("score_per_1k_tokens")) {
+		const compareScriptMatch = matches.find((match) => /scripts\/harness-benchmark-compare\.mjs$/i.test(toToolPath(match.filePath, cwd)));
+		if (compareScriptMatch) {
+			return {
+				notice: `[benchmark metric lookup; likely implementation is ${toToolPath(compareScriptMatch.filePath, cwd)}; use that file before history/report artifacts]`,
+				preferredMatchPath: toToolPath(compareScriptMatch.filePath, cwd),
+				preferredMatchLine: compareScriptMatch.lineNumber,
+			};
+		}
+		const onlyHistoryish = matches.every((match) => {
+			const toolPath = toToolPath(match.filePath, cwd).toLowerCase();
+			return toolPath.includes("/benchmarks/history/")
+				|| toolPath.endsWith("history-summary.json")
+				|| toolPath.endsWith("benchmark-scenarios-v2.json")
+				|| toolPath.endsWith("benchmark-scenarios-v2_5.json");
+		});
+		if (onlyHistoryish) {
+			return {
+				notice: "[benchmark metric lookup hit output/config artifacts, not the computation; next: grep scorePer1kTokens path=scripts]",
+				recoveryPattern: "scorePer1kTokens",
+				recoveryPath: "scripts",
+				recoveryRequired: true,
+			};
+		}
+	}
+	if (normalizedPattern.includes("benchmark") && normalizedPattern.includes("archive")) {
+		const archiveScriptMatch = matches.find((match) => /harness-benchmark-archive\.mjs$/i.test(toToolPath(match.filePath, cwd)));
+		if (archiveScriptMatch) {
+			return {
+				notice: `[benchmark archive lookup; likely defining file is ${toToolPath(archiveScriptMatch.filePath, cwd)}; answer now with that path or read it directly before more grep]`,
+				preferredMatchPath: toToolPath(archiveScriptMatch.filePath, cwd),
+				preferredMatchLine: archiveScriptMatch.lineNumber,
+			};
+		}
+	}
+	return undefined;
 }
 
 export function createGrepToolDefinition(
@@ -163,6 +448,7 @@ export function createGrepToolDefinition(
 			"Use grep to locate symbols, functions, error strings, or identifiers before reading files.",
 			"Prefer grep over guessing file paths when you know text that should appear in the code.",
 			"After grep finds a candidate file and line, use read on that file or nearby range for detail.",
+			"When grep returns one decisive source hit, read only a small nearby range, or answer immediately for pure location questions.",
 		],
 		parameters: grepSchema,
 		async execute(
@@ -209,7 +495,14 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const searchPath = resolveContainedPath(searchDir || ".", cwd);
+						let searchPath: string;
+						try {
+							searchPath = resolveContainedPath(searchDir || ".", cwd);
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							settle(() => reject(new Error(`${message}. Retry without path or use a workspace-relative path like ., scripts, src, or packages/*/src instead of /.`)));
+							return;
+						}
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
 						try {
@@ -302,7 +595,7 @@ export function createGrepToolDefinition(
 						};
 
 						// Collect matches during streaming, then format them after rg exits.
-						const matches: Array<{ filePath: string; lineNumber: number }> = [];
+						const matches: Array<{ filePath: string; lineNumber: number; lineText: string }> = [];
 						rl.on("line", (line) => {
 							if (!line.trim() || matchCount >= effectiveLimit) return;
 							let event: any;
@@ -315,7 +608,8 @@ export function createGrepToolDefinition(
 								matchCount++;
 								const filePath = event.data?.path?.text;
 								const lineNumber = event.data?.line_number;
-								if (filePath && typeof lineNumber === "number") matches.push({ filePath, lineNumber });
+								const lineText = String(event.data?.lines?.text ?? "");
+								if (filePath && typeof lineNumber === "number") matches.push({ filePath, lineNumber, lineText });
 								if (matchCount >= effectiveLimit) {
 									matchLimitReached = true;
 									stopChild(true);
@@ -339,8 +633,40 @@ export function createGrepToolDefinition(
 								return;
 							}
 							if (matchCount === 0) {
-								settle(() => resolve({ content: [{ type: "text", text: "(no matches)" }], details: undefined }));
+								const noMatchText = `(no matches)\n${formatNoMatchNotice({ literal, pattern })}`;
+								settle(() => resolve({ content: [{ type: "text", text: noMatchText }], details: undefined }));
 								return;
+							}
+
+							matches.sort((a, b) => {
+								const rankDiff =
+									(grepPathRank(a.filePath, cwd) + grepLineRank(a.lineText, pattern))
+									- (grepPathRank(b.filePath, cwd) + grepLineRank(b.lineText, pattern));
+								if (rankDiff !== 0) return rankDiff;
+								const pathA = toToolPath(a.filePath, cwd);
+								const pathB = toToolPath(b.filePath, cwd);
+								if (pathA !== pathB) return pathA.localeCompare(pathB);
+								return a.lineNumber - b.lineNumber;
+							});
+
+							const semanticRecovery = buildSemanticRecovery(matches, cwd, pattern);
+							if (semanticRecovery?.preferredMatchPath) {
+								matches.sort((a, b) => {
+									const aPreferred =
+										toToolPath(a.filePath, cwd) === semanticRecovery.preferredMatchPath
+										&& (
+											typeof semanticRecovery.preferredMatchLine !== "number"
+											|| a.lineNumber === semanticRecovery.preferredMatchLine
+										);
+									const bPreferred =
+										toToolPath(b.filePath, cwd) === semanticRecovery.preferredMatchPath
+										&& (
+											typeof semanticRecovery.preferredMatchLine !== "number"
+											|| b.lineNumber === semanticRecovery.preferredMatchLine
+										);
+									if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
+									return 0;
+								});
 							}
 
 							// Format matches after streaming finishes so custom readFile() backends can be async.
@@ -348,12 +674,27 @@ export function createGrepToolDefinition(
 								const block = await formatBlock(match.filePath, match.lineNumber);
 								outputLines.push(...block);
 							}
-
 							const rawOutput = outputLines.join("\n");
 							// Apply byte truncation. There is no line limit here because the match limit already capped rows.
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let output = truncation.content;
 							const details: GrepToolDetails = {};
+							const uniqueFiles = new Set(matches.map((match) => toToolPath(match.filePath, cwd)));
+							details.matchCount = matchCount;
+							details.uniqueFileCount = uniqueFiles.size;
+							if (matches[0]) {
+								details.firstMatchPath = toToolPath(matches[0].filePath, cwd);
+								details.firstMatchLine = matches[0].lineNumber;
+							}
+							if (semanticRecovery?.preferredMatchPath) {
+								details.firstMatchPath = semanticRecovery.preferredMatchPath;
+								if (typeof semanticRecovery.preferredMatchLine === "number") {
+									details.firstMatchLine = semanticRecovery.preferredMatchLine;
+								}
+							}
+							if (semanticRecovery?.recoveryPattern) details.recoveryPattern = semanticRecovery.recoveryPattern;
+							if (semanticRecovery?.recoveryPath) details.recoveryPath = semanticRecovery.recoveryPath;
+							if (semanticRecovery?.recoveryRequired) details.recoveryRequired = true;
 							if (matchLimitReached) {
 								details.matchLimitReached = effectiveLimit;
 							}
@@ -375,6 +716,7 @@ export function createGrepToolDefinition(
 								byteTruncated: truncation.truncated,
 							});
 							if (followupNotice) output += `\n\n${followupNotice}`;
+							if (semanticRecovery?.notice) output += `\n\n${semanticRecovery.notice}`;
 							settle(() =>
 								resolve({
 									content: [{ type: "text", text: output }],

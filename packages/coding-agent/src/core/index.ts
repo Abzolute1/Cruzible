@@ -28,6 +28,14 @@ export {
 export { type BashExecutorOptions, type BashResult, executeBash, executeBashWithOperations } from "./bash-executor.js";
 export type { CompactionResult } from "./compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.js";
+export {
+	type EvidencePlanAction,
+	type EvidencePlanState,
+	type EvidencePlanStep,
+	buildEvidencePlan,
+	formatEvidencePlanStep,
+	nextEvidencePlanStep,
+} from "./evidence-planner.js";
 // Extensions system
 export {
 	type AgentEndEvent,
@@ -72,3 +80,62 @@ export {
 	type TurnStartEvent,
 } from "./extensions/index.js";
 export { createSyntheticSourceInfo } from "./source-info.js";
+export {
+	type PatchIntent,
+	type PatchReplacement,
+	normalizePatchIntent,
+} from "./patch-intent.js";
+export {
+	type RunDiagnosticInput,
+	type RunDiagnostics,
+	buildRunDiagnostics,
+} from "./run-diagnostics.js";
+export {
+	type RepairControllerOptions,
+	type RepairSnapshot,
+	type RepairVerifierDecision,
+	RepairController,
+} from "./repair-controller.js";
+export {
+	type StopControllerOptions,
+	type StopControllerSnapshot,
+	type StopDecision,
+	type StopDecisionInput,
+	StopController,
+	decideStop,
+} from "./stop-controller.js";
+export {
+	type VerificationFailureClassification,
+	type VerificationFailureClassificationOptions,
+	type VerificationFailureKind,
+	type VerificationSelectionOptions,
+	classifyVerificationFailure,
+	commandMatchesVerifier,
+	selectVerificationCommand,
+} from "./verification-controller.js";
+export {
+	type ControlledRuntimeMode,
+	type ControlledTaskIntent,
+	type TaskPolicy,
+	classifyControlledTaskIntent,
+	formatTaskPolicy,
+	inferTaskPolicy,
+} from "./task-policy.js";
+export {
+	type ControlledToolDecision,
+	type ControlledToolObservation,
+	type ToolOrchestratorOptions,
+	ToolOrchestrator,
+	parseEmbeddedTaskPolicy,
+} from "./tool-orchestrator.js";
+export {
+	type BuildWorkspaceIndexOptions,
+	type WorkspaceImportEdge,
+	type WorkspaceIndex,
+	type WorkspaceIndexFile,
+	type WorkspaceManifest,
+	type WorkspaceManifestOptions,
+	buildWorkspaceIndex,
+	buildWorkspaceManifest,
+	formatWorkspaceManifest,
+} from "./workspace-index.js";

@@ -1,4 +1,4 @@
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
+import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@ag1/tui";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.js";
 import { allToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
@@ -477,11 +477,22 @@ export class ToolExecutionComponent extends Container {
 
 	private formatCompactWebFetchResult(): string | undefined {
 		const details = this.result?.details as
-			| { title?: string; facts?: string[]; preview?: string; truncated?: boolean; cacheHit?: boolean }
+			| {
+					title?: string;
+					facts?: string[];
+					preview?: string;
+					truncated?: boolean;
+					cacheHit?: boolean;
+					status?: string;
+					statusReason?: string;
+					coverage?: { kind?: string; present?: string[]; missing?: string[] };
+			  }
 			| undefined;
 		if (!details) return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
 		const lines: string[] = [];
 		if (details.title) lines.push(details.title);
+		const statusLine = this.formatWebFetchStatusLine(details);
+		if (statusLine) lines.push(statusLine);
 		if (details.facts?.length) {
 			lines.push(...details.facts.slice(0, this.expanded ? 4 : 2));
 		}
@@ -497,23 +508,68 @@ export class ToolExecutionComponent extends Container {
 
 	private formatCompactWebSearchResult(): string | undefined {
 		const details = this.result?.details as
-			| { resultCount?: number; results?: Array<{ title?: string; url?: string }> }
+			| {
+					resultCount?: number;
+					searchProvider?: string;
+					searchProviderMode?: string;
+					fallbackUsed?: boolean;
+					results?: Array<{ title?: string; url?: string; sourceKind?: string; authoritative?: boolean; fetchRisk?: string }>;
+			  }
 			| undefined;
 		if (!details) return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
 		const results = details.results ?? [];
 		const shown = results.slice(0, this.expanded ? 5 : 2);
 		const lines: string[] = [];
 		if (typeof details.resultCount === "number") {
-			lines.push(`${details.resultCount} result${details.resultCount === 1 ? "" : "s"} found`);
+			const provider = details.searchProvider ? ` · ${details.searchProvider}` : "";
+			const fallback = details.fallbackUsed ? " · fallback" : "";
+			lines.push(`${details.resultCount} result${details.resultCount === 1 ? "" : "s"} found${provider}${fallback}`);
 		}
 		for (const entry of shown) {
 			const title = entry.title ?? entry.url ?? "Untitled result";
-			lines.push(`- ${title}`);
+			const labels = [
+				entry.sourceKind,
+				entry.authoritative ? "authoritative" : undefined,
+				entry.fetchRisk && entry.fetchRisk !== "low" ? `${entry.fetchRisk} fetch risk` : undefined,
+			].filter((value): value is string => typeof value === "string" && value.length > 0);
+			lines.push(`- ${title}${labels.length ? ` [${labels.join(", ")}]` : ""}`);
 		}
 		if (!this.expanded && results.length > shown.length) {
 			lines.push(`+${results.length - shown.length} more results`);
 		}
 		return lines.join("\n");
+	}
+
+	private formatWebFetchStatusLine(details: {
+		status?: string;
+		statusReason?: string;
+		coverage?: { kind?: string; present?: string[]; missing?: string[] };
+	}): string | undefined {
+		const parts: string[] = [];
+		if (details.status === "placeholder") {
+			parts.push("placeholder/interstitial");
+		} else if (details.status === "thin") {
+			parts.push("thin extract");
+		} else if (details.status === "rich") {
+			parts.push("rich source");
+		}
+		const coverage = details.coverage;
+		if (coverage) {
+			const present = Array.isArray(coverage.present) ? coverage.present.length : 0;
+			const missing = Array.isArray(coverage.missing) ? coverage.missing.length : 0;
+			if (present > 0 || missing > 0) {
+				const total = present + missing;
+				const kind = coverage.kind ? `${coverage.kind} ` : "";
+				parts.push(`${kind}coverage ${present}/${total}`);
+			}
+			if (this.expanded && Array.isArray(coverage.missing) && coverage.missing.length > 0) {
+				parts.push(`missing ${coverage.missing.join(", ")}`);
+			}
+		}
+		if (this.expanded && details.statusReason) {
+			parts.push(details.statusReason);
+		}
+		return parts.length > 0 ? parts.join(" · ") : undefined;
 	}
 
 	private formatCompactBashResult(): string | undefined {
@@ -546,21 +602,57 @@ export class ToolExecutionComponent extends Container {
 	private summarizeWebFetchResult(): string | undefined {
 		const url = this.getStringArg("url") ?? "page";
 		if (!this.result) return `Fetching ${url}`;
-		const details = this.result.details as { title?: string } | undefined;
+		const details = this.result.details as {
+			title?: string;
+			status?: string;
+			coverage?: { kind?: string; present?: string[]; missing?: string[] };
+		} | undefined;
+		const suffix = details ? this.formatWebFetchSummarySuffix(details) : "";
 		if (details?.title) {
-			return `Fetched ${details.title}`;
+			return `Fetched ${details.title}${suffix}`;
 		}
-		return `Fetched ${url}`;
+		return `Fetched ${url}${suffix}`;
 	}
 
 	private summarizeWebSearchResult(): string | undefined {
 		const query = this.getStringArg("query") ?? "search";
 		if (!this.result) return `Searching ${query}`;
-		const details = this.result.details as { resultCount?: number } | undefined;
+		const details = this.result.details as {
+			resultCount?: number;
+			searchProvider?: string;
+			fallbackUsed?: boolean;
+			results?: Array<{ sourceKind?: string }>;
+		} | undefined;
 		if (typeof details?.resultCount === "number") {
-			return `Search returned ${details.resultCount} result${details.resultCount === 1 ? "" : "s"}`;
+			const sourceKind = details.results?.[0]?.sourceKind ? ` · top ${details.results[0].sourceKind}` : "";
+			const provider = details.searchProvider ? ` · ${details.searchProvider}` : "";
+			const fallback = details.fallbackUsed ? " · fallback" : "";
+			return `Search returned ${details.resultCount} result${details.resultCount === 1 ? "" : "s"}${provider}${fallback}${sourceKind}`;
 		}
 		return `Search completed`;
+	}
+
+	private formatWebFetchSummarySuffix(details: {
+		status?: string;
+		coverage?: { kind?: string; present?: string[]; missing?: string[] };
+	}): string {
+		const parts: string[] = [];
+		if (details.status === "placeholder") {
+			parts.push("placeholder");
+		} else if (details.status === "thin") {
+			parts.push("thin");
+		} else if (details.status === "rich") {
+			parts.push("rich");
+		}
+		const coverage = details.coverage;
+		if (coverage) {
+			const present = Array.isArray(coverage.present) ? coverage.present.length : 0;
+			const missing = Array.isArray(coverage.missing) ? coverage.missing.length : 0;
+			if (present > 0 || missing > 0) {
+				parts.push(`coverage ${present}/${present + missing}`);
+			}
+		}
+		return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
 	}
 
 	private summarizeBashResult(): string | undefined {

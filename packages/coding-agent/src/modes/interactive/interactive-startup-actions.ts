@@ -1,5 +1,5 @@
-import type { ImageContent } from "@mariozechner/pi-ai";
-import { Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import type { ImageContent } from "@ag1/ai";
+import { Markdown, Spacer, Text } from "@ag1/tui";
 import { VERSION } from "../../config.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { DynamicBorder } from "./components/dynamic-border.js";

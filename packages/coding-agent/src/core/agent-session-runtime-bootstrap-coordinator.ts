@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@ag1/agent-core";
 import type { ModelRegistry } from "./model-registry.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type { SessionManager } from "./session-manager.js";
@@ -7,7 +7,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import type { ExtensionRunner, ToolDefinition } from "./extensions/index.js";
 import { ExtensionRunner as ExtensionRunnerImpl } from "./extensions/index.js";
-import { resetApiProviders, type Model } from "@mariozechner/pi-ai";
+import { resetApiProviders, type Model } from "@ag1/ai";
 
 export interface AgentSessionRuntimeBootstrapCoordinatorOptions {
 	getCwd: () => string;
@@ -100,7 +100,7 @@ export class AgentSessionRuntimeBootstrapCoordinator {
 
 		const defaultActiveToolNames = baseToolsOverride
 			? Object.keys(baseToolsOverride)
-			: ["read", "bash", "edit", "write", "webSearch", "webFetch"];
+			: ["read", "grep", "find", "ls", "bash", "edit", "write", "webSearch", "webFetch"];
 		const activeToolNames = buildOptions.activeToolNames ?? defaultActiveToolNames;
 		this.options.refreshToolRegistry({
 			activeToolNames,

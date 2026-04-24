@@ -1,4 +1,4 @@
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@ag1/ai";
 import { describe, expect, it } from "vitest";
 import { serializeConversation } from "../src/core/compaction/utils.js";
 
@@ -75,5 +75,36 @@ describe("serializeConversation", () => {
 
 		expect(result).not.toContain("truncated");
 		expect(result).toContain(longText);
+	});
+
+	it("omits assistant thinking blocks from serialized summarization input", () => {
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "private reasoning that should not be serialized" },
+					{ type: "text", text: "Visible answer" },
+				],
+				api: "anthropic",
+				provider: "anthropic",
+				model: "test",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			},
+		];
+
+		const result = serializeConversation(messages);
+
+		expect(result).toContain("[Assistant]: Visible answer");
+		expect(result).not.toContain("Assistant thinking");
+		expect(result).not.toContain("private reasoning");
 	});
 });

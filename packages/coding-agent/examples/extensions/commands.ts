@@ -1,19 +1,19 @@
 /**
  * Commands Extension
  *
- * Demonstrates the pi.getCommands() API by providing a /commands command
+ * Demonstrates the ag1.getCommands() API by providing a /commands command
  * that lists all available slash commands in the current session.
  *
  * Usage:
- * 1. Copy this file to ~/.pi/agent/extensions/ or your project's .pi/extensions/
+ * 1. Copy this file to ~/.ag1/agent/extensions/ or your project's .ag1/extensions/
  * 2. Use /commands to see available commands
  * 3. Use /commands extensions to filter by source
  */
 
-import type { ExtensionAPI, SlashCommandInfo } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, SlashCommandInfo } from "@ag1/coding-agent";
 
-export default function commandsExtension(pi: ExtensionAPI) {
-	pi.registerCommand("commands", {
+export default function commandsExtension(ag1: ExtensionAPI) {
+	ag1.registerCommand("commands", {
 		description: "List available slash commands",
 		getArgumentCompletions: (prefix) => {
 			const sources = ["extension", "prompt", "skill"];
@@ -21,7 +21,7 @@ export default function commandsExtension(pi: ExtensionAPI) {
 			return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
 		},
 		handler: async (args, ctx) => {
-			const commands = pi.getCommands();
+			const commands = ag1.getCommands();
 			const sourceFilter = args.trim() as "extension" | "prompt" | "skill" | "";
 
 			// Filter by source if specified

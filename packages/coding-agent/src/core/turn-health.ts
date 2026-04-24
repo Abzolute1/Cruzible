@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@ag1/ai";
 import { classifyRequestFailure } from "./request-failure.js";
 
 export type TurnDegradationSeverity = "normal" | "elevated" | "critical";

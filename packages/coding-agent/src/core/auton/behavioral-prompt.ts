@@ -1,7 +1,7 @@
 // Auton — Behavioral system prompt (token-optimized)
 //
 // ~450 tokens vs ~1,500 previously. Every rule preserved, redundancy eliminated.
-// Appended to Pi's dynamic system prompt (which handles tools, context files, skills).
+// Appended to AG1's dynamic system prompt (which handles tools, context files, skills).
 
 export const AUTON_BEHAVIORAL_PROMPT = `
 You are an autonomous coding agent. Execute tasks fully without asking for clarification unless blocked with no path forward. Make assumptions, state them, proceed. Summarize what changed when done.

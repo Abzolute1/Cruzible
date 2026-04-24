@@ -7,6 +7,12 @@ export interface AutonomousExecutionConfig extends AutonomousRunConfig {
 	startInAutonomousMode?: boolean;
 }
 
+function looksLikeExpansionFollowUpPrompt(text: string): boolean {
+	return /\b(broaden|broader|whole picture|full picture|bigger picture|more detail|more details|more information|go deeper|dig deeper|expand|elaborate|full context|fuller context|in depth|comprehensive|unpack)\b/i.test(
+		text,
+	);
+}
+
 export function resolveInteractiveAutonomousRunConfig(
 	autonomousConfig: AutonomousExecutionConfig,
 	profile: RuntimeStabilizationProfile,
@@ -34,19 +40,24 @@ export function buildAutonomousStabilizedUserMessage(
 	profile: RuntimeStabilizationProfile,
 ): string {
 	if (profile.level === "none") return userMessage;
+	const expansionFollowUpPrompt = looksLikeExpansionFollowUpPrompt(userMessage);
 
 	const lines = [
 		userMessage.trim(),
 		"",
 		"Autonomous stabilization for this run:",
-		"- keep responses terse and tool-driven",
+		expansionFollowUpPrompt ? "- keep the answer focused and evidence-backed" : "- keep responses terse and tool-driven",
 		"- do not repeat prior analysis",
-		"- execute only the next smallest concrete step before reassessing",
+		expansionFollowUpPrompt
+			? "- expand from the strongest evidence already in hand before deciding whether one targeted follow-up is needed"
+			: "- execute only the next smallest concrete step before reassessing",
 	];
-	if (profile.recommendedMaxOutputPerTurn) {
+	if (profile.recommendedMaxOutputPerTurn && !expansionFollowUpPrompt) {
 		lines.push(
 			`- keep the next response under ${profile.recommendedMaxOutputPerTurn.toLocaleString()} output tokens unless a final verified summary is required`,
 		);
+	} else if (expansionFollowUpPrompt) {
+		lines.push("- the user asked for more depth, so do not collapse the answer into a one-line summary");
 	}
 	if (profile.reasons.length > 0) {
 		lines.push(`- stabilization reason: ${profile.reasons.join(" | ")}`);
@@ -59,19 +70,24 @@ export function buildInteractiveStabilizedUserMessage(
 	profile: RuntimeStabilizationProfile,
 ): string {
 	if (profile.level === "none") return userMessage;
+	const expansionFollowUpPrompt = looksLikeExpansionFollowUpPrompt(userMessage);
 
 	const lines = [
 		userMessage.trim(),
 		"",
 		"Runtime stabilization for this turn:",
-		"- keep the reply terse and tool-driven",
+		expansionFollowUpPrompt ? "- keep the reply focused and evidence-backed" : "- keep the reply terse and tool-driven",
 		"- do not emit XML fallback or raw tool markup",
-		"- finish the next smallest concrete step, then stop",
+		expansionFollowUpPrompt
+			? "- expand the answer from the strongest evidence already in hand before deciding whether one targeted follow-up is needed"
+			: "- finish the next smallest concrete step, then stop",
 	];
-	if (profile.recommendedMaxOutputPerTurn) {
+	if (profile.recommendedMaxOutputPerTurn && !expansionFollowUpPrompt) {
 		lines.push(
 			`- keep the next response under ${profile.recommendedMaxOutputPerTurn.toLocaleString()} output tokens unless a final answer is required`,
 		);
+	} else if (expansionFollowUpPrompt) {
+		lines.push("- the user explicitly asked for more detail, so do not compress the reply into a headline-length answer");
 	}
 	if (profile.reasons.length > 0) {
 		lines.push(`- stabilization reason: ${profile.reasons.join(" | ")}`);

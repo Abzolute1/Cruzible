@@ -1,5 +1,6 @@
-import { type Component, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@ag1/tui";
 import type { AgentSession } from "../../../core/agent-session.js";
+import { estimateContextTokens } from "../../../core/compaction/index.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
 import { theme } from "../theme/theme.js";
 import { formatTokens } from "./model-metrics.js";
@@ -130,6 +131,7 @@ export class FooterComponent implements Component {
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 		const liveContextTokens = contextUsage?.tokens ?? null;
+		const rawContextTokens = estimateContextTokens(this.session.messages).tokens;
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent =
 			contextUsage?.percent !== null
@@ -152,7 +154,14 @@ export class FooterComponent implements Component {
 			leftParts.push(buildFooterBadge(`context ${contextPercentDisplay}`, { tone: "accent", bold: true }));
 		}
 		if (typeof liveContextTokens === "number" && liveContextTokens > 0) {
-			leftParts.push(buildFooterBadge(`live ${formatTokens(liveContextTokens)}`, { tone: "text", bold: true }));
+			leftParts.push(buildFooterBadge(`live ctx ${formatTokens(liveContextTokens)}`, { tone: "text", bold: true }));
+		}
+		if (
+			typeof liveContextTokens === "number" &&
+			liveContextTokens > 0 &&
+			rawContextTokens > liveContextTokens + Math.max(512, Math.round(liveContextTokens * 0.08))
+		) {
+			leftParts.push(buildFooterBadge(`raw ctx ${formatTokens(rawContextTokens)}`, { tone: "muted", bold: true }));
 		}
 		leftParts.push(buildFooterBadge(`Σ${INPUT_ARROW} ${formatTokens(totalInput)}`, { tone: "text", bold: true }));
 		leftParts.push(buildFooterBadge(`Σ${OUTPUT_ARROW} ${formatTokens(totalOutput)}`, { tone: "text", bold: true }));

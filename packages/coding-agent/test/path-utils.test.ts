@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,16 +44,7 @@ describe("path-utils", () => {
 		});
 
 		afterEach(() => {
-			// Clean up temp files and directory
-			try {
-				const files = readdirSync(tempDir);
-				for (const file of files) {
-					unlinkSync(join(tempDir, file));
-				}
-				rmdirSync(tempDir);
-			} catch {
-				// Ignore cleanup errors
-			}
+			rmSync(tempDir, { recursive: true, force: true });
 		});
 
 		it("should resolve existing file path", () => {
@@ -142,6 +133,24 @@ describe("path-utils", () => {
 
 			// This works because tryMacOSScreenshotPath() handles this case
 			expect(result).toBe(join(tempDir, macosName));
+		});
+
+		it("repairs a missing leading slash when the path already points at the workspace", () => {
+			mkdirSync(join(tempDir, "nested"));
+			writeFileSync(join(tempDir, "nested", "child.txt"), "child");
+			const malformedAbsolute = `${tempDir.replace(/^\//, "")}/nested/child.txt`;
+
+			const result = resolveReadPath(malformedAbsolute, tempDir);
+			expect(result).toBe(join(tempDir, "nested", "child.txt"));
+		});
+
+		it("repairs a missing leading slash in the shared contained-path resolver", () => {
+			mkdirSync(join(tempDir, "nested"));
+			writeFileSync(join(tempDir, "nested", "child.txt"), "child");
+			const malformedAbsolute = `${tempDir.replace(/^\//, "")}/nested`;
+
+			const result = resolveContainedPath(malformedAbsolute, tempDir);
+			expect(result).toBe(join(tempDir, "nested"));
 		});
 
 		it("blocks paths that traverse symlinked components outside the workspace", () => {

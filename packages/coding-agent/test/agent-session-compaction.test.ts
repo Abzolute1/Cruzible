@@ -10,8 +10,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@mariozechner/pi-agent-core";
-import { getModel } from "@mariozechner/pi-ai";
+import { Agent } from "@ag1/agent-core";
+import { getModel } from "@ag1/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -29,7 +29,7 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 
 	beforeEach(() => {
 		// Create temp directory for session files
-		tempDir = join(tmpdir(), `pi-compaction-test-${Date.now()}`);
+		tempDir = join(tmpdir(), `ag1-compaction-test-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		// Track events

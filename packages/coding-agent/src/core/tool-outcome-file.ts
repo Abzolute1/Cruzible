@@ -1,3 +1,5 @@
+import path from "node:path";
+
 function normalizeTrackedToolName(toolName: string): string {
 	return toolName.trim().toLowerCase();
 }
@@ -41,6 +43,13 @@ function extractFirstMatchFromFind(text: string): string | undefined {
 	return undefined;
 }
 
+function isNoMatchText(text: string): boolean {
+	return text
+		.split("\n")
+		.map((line) => line.trim())
+		.some((line) => line === "(no matches)" || line.startsWith("(no matches)"));
+}
+
 function extractReadLikePath(text: string): string | undefined {
 	const pathMatch = text.match(/(?:Read|Edited|Wrote) file[:\s]+([^\s\n]+)/i);
 	if (pathMatch?.[1]) return pathMatch[1];
@@ -49,21 +58,67 @@ function extractReadLikePath(text: string): string | undefined {
 	return readMatch?.[1];
 }
 
+function extractResultDetails(result: unknown): Record<string, unknown> | undefined {
+	if (!result || typeof result !== "object" || !("details" in result)) return undefined;
+	const details = (result as { details?: unknown }).details;
+	return details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
+}
+
+function canonicalizeTrackedPath(filePath: string | undefined, cwd?: string): string | undefined {
+	if (!filePath || !cwd) return filePath;
+	const normalizedFile = filePath.replace(/\\/g, "/");
+	const normalizedCwd = cwd.replace(/\\/g, "/").replace(/\/$/, "");
+	if (!normalizedCwd) return normalizedFile;
+
+	if (normalizedFile === normalizedCwd) return ".";
+	if (normalizedFile.startsWith(`${normalizedCwd}/`)) {
+		return normalizedFile.slice(normalizedCwd.length + 1);
+	}
+
+	const cwdSansLeadingSlash = normalizedCwd.replace(/^\//, "");
+	if (normalizedFile === cwdSansLeadingSlash) return ".";
+	if (normalizedFile.startsWith(`${cwdSansLeadingSlash}/`)) {
+		return normalizedFile.slice(cwdSansLeadingSlash.length + 1);
+	}
+
+	if (path.isAbsolute(normalizedFile)) {
+		const relative = path.posix.relative(normalizedCwd, normalizedFile);
+		if (relative && !relative.startsWith("..")) return relative;
+	}
+
+	return normalizedFile;
+}
+
 export function extractTrackedFileFromToolResult(
 	toolName: string,
 	args: Record<string, unknown> | undefined,
 	result: unknown,
+	cwd?: string,
 ): string | undefined {
 	const normalized = normalizeTrackedToolName(toolName);
-	const requestedPath = extractRequestedPath(args);
+	const requestedPath = canonicalizeTrackedPath(extractRequestedPath(args), cwd);
 	const textContent = extractText(result);
+	const details = extractResultDetails(result);
 
 	if (normalized === "grep") {
-		return extractFirstMatchFromGrep(textContent) ?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
+		if (isNoMatchText(textContent)) return undefined;
+		if (typeof details?.firstMatchPath === "string" && details.firstMatchPath.length > 0) {
+			return canonicalizeTrackedPath(details.firstMatchPath, cwd);
+		}
+		return canonicalizeTrackedPath(extractFirstMatchFromGrep(textContent), cwd)
+			?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
 	}
 
 	if (normalized === "find" || normalized === "glob") {
-		return extractFirstMatchFromFind(textContent) ?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
+		if (isNoMatchText(textContent)) return undefined;
+		if (typeof details?.firstMatchPath === "string" && details.firstMatchPath.length > 0) {
+			return canonicalizeTrackedPath(details.firstMatchPath, cwd);
+		}
+		if (typeof details?.dominantFileDirectory === "string" && details.dominantFileDirectory.length > 0) {
+			return canonicalizeTrackedPath(details.dominantFileDirectory, cwd);
+		}
+		return canonicalizeTrackedPath(extractFirstMatchFromFind(textContent), cwd)
+			?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
 	}
 
 	if (normalized === "ls") {
@@ -77,7 +132,7 @@ export function extractTrackedFileFromToolResult(
 		normalized === "write" ||
 		normalized === "str_replace_editor"
 	) {
-		return requestedPath ?? extractReadLikePath(textContent);
+		return requestedPath ?? canonicalizeTrackedPath(extractReadLikePath(textContent), cwd);
 	}
 
 	return requestedPath;

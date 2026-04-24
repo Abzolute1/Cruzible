@@ -1,5 +1,5 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { visibleWidth } from "@ag1/tui";
+import type { AgentMessage } from "@ag1/agent-core";
 import type { ActivatedAutonomousWorkspace, PreparedAutonomousWorkspace } from "../../core/auton/workspace.js";
 import type { RuntimeStabilizationProfile } from "../../core/runtime-health.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";

@@ -1,6 +1,6 @@
 import "@mariozechner/mini-lit/dist/ThemeToggle.js";
-import { Agent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { getModel } from "@mariozechner/pi-ai";
+import { Agent, type AgentMessage } from "@ag1/agent-core";
+import { getModel } from "@ag1/ai";
 import {
 	type AgentState,
 	ApiKeyPromptDialog,
@@ -18,7 +18,7 @@ import {
 	SettingsDialog,
 	SettingsStore,
 	setAppStorage,
-} from "@mariozechner/pi-web-ui";
+} from "@ag1/web-ui";
 import { html, render } from "lit";
 import { Bell, History, Plus, Settings } from "lucide";
 import "./app.css";
@@ -47,7 +47,7 @@ const configs = [
 
 // Create backend
 const backend = new IndexedDBStorageBackend({
-	dbName: "pi-web-ui-example",
+	dbName: "ag1-web-ui-example",
 	version: 2, // Incremented for custom-providers store
 	stores: configs,
 });
@@ -335,7 +335,7 @@ const renderApp = () => {
 								>
 									${currentTitle}
 								</button>`
-							: html`<span class="text-base font-semibold text-foreground">Pi Web UI Example</span>`
+							: html`<span class="text-base font-semibold text-foreground">AG1 Web UI Example</span>`
 					}
 				</div>
 				<div class="flex items-center gap-1 px-2">

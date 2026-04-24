@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@ag1/agent-core";
+import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@ag1/ai";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
@@ -98,8 +98,8 @@ describe("AgentSession retry and event characterization", () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", async (event) => {
+				(ag1) => {
+					ag1.on("message_end", async (event) => {
 						if (event.message.role === "assistant") {
 							await new Promise((resolve) => setTimeout(resolve, 40));
 						}
@@ -202,11 +202,11 @@ describe("AgentSession retry and event characterization", () => {
 		const order: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_start", async (event) => {
+				(ag1) => {
+					ag1.on("message_start", async (event) => {
 						order.push(`extension:${event.type}:${event.message.role}`);
 					});
-					pi.on("message_end", async (event) => {
+					ag1.on("message_end", async (event) => {
 						order.push(`extension:${event.type}:${event.message.role}`);
 					});
 				},

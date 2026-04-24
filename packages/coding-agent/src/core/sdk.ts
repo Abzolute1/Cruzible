@@ -1,9 +1,10 @@
 import { join } from "node:path";
-import { Agent, type AgentMessage, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { type Message, type Model, streamSimple } from "@mariozechner/pi-ai";
+import { Agent, type AgentMessage, type ThinkingLevel } from "@ag1/agent-core";
+import { type Message, type Model, streamSimple } from "@ag1/ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
+import { createContextHygieneCopy, createLiveProviderContext } from "./compaction/micro-compact.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { convertToLlm } from "./messages.js";
@@ -12,6 +13,7 @@ import { findInitialModel } from "./model-resolver.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
 import type { ToolSafetyPolicy } from "./safety-policy.js";
+import type { TaskPolicy } from "./task-policy.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
@@ -43,7 +45,7 @@ import {
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.pi/agent */
+	/** Global config directory. Default: ~/.ag1/agent */
 	agentDir?: string;
 
 	/** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
@@ -75,6 +77,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional tool safety policy for the created session. */
 	toolSafety?: ToolSafetyPolicy;
+	/** Optional controlled-runtime tool policy for the created session. */
+	toolPolicy?: TaskPolicy;
 }
 
 /** Result from createAgentSession */
@@ -143,7 +147,7 @@ function getDefaultAgentDir(): string {
  * const { session } = await createAgentSession();
  *
  * // With explicit model
- * import { getModel } from '@mariozechner/pi-ai';
+ * import { getModel } from '@ag1/ai';
  * const { session } = await createAgentSession({
  *   model: getModel('anthropic', 'claude-opus-4-5'),
  *   thinkingLevel: 'high',
@@ -248,7 +252,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = "off";
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write", "webSearch", "webFetch"];
+	const defaultActiveToolNames: ToolName[] = ["read", "grep", "find", "ls", "bash", "edit", "write", "webSearch", "webFetch"];
 	const initialActiveToolNames: ToolName[] = options.tools
 		? options.tools.map((t) => t.name).filter((n): n is ToolName => n in allTools)
 		: defaultActiveToolNames;
@@ -257,7 +261,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		const contextReadyMessages = createContextHygieneCopy(messages);
+		const liveProviderMessages = createLiveProviderContext(contextReadyMessages);
+		const converted = convertToLlm(liveProviderMessages);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			return converted;
@@ -360,6 +366,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 		toolSafety: options.toolSafety,
+		toolPolicy: options.toolPolicy,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

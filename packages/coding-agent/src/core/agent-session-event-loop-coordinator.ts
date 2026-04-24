@@ -1,5 +1,5 @@
-import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
+import type { AgentEvent, AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, ImageContent, Message, TextContent } from "@ag1/ai";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { analyzeAssistantTurnHealth } from "./turn-health.js";
 

@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@mariozechner/pi-agent-core";
-import { getModel, type AssistantMessage } from "@mariozechner/pi-ai";
+import { Agent } from "@ag1/agent-core";
+import { getModel, type AssistantMessage } from "@ag1/ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -16,7 +16,7 @@ describe("AgentSession dispose recovery cleanup", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-dispose-recovery-${Date.now()}`);
+		tempDir = join(tmpdir(), `ag1-dispose-recovery-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
 

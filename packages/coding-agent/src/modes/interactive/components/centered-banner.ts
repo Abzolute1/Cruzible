@@ -1,4 +1,4 @@
-import { type Component, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@ag1/tui";
 
 function centerLine(line: string, width: number): string {
 	const clipped = truncateToWidth(line, width, "...");

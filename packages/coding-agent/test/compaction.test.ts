@@ -1,6 +1,6 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Usage } from "@mariozechner/pi-ai";
-import { getModel } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, Usage } from "@ag1/ai";
+import { getModel } from "@ag1/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -183,6 +183,39 @@ describe("Token calculation", () => {
 	it("should handle zero values", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
+	});
+
+	it("estimates live context after hygiene removes old thinking and hidden runtime messages", () => {
+		const bulkyThinking = "x".repeat(4000);
+		const hiddenControl = "y".repeat(1000);
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "old prompt", timestamp: Date.now() - 5_000 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: bulkyThinking },
+					{ type: "text", text: "Visible answer" },
+				],
+				usage: createMockUsage(100, 50),
+				stopReason: "stop",
+				timestamp: Date.now() - 4_000,
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
+			{
+				role: "custom",
+				customType: "runtime_continuation_state",
+				content: hiddenControl,
+				display: false,
+				timestamp: Date.now() - 3_000,
+			},
+			{ role: "user", content: "recent prompt", timestamp: Date.now() - 2_000 },
+			createAssistantMessage("recent answer", createMockUsage(200, 100)),
+		];
+
+		const estimate = estimateContextTokens(messages);
+		expect(estimate.tokens).toBeLessThan(1600);
 	});
 });
 

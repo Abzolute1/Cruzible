@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@ag1/agent-core";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, test } from "vitest";
 import { createHarness } from "./test-harness.js";
@@ -149,6 +149,57 @@ describe("AgentSession degraded turn events", () => {
 			expect.objectContaining({
 				toolName: "webFetch",
 				arguments: { url: "https://example.com/claude-code-leak" },
+			}),
+		);
+	});
+
+	test("executes XML fallback calls when the XML leak is inside a thinking block", async () => {
+		let fetchExecuted = false;
+
+		const webFetchTool: AgentTool = {
+			name: "webFetch",
+			label: "Web Fetch",
+			description: "Fetch a URL",
+			parameters: Type.Object({ url: Type.String() }),
+			execute: async (_toolCallId, params) => {
+				fetchExecuted = true;
+				return {
+					content: [{ type: "text", text: `fetched ${(params as { url: string }).url}` }],
+					details: { title: "Fetched page" },
+				};
+			},
+		};
+
+		const harness = createHarness({
+			responses: [
+				{
+					thinking: [
+						"I found the right source. Let me fetch it.",
+						"",
+						"<tool_call>",
+						"<function=webFetch>",
+						"<parameter=url>https://react.dev/reference/react-dom/components/form</parameter>",
+						"</function>",
+						"</tool_call>",
+					].join("\n"),
+				},
+				"done after thinking-block xml fallback",
+			],
+			tools: [webFetchTool],
+			baseToolsOverride: { webFetch: webFetchTool },
+		});
+		cleanups.push(harness.cleanup);
+
+		await harness.session.prompt("look up React docs on actions");
+
+		expect(fetchExecuted).toBe(true);
+		expect(harness.faux.callCount).toBe(2);
+		const xmlEvents = harness.eventsOfType("xml_tool_call");
+		expect(xmlEvents).toHaveLength(1);
+		expect(xmlEvents[0]).toEqual(
+			expect.objectContaining({
+				toolName: "webFetch",
+				arguments: { url: "https://react.dev/reference/react-dom/components/form" },
 			}),
 		);
 	});

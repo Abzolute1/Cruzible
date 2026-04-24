@@ -1,13 +1,26 @@
 // Auton — Main dispatch: parse args, create runtime, launch mode
 //
 // Cleaned up: removed all broken imports (kairos-tool-registry, aikit-provider,
-// lmstudio, spinner, coordinator). We use Pi's built-in tools only. Autonomous
+// lmstudio, spinner, coordinator). We use AG1's built-in tools only. Autonomous
 // mode is implemented as a flag on the interactive prompt handler, not a
 // separate entry point.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import type { Api, ImageContent, Model } from "@mariozechner/pi-ai";
+import type { Api, ImageContent, Model } from "@ag1/ai";
+import type { Args } from "./cli/args.js";
+import { parseArgs } from "./cli/args.js";
+import { processFileArguments } from "./cli/file-processor.js";
+import { buildInitialMessage } from "./cli/initial-message.js";
+import { selectSession } from "./cli/session-picker.js";
+import { APP_NAME, CLI_NAME, VERSION } from "./config.js";
+import { filterHeadlessActiveToolNames } from "./core/headless-tool-filter.js";
+import { matchSavedDefaultModel, pickPreferredAvailableModel } from "./core/model-resolver.js";
+import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
+import { readProviderSecretFileApiKey } from "./core/provider-secret-file.js";
+import type { DefaultResourceLoaderOptions } from "./core/resource-loader.js";
+import { getDefaultSessionDir } from "./core/session-manager.js";
+import { createAllTools, type Tool, type ToolName } from "./core/tools/index.js";
 import {
 	AuthStorage,
 	type CreateAgentSessionRuntimeFactory,
@@ -23,27 +36,18 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "./index.js";
-import { processFileArguments } from "./cli/file-processor.js";
-import { buildInitialMessage } from "./cli/initial-message.js";
-import { selectSession } from "./cli/session-picker.js";
-import { filterHeadlessActiveToolNames } from "./core/headless-tool-filter.js";
-import type { DefaultResourceLoaderOptions } from "./core/resource-loader.js";
-import { createAllTools, type Tool, type ToolName } from "./core/tools/index.js";
-import { matchSavedDefaultModel, pickPreferredAvailableModel } from "./core/model-resolver.js";
-import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
-import { getDefaultSessionDir } from "./core/session-manager.js";
-import { APP_NAME, CLI_NAME, VERSION } from "./config.js";
-import type { Args } from "./cli/args.js";
-import { parseArgs } from "./cli/args.js";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
-import { getNvidiaModels, NVIDIA_BASE_URL } from "./providers/nvidia-provider.js";
 import { runAutonomousMode } from "./modes/autonomous-mode.js";
+import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+import { createNvidiaModelEntry, getNvidiaModels, NVIDIA_BASE_URL } from "./providers/nvidia-provider.js";
 
 type StartupModelsFile = {
 	providers: Record<string, unknown>;
 };
 
-function modelsMatch(a: Pick<Model<Api>, "provider" | "id"> | undefined, b: Pick<Model<Api>, "provider" | "id"> | undefined): boolean {
+function modelsMatch(
+	a: Pick<Model<Api>, "provider" | "id"> | undefined,
+	b: Pick<Model<Api>, "provider" | "id"> | undefined,
+): boolean {
 	return a?.provider === b?.provider && a?.id === b?.id;
 }
 
@@ -202,7 +206,10 @@ async function listModelsCmd(modelRegistry: ModelRegistry, search?: string | tru
 	for (const m of filtered) console.log(`  ${m.id}`);
 }
 
-function resolveRequestedMode(config: Args, stdinIsTTY: boolean): "interactive" | "print" | "json" | "rpc" | "autonomous" {
+function resolveRequestedMode(
+	config: Args,
+	stdinIsTTY: boolean,
+): "interactive" | "print" | "json" | "rpc" | "autonomous" {
 	if (config.autonomous) return "autonomous";
 	if (config.mode === "rpc") return "rpc";
 	if (config.mode === "json") return "json";
@@ -232,7 +239,9 @@ export function validateSessionFlags(
 	config: Args,
 	mode: "interactive" | "print" | "json" | "rpc" | "autonomous",
 ): string | null {
-	const selectors = [config.continue, config.resume, Boolean(config.session), Boolean(config.fork)].filter(Boolean).length;
+	const selectors = [config.continue, config.resume, Boolean(config.session), Boolean(config.fork)].filter(
+		Boolean,
+	).length;
 	if (selectors > 1) {
 		return "Only one of --continue, --resume, --session, or --fork may be used at a time.";
 	}
@@ -246,7 +255,9 @@ export function validateSessionFlags(
 }
 
 export function validateModeFlags(config: Args): string | null {
-	const requestedModes = [config.print, config.mode === "json", config.mode === "rpc", config.autonomous].filter(Boolean).length;
+	const requestedModes = [config.print, config.mode === "json", config.mode === "rpc", config.autonomous].filter(
+		Boolean,
+	).length;
 	if (requestedModes > 1) {
 		return "Only one non-interactive output mode may be selected at a time.";
 	}
@@ -281,7 +292,10 @@ export function resolveSelectedTools(config: Args, cwd: string): Tool[] | undefi
 	return config.tools.map((name) => tools[name]);
 }
 
-export function buildRuntimeCliOptions(config: Args, cwd: string): {
+export function buildRuntimeCliOptions(
+	config: Args,
+	cwd: string,
+): {
 	selectedToolNames?: ToolName[];
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -318,9 +332,16 @@ function loadStartupModelsFile(modelsPath: string): StartupModelsFile {
 	}
 }
 
-function buildNvidiaProviderConfig(): Record<string, unknown> {
-	const nvidiaModels = getNvidiaModels().map((m) => ({
+function buildNvidiaProviderConfig(modelIds: string[] = []): Record<string, unknown> {
+	const entriesById = new Map(getNvidiaModels().map((model) => [model.id, model]));
+	for (const id of modelIds) {
+		if (isNvidiaNemotronModelId(id) && !entriesById.has(id)) {
+			entriesById.set(id, createNvidiaModelEntry(id));
+		}
+	}
+	const nvidiaModels = [...entriesById.values()].map((m) => ({
 		id: m.id,
+		name: m.name,
 		reasoning: m.supportsThinking ?? false,
 		compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
 		cost: m.cost,
@@ -336,18 +357,64 @@ function buildNvidiaProviderConfig(): Record<string, unknown> {
 	};
 }
 
-async function detectLmStudioModels(
-	lmStudioUrl: string,
-	fetchImpl: typeof fetch,
-): Promise<string[]> {
+function isNvidiaNemotronModelId(id: string): boolean {
+	const normalized = id.toLowerCase();
+	return normalized.includes("nemotron") || normalized.startsWith("nvidia/llama-3.1-nemotron");
+}
+
+function getStoredApiKeyReference(agentDir: string, provider: string): string | undefined {
 	try {
-		const response = await fetchImpl(`${lmStudioUrl}/v1/models`, { signal: AbortSignal.timeout(2000) });
+		const authPath = resolve(agentDir, "auth.json");
+		const parsed = JSON.parse(readFileSync(authPath, "utf-8")) as Record<
+			string,
+			{ type?: string; key?: string } | undefined
+		>;
+		const credential = parsed[provider];
+		if (credential?.type === "api_key" && typeof credential.key === "string" && credential.key.trim()) {
+			return credential.key;
+		}
+	} catch {
+		// Missing or malformed auth storage should not block other provider discovery.
+	}
+	return undefined;
+}
+
+function resolveStartupApiKeyReference(value: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+	if (!value) return undefined;
+	if (value.startsWith("!")) return undefined;
+	return env[value] ?? value;
+}
+
+async function detectNvidiaModels(apiKey: string, fetchImpl: typeof fetch): Promise<string[]> {
+	try {
+		const response = await fetchImpl(`${NVIDIA_BASE_URL}/models`, {
+			headers: { Authorization: `Bearer ${apiKey}` },
+			signal: AbortSignal.timeout(5000),
+		});
 		if (!response.ok) return [];
 		const payload = (await response.json()) as { data?: Array<{ id?: string }> };
-		return (payload.data ?? []).flatMap((entry) => (typeof entry?.id === "string" ? [entry.id] : []));
+		const ids = (payload.data ?? []).flatMap((entry) => (typeof entry?.id === "string" ? [entry.id] : []));
+		return [...new Set(ids.filter(isNvidiaNemotronModelId))].sort();
 	} catch {
 		return [];
 	}
+}
+
+async function detectLmStudioModels(lmStudioUrl: string, fetchImpl: typeof fetch): Promise<string[]> {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			const response = await fetchImpl(`${lmStudioUrl}/v1/models`, { signal: AbortSignal.timeout(5000) });
+			if (!response.ok) continue;
+			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
+			const ids = (payload.data ?? []).flatMap((entry) => (typeof entry?.id === "string" ? [entry.id] : []));
+			if (ids.length > 0) {
+				return ids;
+			}
+		} catch {
+			// Retry once before treating LM Studio discovery as unavailable.
+		}
+	}
+	return [];
 }
 
 function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Record<string, unknown> {
@@ -367,6 +434,7 @@ function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Reco
 
 export async function prepareStartupModelsFile(options: {
 	agentDir: string;
+	fallbackAgentDir?: string;
 	startupLog?: (message: string) => void;
 	startupWarn?: (message: string) => void;
 	env?: NodeJS.ProcessEnv;
@@ -378,21 +446,35 @@ export async function prepareStartupModelsFile(options: {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const userModelsPath = resolve(options.agentDir, "models.json");
 	const runtimeModelsPath = resolve(options.agentDir, "models.runtime.json");
+	const fallbackAgentDir = resolve(options.fallbackAgentDir ?? getAgentDir());
+	const fallbackRuntimeModelsData =
+		fallbackAgentDir !== resolve(options.agentDir)
+			? loadStartupModelsFile(resolve(fallbackAgentDir, "models.runtime.json"))
+			: undefined;
 
 	if (!existsSync(options.agentDir)) mkdirSync(options.agentDir, { recursive: true });
 
 	const userModelsData = loadStartupModelsFile(userModelsPath);
+	const previousRuntimeModelsData = loadStartupModelsFile(runtimeModelsPath);
 	const modelsData: StartupModelsFile = {
 		providers: { ...userModelsData.providers },
 	};
 	delete modelsData.providers.nvidia;
 	delete modelsData.providers.local;
 
-	const nvidiaKeyEnv = env.NVIDIA_API_KEY;
-	if (!nvidiaKeyEnv) {
-		startupWarn("[Auton] NVIDIA_API_KEY not set. NVIDIA models will not be available.");
+	const nvidiaStoredKeyReference = getStoredApiKeyReference(options.agentDir, "nvidia");
+	const nvidiaDiscoveryKey =
+		readProviderSecretFileApiKey("nvidia", env) ?? env.NVIDIA_API_KEY ?? resolveStartupApiKeyReference(nvidiaStoredKeyReference, env);
+	if (!nvidiaDiscoveryKey) {
+		startupWarn(
+			"[AG1] NVIDIA_API_KEY, AG1_NVIDIA_API_KEY_FILE, local NVIDIA secret file, or saved NVIDIA auth not set. NVIDIA models will not be available.",
+		);
 	} else {
-		modelsData.providers.nvidia = buildNvidiaProviderConfig();
+		const discoveredNvidiaModels = await detectNvidiaModels(nvidiaDiscoveryKey, fetchImpl);
+		modelsData.providers.nvidia = buildNvidiaProviderConfig(discoveredNvidiaModels);
+		if (discoveredNvidiaModels.length > 0) {
+			startupLog(`[AG1] NVIDIA Nemotron models detected: ${discoveredNvidiaModels.join(", ")}`);
+		}
 	}
 
 	const lmStudioUrl = env.LM_STUDIO_URL ?? `http://127.0.0.1:${env.LM_STUDIO_PORT ?? "1234"}`;
@@ -400,6 +482,16 @@ export async function prepareStartupModelsFile(options: {
 	if (lmModels.length > 0) {
 		modelsData.providers.local = buildLocalProviderConfig(lmStudioUrl, lmModels);
 		startupLog(`[Auton] LM Studio detected: ${lmModels.join(", ")}`);
+	} else if (previousRuntimeModelsData.providers.local) {
+		modelsData.providers.local = previousRuntimeModelsData.providers.local;
+		startupWarn(
+			"[Auton] LM Studio model discovery returned no models. Preserving the previous local runtime model list.",
+		);
+	} else if (fallbackRuntimeModelsData?.providers.local) {
+		modelsData.providers.local = fallbackRuntimeModelsData.providers.local;
+		startupWarn(
+			"[Auton] LM Studio model discovery returned no models. Reusing the default agent runtime local model list.",
+		);
 	}
 
 	try {
@@ -526,7 +618,10 @@ async function createSessionManagerFromConfig(
 	return SessionManager.create(cwd, sessionDir);
 }
 
-function finishMain(deferNonInteractiveHelp: boolean, options?: { exitCode?: number; printDeferredHelp?: boolean }): void {
+function finishMain(
+	deferNonInteractiveHelp: boolean,
+	options?: { exitCode?: number; printDeferredHelp?: boolean },
+): void {
 	if (options?.exitCode !== undefined) {
 		process.exitCode = options.exitCode;
 	}
@@ -551,8 +646,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 	const requestedMode = resolveRequestedMode(config, stdinIsTTY);
 	const wantsHelp = config.help === true;
 	const deferNonInteractiveHelp = wantsHelp && requestedMode !== "interactive";
-	const startupLog = requestedMode === "interactive" ? (() => {}) : console.error;
-	const startupWarn = requestedMode === "interactive" ? (() => {}) : console.error;
+	const startupLog = requestedMode === "interactive" ? () => {} : console.error;
+	const startupWarn = requestedMode === "interactive" ? () => {} : console.error;
 
 	if (deferNonInteractiveHelp) {
 		takeOverStdout();
@@ -634,7 +729,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
 	const { selectedToolNames, extensionFlagValues, resourceLoaderOptions } = buildRuntimeCliOptions(config, cwd);
 
-	// Runtime creation: use Pi's built-in tools only. No custom tools for MVP.
+	// Runtime creation: use AG1's built-in tools only. No custom tools for MVP.
 	const createRuntimeFn: CreateAgentSessionRuntimeFactory = async ({
 		cwd: rCwd,
 		agentDir: rAgentDir,
@@ -768,14 +863,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 			cwd,
 		});
 	} else if (mode === "print") {
-		await runPrintMode(runtime, {
+		process.exitCode = await runPrintMode(runtime, {
 			mode: "text",
 			initialMessage: startupInput.initialMessage,
 			initialImages: startupInput.initialImages,
 			messages: startupInput.remainingMessages,
 		});
 	} else if (mode === "json") {
-		await runPrintMode(runtime, {
+		process.exitCode = await runPrintMode(runtime, {
 			mode: "json",
 			initialMessage: startupInput.initialMessage,
 			initialImages: startupInput.initialImages,

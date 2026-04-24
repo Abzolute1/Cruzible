@@ -8,7 +8,7 @@ import { createEditToolDefinition } from "../src/core/tools/edit.js";
 const tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
-	const dir = await mkdtemp(join(tmpdir(), "pi-edit-legacy-input-"));
+	const dir = await mkdtemp(join(tmpdir(), "ag1-edit-legacy-input-"));
 	tempDirs.push(dir);
 	return dir;
 }
@@ -62,6 +62,59 @@ describe("edit tool prepareArguments", () => {
 		};
 		const prepared = definition.prepareArguments!(input);
 		expect(prepared).toBe(input);
+	});
+
+	it("parses JSON string edits from XML fallback arguments", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			edits: '[{"oldText":"before","newText":"after"}]',
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "before", newText: "after" }],
+		});
+	});
+
+	it("parses a single JSON object edit from XML fallback arguments", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			edits: '{"oldText":"before","newText":"after"}',
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "before", newText: "after" }],
+		});
+	});
+
+	it("normalizes common patch-intent shapes", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			file_path: "file.txt",
+			changes: [{ search: "before", replace: "after" }],
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "before", newText: "after" }],
+		});
+	});
+
+	it("normalizes simple unified diff payloads", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			diff: [
+				"--- a/file.txt",
+				"+++ b/file.txt",
+				"@@ -1 +1 @@",
+				"-before",
+				"+after",
+			].join("\n"),
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "before", newText: "after" }],
+		});
 	});
 
 	it("passes through non-object input unchanged", () => {

@@ -5,15 +5,15 @@
  * Useful to ensure work is committed before switching context.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@ag1/coding-agent";
 
 async function checkDirtyRepo(
-	pi: ExtensionAPI,
+	ag1: ExtensionAPI,
 	ctx: ExtensionContext,
 	action: string,
 ): Promise<{ cancel: boolean } | undefined> {
 	// Check for uncommitted changes
-	const { stdout, code } = await pi.exec("git", ["status", "--porcelain"]);
+	const { stdout, code } = await ag1.exec("git", ["status", "--porcelain"]);
 
 	if (code !== 0) {
 		// Not a git repo, allow the action
@@ -44,13 +44,13 @@ async function checkDirtyRepo(
 	}
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("session_before_switch", async (event, ctx) => {
+export default function (ag1: ExtensionAPI) {
+	ag1.on("session_before_switch", async (event, ctx) => {
 		const action = event.reason === "new" ? "new session" : "switch session";
-		return checkDirtyRepo(pi, ctx, action);
+		return checkDirtyRepo(ag1, ctx, action);
 	});
 
-	pi.on("session_before_fork", async (_event, ctx) => {
-		return checkDirtyRepo(pi, ctx, "fork");
+	ag1.on("session_before_fork", async (_event, ctx) => {
+		return checkDirtyRepo(ag1, ctx, "fork");
 	});
 }

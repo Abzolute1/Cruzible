@@ -1,5 +1,5 @@
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Transport } from "@mariozechner/pi-ai";
+import type { ThinkingLevel } from "@ag1/agent-core";
+import type { Transport } from "@ag1/ai";
 import type { SettingsCallbacks, SettingsConfig } from "./components/settings-selector.js";
 
 export interface InteractiveSettingsSessionLike {

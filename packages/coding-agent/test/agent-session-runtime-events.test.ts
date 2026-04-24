@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@mariozechner/pi-ai";
+import { fauxAssistantMessage, registerFauxProvider } from "@ag1/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -30,7 +30,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	});
 
 	async function createRuntimeHost(extensionFactory: ExtensionFactory) {
-		const tempDir = join(tmpdir(), `pi-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const tempDir = join(tmpdir(), `ag1-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		const faux = registerFauxProvider();
@@ -87,11 +87,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtimeHost } = await createRuntimeHost((ag1) => {
+			ag1.on("session_before_switch", (event) => {
 				events.push(event);
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -126,12 +126,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("honors session_before_switch cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtimeHost } = await createRuntimeHost((ag1) => {
+			ag1.on("session_before_switch", (event) => {
 				events.push(event);
 				return { cancel: true };
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -151,15 +151,15 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelNextFork = false;
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_fork", (event) => {
+		const { runtimeHost } = await createRuntimeHost((ag1) => {
+			ag1.on("session_before_fork", (event) => {
 				events.push(event);
 				if (cancelNextFork) {
 					cancelNextFork = false;
 					return { cancel: true };
 				}
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});

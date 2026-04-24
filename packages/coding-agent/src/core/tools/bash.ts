@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Container, Text, truncateToWidth } from "@mariozechner/pi-tui";
+import type { AgentTool } from "@ag1/agent-core";
+import { Container, Text, truncateToWidth } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { spawn } from "child_process";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
@@ -24,7 +24,7 @@ const DEFAULT_BASH_TIMEOUT = 300;
  */
 function getTempFilePath(): string {
 	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `pi-bash-${id}.log`);
+	return join(tmpdir(), `ag1-bash-${id}.log`);
 }
 
 const bashSchema = Type.Object({
@@ -64,9 +64,9 @@ export interface BashOperations {
 }
 
 /**
- * Create bash operations using pi's built-in local shell execution backend.
+ * Create bash operations using AG1's built-in local shell execution backend.
  *
- * This is useful for extensions that intercept user_bash and still want pi's
+ * This is useful for extensions that intercept user_bash and still want AG1's
  * standard local shell behavior while wrapping or rewriting commands.
  */
 export function createLocalBashOperations(): BashOperations {
@@ -193,6 +193,20 @@ function isInspectionBashCommand(command: string): boolean {
 	);
 }
 
+function formatInspectionBashHint(command: string): string | undefined {
+	const normalized = command.replace(/\s+/g, " ").trim();
+	if (/(^|[;&|]\s*)pwd(\s|$)/.test(normalized)) {
+		return "[location confirmed; switch to find, grep, ls, or read next instead of repeating pwd]";
+	}
+	if (/(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|which\b)/.test(normalized)) {
+		return "[discovery output only; if the target path is visible here, inspect it directly instead of repeating shell discovery]";
+	}
+	if (/(^|[;&|]\s*)git\s+status(\s|$)/.test(normalized) || /(^|[;&|]\s*)git\s+branch(\s|$)/.test(normalized)) {
+		return "[git state confirmed; proceed with the targeted read/edit/bash step instead of repeating status]";
+	}
+	return "[inspection output only; reuse this evidence before running another discovery command]";
+}
+
 function compactInspectionBashOutput(output: string): string {
 	const lines = output
 		.split("\n")
@@ -306,6 +320,11 @@ export function createBashToolDefinition(
 		label: "bash",
 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_BASH_TIMEOUT}s.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
+		promptGuidelines: [
+			"Prefer read, grep, find, and ls for routine inspection when those dedicated tools are sufficient.",
+			"Use bash when shell semantics, compound commands, or tools outside the dedicated toolset are actually needed.",
+			"After an inspection-style bash command surfaces the needed path or status, switch to a targeted read/grep/find step instead of repeating shell discovery.",
+		],
 		parameters: bashSchema,
 			async execute(
 				_toolCallId,
@@ -389,9 +408,9 @@ export function createBashToolDefinition(
 						if (tempFileStream) tempFileStream.end();
 						let outputText = truncation.content || "(no output)";
 						let details: BashToolDetails | undefined;
-						if (truncation.truncated) {
-							// Build truncation details and an actionable notice.
-							details = { truncation, fullOutputPath: tempFilePath };
+							if (truncation.truncated) {
+								// Build truncation details and an actionable notice.
+								details = { truncation, fullOutputPath: tempFilePath };
 								const startLine = truncation.totalLines - truncation.outputLines + 1;
 								const endLine = truncation.totalLines;
 								if (truncation.lastLinePartial) {
@@ -410,6 +429,10 @@ export function createBashToolDefinition(
 									})}`;
 								}
 							}
+						if (exitCode === 0 && isInspectionBashCommand(command)) {
+							const hint = formatInspectionBashHint(command);
+							if (hint) outputText += `\n\n${hint}`;
+						}
 						if (exitCode !== 0 && exitCode !== null) {
 							outputText += `\n\nCommand exited with code ${exitCode}`;
 							reject(new Error(outputText));

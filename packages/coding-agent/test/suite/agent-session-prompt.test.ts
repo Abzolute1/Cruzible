@@ -1,8 +1,8 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Model } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@ag1/agent-core";
+import { fauxAssistantMessage, fauxToolCall, type Model } from "@ag1/ai";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PromptTemplate } from "../../src/core/prompt-templates.js";
@@ -144,7 +144,7 @@ describe("AgentSession prompt characterization", () => {
 	});
 
 	it("expands skill commands before sending the prompt", async () => {
-		const tempDir = join(tmpdir(), `pi-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const tempDir = join(tmpdir(), `ag1-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		tempDirs.push(tempDir);
 		const skillPath = join(tempDir, "test-skill.md");
@@ -227,8 +227,8 @@ describe("AgentSession prompt characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(ag1) => {
+					ag1.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);

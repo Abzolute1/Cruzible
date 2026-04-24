@@ -2,10 +2,10 @@
  * GitLab Duo Provider Extension
  *
  * Provides access to GitLab Duo AI models (Claude and GPT) through GitLab's AI Gateway.
- * Delegates to pi-ai's built-in Anthropic and OpenAI streaming implementations.
+ * Delegates to ag1-ai's built-in Anthropic and OpenAI streaming implementations.
  *
  * Usage:
- *   pi -e ./packages/coding-agent/examples/extensions/custom-provider-gitlab-duo
+ *   ag1 -e ./packages/coding-agent/examples/extensions/custom-provider-gitlab-duo
  *   # Then /login gitlab-duo, or set GITLAB_TOKEN=glpat-...
  */
 
@@ -20,8 +20,8 @@ import {
 	type SimpleStreamOptions,
 	streamSimpleAnthropic,
 	streamSimpleOpenAIResponses,
-} from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+} from "@ag1/ai";
+import type { ExtensionAPI } from "@ag1/coding-agent";
 
 // =============================================================================
 // Constants
@@ -324,8 +324,8 @@ export function streamGitLabDuo(
 // Extension Entry Point
 // =============================================================================
 
-export default function (pi: ExtensionAPI) {
-	pi.registerProvider("gitlab-duo", {
+export default function (ag1: ExtensionAPI) {
+	ag1.registerProvider("gitlab-duo", {
 		baseUrl: AI_GATEWAY_URL,
 		apiKey: "GITLAB_TOKEN",
 		api: "gitlab-duo-api",

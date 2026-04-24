@@ -1,6 +1,6 @@
-import type { Agent, ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
-import { modelsAreEqual, supportsXhigh } from "@mariozechner/pi-ai";
+import type { Agent, ThinkingLevel } from "@ag1/agent-core";
+import type { Model } from "@ag1/ai";
+import { modelsAreEqual, supportsXhigh } from "@ag1/ai";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner } from "./extensions/index.js";
 import type { ModelRegistry } from "./model-registry.js";

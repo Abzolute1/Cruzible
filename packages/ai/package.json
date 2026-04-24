@@ -1,5 +1,5 @@
 {
-	"name": "@mariozechner/pi-ai",
+	"name": "@ag1/ai",
 	"version": "0.65.2",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"type": "module",
@@ -56,7 +56,7 @@
 		}
 	},
 	"bin": {
-		"pi-ai": "./dist/cli.js"
+		"ag1-ai": "./dist/cli.js"
 	},
 	"files": [
 		"dist",
@@ -100,7 +100,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/badlogic/pi-mono.git",
+		"url": "git+https://github.com/ag1-ai/ag1.git",
 		"directory": "packages/ai"
 	},
 	"engines": {

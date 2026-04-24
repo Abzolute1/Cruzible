@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@mariozechner/pi-ai";
+import { fauxAssistantMessage, registerFauxProvider } from "@ag1/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -37,7 +37,7 @@ describe("AgentSessionRuntime characterization", () => {
 		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
 	) {
 		const tempDir =
-			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+			options?.cwd ?? join(tmpdir(), `ag1-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		const faux = registerFauxProvider({
@@ -58,8 +58,8 @@ describe("AgentSessionRuntime characterization", () => {
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(ag1: ExtensionAPI) => {
+						ag1.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
@@ -74,7 +74,7 @@ describe("AgentSessionRuntime characterization", () => {
 								maxTokens: registeredModel.maxTokens,
 							})),
 						});
-						extensionFactory(pi);
+						extensionFactory(ag1);
 					},
 				],
 				noSkills: true,
@@ -140,11 +140,11 @@ describe("AgentSessionRuntime characterization", () => {
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtime } = await createRuntimeForTest((ag1: ExtensionAPI) => {
+			ag1.on("session_before_switch", (event) => {
 				events.push(event);
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -181,14 +181,14 @@ describe("AgentSessionRuntime characterization", () => {
 	it("honors session_before_switch cancellation for new and resume", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelReason: "new" | "resume" | undefined;
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtime } = await createRuntimeForTest((ag1: ExtensionAPI) => {
+			ag1.on("session_before_switch", (event) => {
 				events.push(event);
 				if (event.reason === cancelReason) {
 					return { cancel: true };
 				}
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -202,7 +202,7 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(runtime.session.sessionFile).toBe(originalSessionFile);
 
 		events.length = 0;
-		const otherDir = join(tmpdir(), `pi-runtime-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const otherDir = join(tmpdir(), `ag1-runtime-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(otherDir, { recursive: true });
 		const otherSession = SessionManager.create(otherDir);
 		otherSession.appendMessage({ role: "user", content: [{ type: "text", text: "other" }], timestamp: Date.now() });
@@ -216,15 +216,15 @@ describe("AgentSessionRuntime characterization", () => {
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelNextFork = false;
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
-			pi.on("session_before_fork", (event) => {
+		const { runtime } = await createRuntimeForTest((ag1: ExtensionAPI) => {
+			ag1.on("session_before_fork", (event) => {
 				events.push(event);
 				if (cancelNextFork) {
 					cancelNextFork = false;
 					return { cancel: true };
 				}
 			});
-			pi.on("session_start", (event) => {
+			ag1.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -256,8 +256,8 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 
 	it("updates process.cwd() on cross-cwd session replacement", async () => {
-		const firstDir = join(tmpdir(), `pi-runtime-cwd-a-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		const secondDir = join(tmpdir(), `pi-runtime-cwd-b-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const firstDir = join(tmpdir(), `ag1-runtime-cwd-a-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const secondDir = join(tmpdir(), `ag1-runtime-cwd-b-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(firstDir, { recursive: true });
 		mkdirSync(secondDir, { recursive: true });
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, { cwd: firstDir });
@@ -268,8 +268,8 @@ describe("AgentSessionRuntime characterization", () => {
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(ag1: ExtensionAPI) => {
+						ag1.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
@@ -341,8 +341,8 @@ describe("AgentSessionRuntime characterization", () => {
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(ag1: ExtensionAPI) => {
+						ag1.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
@@ -419,8 +419,8 @@ describe("AgentSessionRuntime characterization", () => {
 				cwd,
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi: ExtensionAPI) => {
-							pi.registerProvider(faux.getModel().provider, {
+						(ag1: ExtensionAPI) => {
+							ag1.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",
 								api: faux.api,

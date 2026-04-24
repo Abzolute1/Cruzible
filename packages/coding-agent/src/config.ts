@@ -53,7 +53,7 @@ export function getUpdateInstruction(packageName: string): string {
 	const method = detectInstallMethod();
 	switch (method) {
 		case "bun-binary":
-			return `Download from: https://github.com/badlogic/pi-mono/releases/latest`;
+			return `Download from: https://github.com/ag1-ai/ag1/releases/latest`;
 		case "pnpm":
 			return `Run: pnpm install -g ${packageName}`;
 		case "yarn":
@@ -79,7 +79,7 @@ export function getUpdateInstruction(packageName: string): string {
  */
 export function getPackageDir(): string {
 	// Allow override via environment variable (useful for Nix/Guix where store paths tokenize poorly)
-	const envDir = process.env.PI_PACKAGE_DIR;
+	const envDir = process.env.AG1_PACKAGE_DIR;
 	if (envDir) {
 		if (envDir === "~") return homedir();
 		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
@@ -179,43 +179,44 @@ export function getBundledInteractiveAssetPath(name: string): string {
 }
 
 // =============================================================================
-// App Config (from package.json piConfig)
+// App Config (from package.json ag1Config)
 // =============================================================================
 
 const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8"));
+const appConfig = pkg.ag1Config ?? pkg.appConfig ?? {};
 
-export const CLI_NAME: string = pkg.piConfig?.name || "pi";
-export const APP_NAME: string = pkg.piConfig?.displayName || CLI_NAME;
-export const APP_SLUG: string = pkg.piConfig?.slug || CLI_NAME;
-export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
-export const LEGACY_CLI_NAMES: string[] = pkg.piConfig?.legacyCliNames || [];
-export const LEGACY_CONFIG_DIR_NAMES: string[] = pkg.piConfig?.legacyConfigDirs || [];
+export const CLI_NAME: string = appConfig.name || "ag1";
+export const APP_NAME: string = appConfig.displayName || CLI_NAME;
+export const APP_SLUG: string = appConfig.slug || CLI_NAME;
+export const CONFIG_DIR_NAME: string = appConfig.configDir || ".ag1";
+export const LEGACY_CLI_NAMES: string[] = appConfig.legacyCliNames || [];
+export const LEGACY_CONFIG_DIR_NAMES: string[] = appConfig.legacyConfigDirs || [];
 export const LEGACY_PROJECT_CONFIG_DIR_NAMES: string[] = Array.from(
-	new Set([".pi", ...LEGACY_CONFIG_DIR_NAMES].filter((dir) => dir !== CONFIG_DIR_NAME)),
+	new Set(LEGACY_CONFIG_DIR_NAMES.filter((dir) => dir !== CONFIG_DIR_NAME)),
 );
 export const VERSION: string = pkg.version;
 
-const ENV_PREFIX: string = pkg.piConfig?.envPrefix || CLI_NAME.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+const ENV_PREFIX: string = appConfig.envPrefix || CLI_NAME.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 
-// e.g., PI_CODING_AGENT_DIR or CRUCIBLE_CODING_AGENT_DIR
+// e.g., AG1_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${ENV_PREFIX}_CODING_AGENT_DIR`;
 export const LEGACY_ENV_AGENT_DIRS = LEGACY_CLI_NAMES.map(
 	(name) => `${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_CODING_AGENT_DIR`,
 );
 
-const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
+const DEFAULT_SHARE_VIEWER_URL = "https://ag1.dev/session/";
 
 /** Get the share viewer URL for a gist ID */
 export function getShareViewerUrl(gistId: string): string {
-	const baseUrl = process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
+	const baseUrl = process.env.AG1_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
 	return `${baseUrl}#${gistId}`;
 }
 
 // =============================================================================
-// User Config Paths (~/.pi/agent/*)
+// User Config Paths (~/.ag1/agent/*)
 // =============================================================================
 
-/** Get the agent config directory (e.g., ~/.pi/agent/) */
+/** Get the agent config directory (e.g., ~/.ag1/agent/) */
 export function getAgentDir(): string {
 	for (const envName of [ENV_AGENT_DIR, ...LEGACY_ENV_AGENT_DIRS]) {
 		const envDir = process.env[envName];
@@ -241,7 +242,7 @@ export function getAgentDir(): string {
 	return primaryDir;
 }
 
-/** Get the project-local config directory (e.g., cwd/.crucible or legacy cwd/.pi) */
+/** Get the project-local config directory (e.g., cwd/.ag1 or a legacy config dir) */
 export function getProjectConfigDir(cwd: string = process.cwd()): string {
 	const primaryDir = join(cwd, CONFIG_DIR_NAME);
 	if (existsSync(primaryDir)) {

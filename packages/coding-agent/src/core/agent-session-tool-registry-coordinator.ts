@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@ag1/agent-core";
+import type { Model } from "@ag1/ai";
 import type { ExtensionRunner, ToolDefinition } from "./extensions/index.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { wrapRegisteredTools } from "./extensions/index.js";

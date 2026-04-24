@@ -219,14 +219,36 @@ export function analyzeXmlFallbackTurn(options: {
 	};
 }
 
-export function buildXmlFallbackRecoveryPrompt(analysis: XmlFallbackAnalysis): string | undefined {
+export function buildXmlFallbackRecoveryPrompt(
+	analysis: XmlFallbackAnalysis,
+	options?: { toolNames?: string[] },
+): string | undefined {
+	const toolNames = options?.toolNames?.map((toolName) => toolName.toLowerCase()) ?? [];
+	const hasMutationTool = toolNames.some((toolName) =>
+		toolName === "edit" || toolName === "write" || toolName === "str_replace_editor" || toolName === "notebook_edit"
+	);
+	if (!analysis.shouldInjectRecoveryPrompt && hasMutationTool) {
+		return [
+			"XML fallback recovery mode:",
+			"Continue only from the appended tool result.",
+			"If the edit/write succeeded, do not repeat or revise it; run the requested verification next.",
+			"If it failed, make exactly one corrected native tool call.",
+			"Keep the next response terse.",
+		].join(" ");
+	}
 	if (!analysis.shouldInjectRecoveryPrompt) return undefined;
+	const allLocalDiscovery =
+		toolNames.length > 0 && toolNames.every((toolName) => toolName === "ls" || toolName === "find" || toolName === "grep" || toolName === "read");
+	const localAnswerHint = allLocalDiscovery
+		? "If the appended local tool results already reveal the requested file or directory, answer directly now and do not call more tools."
+		: "If the appended tool results already answer the user's question, answer directly now and avoid another tool call.";
 	if (analysis.severity === "critical") {
 		return [
 			"XML fallback recovery mode:",
 			"The previous assistant turn degraded into a long or truncated XML fallback.",
 			"Continue only from the appended tool results.",
 			"Keep the next response terse.",
+			localAnswerHint,
 			"If another tool is needed, emit exactly one tool call with minimal arguments.",
 			"Do not restate prior analysis, and do not repeat large XML blocks.",
 		].join(" ");
@@ -236,6 +258,7 @@ export function buildXmlFallbackRecoveryPrompt(analysis: XmlFallbackAnalysis): s
 		"The previous assistant turn is drifting into XML fallback.",
 		"Continue from the appended tool results only.",
 		"Keep the next response concise.",
+		localAnswerHint,
 		"If another tool is needed, emit exactly one tool call.",
 		"Do not repeat previous analysis or XML verbosely.",
 	].join(" ");

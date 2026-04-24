@@ -15,6 +15,35 @@ import {
 } from "../src/core/auton/ledger.js";
 
 describe("autonomous ledger helpers", () => {
+	test("classifies verify-only local review tasks as answer mode", () => {
+		const ledger = createAutonomousRunLedger(
+			"review the retry-path implementation in this repo and list the main risks without changing code",
+		);
+
+		expect(ledger.taskMode).toBe("answer");
+		expect(ledger.taskJournal.plannedNextStep).toContain("answer directly and stop");
+		expect(ledger.taskJournal.stepRationale).toContain("answer-first task");
+	});
+
+	test("classifies local implementation lookups as answer mode", () => {
+		const ledger = createAutonomousRunLedger(
+			"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+		);
+
+		expect(ledger.taskMode).toBe("answer");
+		expect(ledger.taskJournal.nextAction).toContain("focused inspection step");
+	});
+
+	test("classifies self-contained docs-guided migrations as implementation mode", () => {
+		const ledger = createAutonomousRunLedger(
+			"You are in a self-contained benchmark workspace. Task: 1. Read the provided docs excerpt in `reference/abort-signal-timeout.md`. 2. Migrate the request helper to follow that guidance. 3. Verify with `node --test tests/request.test.mjs`. Stay inside this workspace.",
+		);
+
+		expect(ledger.taskMode).toBe("implementation");
+		expect(ledger.taskJournal.plannedNextStep).toContain("concrete implementation step");
+		expect(ledger.taskJournal.stepRationale).toContain("changing code");
+	});
+
 	test("builds focused compaction instructions from the run ledger", () => {
 		const instructions = buildAutonomousCompactionInstructions({
 			goal: "fix auth retry path",
@@ -423,7 +452,7 @@ describe("autonomous ledger helpers", () => {
 		expect(next.resume).toEqual(
 			expect.objectContaining({
 				mode: "resume_research",
-				resumeInstruction: "Inspect the relevant files and choose the first concrete implementation step",
+				resumeInstruction: "Search for the most relevant authoritative source first.",
 			}),
 		);
 		expect(formatAutonomousRunLedger(next)).toContain("Research queries: React 19 documentation");
@@ -432,6 +461,38 @@ describe("autonomous ledger helpers", () => {
 		expect(formatAutonomousRunLedger(next)).toContain("Planner:");
 		expect(formatAutonomousRunLedger(next)).toContain("Resume mode: resume_research");
 		expect(formatAutonomousRunLedger(next)).toContain("Resume:");
+	});
+
+	test("keeps a concrete src or test repair target pinned when later helper-script reads occur", () => {
+		const current = createAutonomousRunLedger("fix the search URL builder and add a regression test");
+		current.discoveryTargetFile = "tests/search-url.test.mjs";
+		current.discoveredFiles = ["tests/search-url.test.mjs", "src/search-url.mjs"];
+
+		const next = updateAutonomousRunLedger({
+			current,
+			lastAssistantText: "I read the verifier helper to understand the failing regression requirement.",
+			toolHistory: [
+				{
+					tool: "read",
+					success: true,
+					file: "scripts/check-regression-test.mjs",
+					detail: "read verifier script",
+				},
+			],
+			fileAccessHistory: [
+				{
+					tool: "read",
+					success: true,
+					file: "scripts/check-regression-test.mjs",
+					detail: "read verifier script",
+				},
+			],
+			verificationSatisfied: false,
+			lastVerificationDetail: undefined,
+		});
+
+		expect(next.discoveryTargetFile).toBe("tests/search-url.test.mjs");
+		expect(next.discoveredFiles).toContain("scripts/check-regression-test.mjs");
 	});
 
 	test("formats a compact prompt ledger for continuation turns", () => {

@@ -7,8 +7,8 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, ImageContent, Message, Model } from "@ag1/ai";
 import type {
 	AutocompleteItem,
 	EditorComponent,
@@ -18,7 +18,7 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
-} from "@mariozechner/pi-tui";
+} from "@ag1/tui";
 import { spawn, spawnSync } from "child_process";
 import {
 	CombinedAutocompleteProvider,
@@ -34,7 +34,7 @@ import {
 	Text,
 	TruncatedText,
 	TUI,
-} from "@mariozechner/pi-tui";
+} from "@ag1/tui";
 import { APP_NAME, getAgentDir, getAuthPath, getDebugLogPath, VERSION } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
@@ -941,10 +941,10 @@ export class InteractiveMode {
 	 * Check npm registry for a newer version.
 	 */
 	private async checkForNewVersion(): Promise<string | undefined> {
-		if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
+		if (process.env.AG1_SKIP_VERSION_CHECK || process.env.AG1_OFFLINE) return undefined;
 
 		try {
-			const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest", {
+			const response = await fetch("https://registry.npmjs.org/@ag1/coding-agent/latest", {
 				signal: AbortSignal.timeout(10000),
 			});
 			if (!response.ok) return undefined;
@@ -963,7 +963,7 @@ export class InteractiveMode {
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
+		if (process.env.AG1_OFFLINE) {
 			return [];
 		}
 
@@ -1021,7 +1021,7 @@ export class InteractiveMode {
 		}
 
 		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+			return "tmux extended-keys-format is xterm. AG1 works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
 		}
 
 		return undefined;
@@ -2518,7 +2518,7 @@ export class InteractiveMode {
 			// Write to temp file
 			const tmpDir = os.tmpdir();
 			const ext = extensionForImageMimeType(image.mimeType) ?? "png";
-			const fileName = `pi-clipboard-${crypto.randomUUID()}.${ext}`;
+			const fileName = `ag1-clipboard-${crypto.randomUUID()}.${ext}`;
 			const filePath = path.join(tmpDir, fileName);
 			fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
@@ -3451,7 +3451,7 @@ export class InteractiveMode {
 		}
 
 		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
+		const tmpFile = path.join(os.tmpdir(), `ag1-editor-${Date.now()}.ag1.md`);
 
 		try {
 			// Write current content to temp file
@@ -6317,7 +6317,7 @@ export class InteractiveMode {
 	 */
 	private async runAutonomousLoop(
 		userMessage: string,
-		initialImages: import("@mariozechner/pi-ai").ImageContent[] | undefined,
+		initialImages: import("@ag1/ai").ImageContent[] | undefined,
 	): Promise<void> {
 		const originalCwd = this.sessionManager.getCwd();
 		const scopeGuardReason = getAutonomousScopeGuardReason(originalCwd);
@@ -6453,9 +6453,9 @@ export class InteractiveMode {
 
 	/**
 	 * Resolve the project root (repository root).
-	 * The coding-agent package is at: <repo_root>/pi-fork/packages/coding-agent/
+	 * The coding-agent package is at: <repo_root>/pods-fork/packages/coding-agent/
 	 * So the repo root is 5 levels up from this file's directory:
-	 *   modes/interactive -> modes -> src/dist -> coding-agent -> packages -> pi-fork -> repo_root
+	 *   modes/interactive -> modes -> src/dist -> coding-agent -> packages -> AG1 -> repo_root
 	 */
 	private resolveProjectRoot(): string {
 		// Use import.meta.url to get the directory of this file

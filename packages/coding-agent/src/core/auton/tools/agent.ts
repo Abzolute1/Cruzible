@@ -14,7 +14,6 @@ const MAX_ACTIVE_CHILD_AGENTS = 3;
 const ALLOWED_AGENT_BIN_NAMES = new Set([
 	CLI_NAME,
 	APP_SLUG,
-	"cruzible",
 	...LEGACY_CLI_NAMES,
 	"auton",
 	"coding-agent",
@@ -152,7 +151,7 @@ export const agentToolDefinition: ToolDefinition<typeof agentParamsSchema, undef
 				child = spawn(agentBin, args, {
 					cwd,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: { ...process.env, PI_NON_INTERACTIVE: "1" },
+					env: { ...process.env, AG1_NON_INTERACTIVE: "1" },
 				});
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);

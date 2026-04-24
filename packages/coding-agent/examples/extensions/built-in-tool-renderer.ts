@@ -20,19 +20,19 @@
  *   toggled the tool output open (via ctrl+e or clicking)
  *
  * Usage:
- *   pi -e ./built-in-tool-renderer.ts
+ *   ag1 -e ./built-in-tool-renderer.ts
  */
 
-import type { BashToolDetails, EditToolDetails, ExtensionAPI, ReadToolDetails } from "@mariozechner/pi-coding-agent";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { BashToolDetails, EditToolDetails, ExtensionAPI, ReadToolDetails } from "@ag1/coding-agent";
+import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@ag1/coding-agent";
+import { Text } from "@ag1/tui";
 
-export default function (pi: ExtensionAPI) {
+export default function (ag1: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	// --- Read tool: show path and line count ---
 	const originalRead = createReadTool(cwd);
-	pi.registerTool({
+	ag1.registerTool({
 		name: "read",
 		label: "read",
 		description: originalRead.description,
@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Bash tool: show command and exit code ---
 	const originalBash = createBashTool(cwd);
-	pi.registerTool({
+	ag1.registerTool({
 		name: "bash",
 		label: "bash",
 		description: originalBash.description,
@@ -150,7 +150,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Edit tool: show path and diff stats ---
 	const originalEdit = createEditTool(cwd);
-	pi.registerTool({
+	ag1.registerTool({
 		name: "edit",
 		label: "edit",
 		description: originalEdit.description,
@@ -214,7 +214,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Write tool: show path and size ---
 	const originalWrite = createWriteTool(cwd);
-	pi.registerTool({
+	ag1.registerTool({
 		name: "write",
 		label: "write",
 		description: originalWrite.description,

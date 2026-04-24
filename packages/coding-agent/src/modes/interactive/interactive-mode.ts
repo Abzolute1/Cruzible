@@ -7,8 +7,8 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@ag1/agent-core";
+import type { AssistantMessage, ImageContent, Message, Model } from "@ag1/ai";
 import type {
 	AutocompleteItem,
 	EditorComponent,
@@ -18,7 +18,7 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
-} from "@mariozechner/pi-tui";
+} from "@ag1/tui";
 import { spawn, spawnSync } from "child_process";
 import {
 	CombinedAutocompleteProvider,
@@ -33,7 +33,7 @@ import {
 	setKeybindings,
 	Text,
 	TUI,
-} from "@mariozechner/pi-tui";
+} from "@ag1/tui";
 import { APP_NAME, getAgentDir, getAuthPath, getDebugLogPath, VERSION } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
@@ -61,7 +61,11 @@ import type {
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
-import { buildLocalEvidencePromptAddendum } from "../../core/local-evidence-steering.js";
+import {
+	buildLocalEvidencePromptAddendum,
+	buildRuntimeContinuationMessage,
+} from "../../core/local-evidence-steering.js";
+import { buildPromptIntentAddendum } from "../../core/prompt-intent-steering.js";
 import { findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
 import { deduplicateWarnings, evaluateInteractiveNudges } from "../../core/nudge-warnings.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
@@ -943,6 +947,7 @@ export class InteractiveMode {
 				// (hard stop), nudge engine (stuck detection), and completion
 				// (no tool calls + LLM said stop). The 200-iteration cap is an
 				// emergency brake.
+				this.pendingRuntimePromptAddendum = undefined;
 				await this.runAutonomousLoop(userInput, imagesForThisPrompt);
 				// After the autonomous run completes, always return to normal
 				// interactive mode. This keeps autonomy as an explicit per-task
@@ -978,10 +983,12 @@ export class InteractiveMode {
 	 * Check npm registry for a newer version.
 	 */
 	private async checkForNewVersion(): Promise<string | undefined> {
-		if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
+		if (process.env.AG1_SKIP_VERSION_CHECK || process.env.AG1_OFFLINE) {
+			return undefined;
+		}
 
 		try {
-			const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest", {
+			const response = await fetch("https://registry.npmjs.org/@ag1/coding-agent/latest", {
 				signal: AbortSignal.timeout(10000),
 			});
 			if (!response.ok) return undefined;
@@ -1000,7 +1007,7 @@ export class InteractiveMode {
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
+		if (process.env.AG1_OFFLINE) {
 			return [];
 		}
 
@@ -1058,7 +1065,7 @@ export class InteractiveMode {
 		}
 
 		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+			return "tmux extended-keys-format is xterm. AG1 works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
 		}
 
 		return undefined;
@@ -2738,7 +2745,7 @@ export class InteractiveMode {
 			// Write to temp file
 			const tmpDir = os.tmpdir();
 			const ext = extensionForImageMimeType(image.mimeType) ?? "png";
-			const fileName = `pi-clipboard-${crypto.randomUUID()}.${ext}`;
+			const fileName = `ag1-clipboard-${crypto.randomUUID()}.${ext}`;
 			const filePath = path.join(tmpDir, fileName);
 			fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
@@ -3139,10 +3146,23 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 				this.pendingToolArgs.clear();
 				if (!this.autonomousMode && !this.planningMode) {
-					this.pendingRuntimePromptAddendum = buildLocalEvidencePromptAddendum({
+					const steeringContext = {
 						toolCallHistory: this.currentTurnToolCallHistory,
 						fileAccessHistory: this.currentTurnFileAccessHistory,
-					});
+					};
+					this.pendingRuntimePromptAddendum = buildLocalEvidencePromptAddendum(steeringContext);
+					const continuationMessage = buildRuntimeContinuationMessage(steeringContext);
+					if (continuationMessage) {
+						await this.session.sendCustomMessage(
+							{
+								customType: "runtime_continuation_state",
+								content: continuationMessage,
+								display: false,
+								details: { kind: "runtime_continuation_state" },
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					}
 				}
 				this.currentTurnToolCallHistory = [];
 				this.currentTurnFileAccessHistory = [];
@@ -3704,7 +3724,7 @@ export class InteractiveMode {
 		}
 
 		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
+		const tmpFile = path.join(os.tmpdir(), `ag1-editor-${Date.now()}.md`);
 
 		try {
 			// Write current content to temp file
@@ -6105,6 +6125,7 @@ export class InteractiveMode {
 						forceNudges: false,
 					};
 		await this.ensurePreferredModeModel("planning");
+		this.pendingRuntimePromptAddendum = undefined;
 		this.planningReadOnlyToolsAllowed = this.shouldAllowPlanningInspection(promptBody, options);
 		this.applySafetyPolicy();
 		this.suppressPlanningAssistantTranscript = true;
@@ -6148,7 +6169,7 @@ export class InteractiveMode {
 		appendRuntimeHealthSnapshotIfChanged(
 			this.session.sessionManager,
 			createRuntimeHealthSnapshotFromState({
-				modelId: this.session.model ? `${this.session.model.provider}/${this.session.model.id}` : undefined,
+				modelId: this.session.model?.id,
 				xmlFallbackCount: this.xmlFallbackCount,
 				degradedTurnCount: this.degradedTurnCount,
 				lastXmlFallbackEvent: this.lastXmlFallbackEvent,
@@ -6535,7 +6556,11 @@ export class InteractiveMode {
 		text: string,
 		options?: Parameters<AgentSession["prompt"]>[1],
 	): Promise<void> {
-		const systemPromptAddendum = this.consumeRuntimePromptAddendum(options?.systemPromptAddendum);
+		const addenda = [
+			buildPromptIntentAddendum(text),
+			this.consumeRuntimePromptAddendum(options?.systemPromptAddendum),
+		].filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+		const systemPromptAddendum = addenda.length > 0 ? addenda.join("\n\n") : undefined;
 		await this.session.prompt(text, {
 			...options,
 			systemPromptAddendum,
@@ -6547,7 +6572,7 @@ export class InteractiveMode {
 		args: Record<string, unknown> | undefined,
 		result: { content: Array<{ type: string; text?: string }> },
 	): string | undefined {
-		return extractTrackedFileFromToolResult(toolName, args, result);
+		return extractTrackedFileFromToolResult(toolName, args, result, this.sessionManager.getCwd());
 	}
 
 	private extractToolDetail(toolName: string, args: Record<string, unknown> | undefined): string | undefined {
@@ -6557,6 +6582,14 @@ export class InteractiveMode {
 		}
 		if (toolName === "websearch" && typeof args.query === "string") return args.query;
 		if (toolName === "webfetch" && typeof args.url === "string") return args.url;
+		if (toolName === "read") {
+			const path = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
+			if (!path) return undefined;
+			const suffix: string[] = [];
+			if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);
+			if (typeof args.limit === "number") suffix.push(`limit=${args.limit}`);
+			return suffix.length > 0 ? `${path} (${suffix.join(", ")})` : path;
+		}
 		if (typeof args.filePath === "string") return args.filePath;
 		if (typeof args.path === "string") return args.path;
 		return undefined;
@@ -6642,7 +6675,7 @@ export class InteractiveMode {
 	 */
 	private async runAutonomousLoop(
 		userMessage: string,
-		initialImages: import("@mariozechner/pi-ai").ImageContent[] | undefined,
+		initialImages: import("@ag1/ai").ImageContent[] | undefined,
 	): Promise<void> {
 		const originalCwd = this.sessionManager.getCwd();
 		const scopeGuardReason = getAutonomousScopeGuardReason(originalCwd);

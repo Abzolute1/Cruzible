@@ -59,6 +59,19 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return resolvePath(cwd, expanded);
 }
 
+function repairWorkspaceAbsoluteWithoutLeadingSlash(filePath: string, cwd: string): string {
+	const normalizedCwd = resolvePath(cwd).replace(/\\/g, "/");
+	const cwdSansLeadingSlash = normalizedCwd.replace(/^\//, "");
+	const normalizedInput = expandPath(filePath).replace(/\\/g, "/");
+	if (
+		!isAbsolute(normalizedInput) &&
+		(normalizedInput === cwdSansLeadingSlash || normalizedInput.startsWith(`${cwdSansLeadingSlash}/`))
+	) {
+		return `/${normalizedInput}`;
+	}
+	return filePath;
+}
+
 function isPathInsideRoot(targetPath: string, rootPath: string): boolean {
 	const rel = relative(rootPath, targetPath);
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -103,7 +116,7 @@ export function resolveContainedPath(
 ): string {
 	const normalizedCwd = resolvePath(cwd);
 	const workspaceRoot = realpathSync(normalizedCwd);
-	const resolvedPath = resolveToCwd(filePath, normalizedCwd);
+	const resolvedPath = resolveToCwd(repairWorkspaceAbsoluteWithoutLeadingSlash(filePath, normalizedCwd), normalizedCwd);
 
 	if (existsSync(resolvedPath)) {
 		assertNoSymlinkTraversal(normalizedCwd, resolvedPath);

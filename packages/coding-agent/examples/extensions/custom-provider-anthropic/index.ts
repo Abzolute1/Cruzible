@@ -13,10 +13,10 @@
  *   cd packages/coding-agent/examples/extensions/custom-provider && npm install
  *
  *   # With OAuth (run /login custom-anthropic first)
- *   pi -e ./packages/coding-agent/examples/extensions/custom-provider
+ *   ag1 -e ./packages/coding-agent/examples/extensions/custom-provider
  *
  *   # With API key
- *   CUSTOM_ANTHROPIC_API_KEY=sk-ant-... pi -e ./packages/coding-agent/examples/extensions/custom-provider
+ *   CUSTOM_ANTHROPIC_AAG1_KEY=sk-ant-... ag1 -e ./packages/coding-agent/examples/extensions/custom-provider
  *
  * Then use /model to select custom-anthropic/claude-sonnet-4-5
  */
@@ -42,8 +42,8 @@ import {
 	type Tool,
 	type ToolCall,
 	type ToolResultMessage,
-} from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+} from "@ag1/ai";
+import type { ExtensionAPI } from "@ag1/coding-agent";
 
 // =============================================================================
 // OAuth Implementation (copied from packages/ai/src/utils/oauth/anthropic.ts)
@@ -565,10 +565,10 @@ function streamCustomAnthropic(
 // Extension Entry Point
 // =============================================================================
 
-export default function (pi: ExtensionAPI) {
-	pi.registerProvider("custom-anthropic", {
+export default function (ag1: ExtensionAPI) {
+	ag1.registerProvider("custom-anthropic", {
 		baseUrl: "https://api.anthropic.com",
-		apiKey: "CUSTOM_ANTHROPIC_API_KEY",
+		apiKey: "CUSTOM_ANTHROPIC_AAG1_KEY",
 		api: "custom-anthropic-api",
 
 		models: [

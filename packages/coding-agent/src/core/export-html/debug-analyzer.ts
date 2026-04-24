@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@ag1/agent-core";
 import { calculateContextTokens, estimateContextTokens } from "../compaction/index.js";
 import type { CompactionEntry, ModelChangeEntry, SessionEntry } from "../session-manager.js";
 

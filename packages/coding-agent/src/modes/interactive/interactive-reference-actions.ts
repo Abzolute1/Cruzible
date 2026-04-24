@@ -1,5 +1,5 @@
-import type { MarkdownTheme, Keybinding } from "@mariozechner/pi-tui";
-import { Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import type { MarkdownTheme, Keybinding } from "@ag1/tui";
+import { Markdown, Spacer, Text } from "@ag1/tui";
 import type { AppKeybinding } from "../../core/keybindings.js";
 import { keyText } from "./components/keybinding-hints.js";
 import { DynamicBorder } from "./components/dynamic-border.js";

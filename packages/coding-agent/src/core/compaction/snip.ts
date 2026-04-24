@@ -5,7 +5,7 @@
  * More aggressive than micro-compact: removes entire message groups, not just truncating content.
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@ag1/agent-core";
 import { estimateTokens } from "./compaction.js";
 
 /** Minimum number of turns to always preserve (system + first user + recent). */
@@ -38,7 +38,7 @@ export function snipHistory(
 	const protectedIndices = new Set<number>();
 
 	// Protect the system message (index 0 if it's the first message)
-	// In Pi's message model, system messages are part of the agent state but
+	// In AG1's message model, system messages are part of the agent state but
 	// may not be in the messages array. We protect index 0 regardless.
 	protectedIndices.add(0);
 

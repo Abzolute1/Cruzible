@@ -35,7 +35,7 @@ describe("session-debug-logger", () => {
 	});
 
 	test("writes debug artifacts under the provided project root with UTC time in the folder name", () => {
-		const projectRoot = mkdtempSync(join(tmpdir(), "crucible-debug-root-"));
+		const projectRoot = mkdtempSync(join(tmpdir(), "ag1-debug-root-"));
 		tempRoots.push(projectRoot);
 		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T22:49:15.000Z"));
 
@@ -54,7 +54,7 @@ describe("session-debug-logger", () => {
 	});
 
 	test("adds a numeric suffix when the same timestamp/model directory already exists", () => {
-		const projectRoot = mkdtempSync(join(tmpdir(), "crucible-debug-root-"));
+		const projectRoot = mkdtempSync(join(tmpdir(), "ag1-debug-root-"));
 		tempRoots.push(projectRoot);
 		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T22:49:15.000Z"));
 

@@ -1,9 +1,17 @@
 import type { SessionEntry } from "../session-manager.js";
+import {
+	hasAutonomousLocalReferenceContext,
+	looksLikeAutonomousImplementationTask,
+	looksLikeAutonomousLocalAnswerTask,
+	looksLikeAutonomousResearchTask,
+	looksLikeAutonomousVerifyOnlyTask,
+} from "../task-intent.js";
 import type { AutonomousCheckpointState, AutonomousRunResult } from "./runner.js";
 import type { ToolOutcome } from "./nudges/types.js";
 
 export interface AutonomousRunLedger {
 	goal: string;
+	taskMode?: AutonomousTaskMode;
 	status: "running" | "complete" | "error" | "budget" | "nudge" | "max_iterations" | "unknown";
 	turnsObserved: number;
 	taskJournal: AutonomousTaskJournal;
@@ -25,7 +33,11 @@ export interface AutonomousRunLedger {
 	lastVerificationDetail?: string;
 	verificationFailures: string[];
 	residualRisks: string[];
+	discoveryTargetFile?: string;
+	discoveredFiles: string[];
 }
+
+export type AutonomousTaskMode = "implementation" | "answer" | "research";
 
 export interface AutonomousResearchState {
 	searchQueries: string[];
@@ -139,6 +151,7 @@ export interface AutonomousPlanItem {
 export type AutonomousLedgerEvent =
 	| { type: "inspection_complete"; detail?: string }
 	| { type: "implementation_changed"; detail?: string }
+	| { type: "mutation_repair_required"; detail?: string }
 	| { type: "verification_required"; detail?: string }
 	| { type: "verification_failed"; detail?: string }
 	| { type: "verification_passed"; detail?: string }
@@ -167,20 +180,24 @@ export type AutonomousRunCheckpointPhase = "initial" | "pre_turn" | "post_turn" 
 export const AUTONOMOUS_RUN_SNAPSHOT_ENTRY_TYPE = "autonomous_run_snapshot";
 
 export function createAutonomousRunLedger(goal: string): AutonomousRunLedger {
+	const taskMode = classifyAutonomousTaskMode(goal);
+	const initialPlan = createInitialPlanItemsForMode(taskMode);
+	const initialTaskState = createInitialTaskState(taskMode);
 	return {
 		goal: normalizeSnippet(goal, 180) ?? goal,
+		taskMode,
 		status: "running",
 		turnsObserved: 0,
 		visualTarget: undefined,
 		taskJournal: {
-			activeSubtask: "Inspect the task and make the first concrete change",
-			nextAction: "Inspect the relevant files and choose the first concrete implementation step",
-			plannedNextStep: "Inspect the relevant files and choose the first concrete implementation step",
-			stepRationale: "The run needs concrete context before changing code.",
+			activeSubtask: initialTaskState.activeSubtask,
+			nextAction: initialTaskState.nextAction,
+			plannedNextStep: initialTaskState.plannedNextStep,
+			stepRationale: initialTaskState.stepRationale,
 			expectedVerification: undefined,
 			intentStatus: "pending",
 			lastIntentOutcome: undefined,
-			planItems: createInitialPlanItems(),
+			planItems: initialPlan,
 			completedCheckpoints: [],
 			blockedReasons: [],
 		},
@@ -191,17 +208,18 @@ export function createAutonomousRunLedger(goal: string): AutonomousRunLedger {
 		verificationSatisfied: false,
 		verificationFailures: [],
 		residualRisks: [],
+		discoveredFiles: [],
 		planner: {
 			phase: "planning",
-			lane: "generic",
+			lane: taskMode === "research" ? "research" : "generic",
 			planRevision: 0,
 			executionAttempts: 0,
-			handoffSummary: "Inspect the task and choose the first concrete step.",
+			handoffSummary: initialTaskState.plannedNextStep,
 		},
 		resume: {
-			mode: "resume_execute",
-			resumeInstruction: "Inspect the relevant files and choose the first concrete implementation step",
-			resumeReason: "The run needs concrete context before changing code.",
+			mode: taskMode === "research" ? "resume_research" : "resume_execute",
+			resumeInstruction: initialTaskState.plannedNextStep,
+			resumeReason: initialTaskState.stepRationale,
 			lastStableCheckpoint: undefined,
 		},
 	};
@@ -228,19 +246,40 @@ export function updateAutonomousRunLedger(options: {
 		4,
 	);
 	const touchedFiles = uniqueTail(
-		options.toolHistory.filter((outcome) => outcome.success && isMutatingOutcome(outcome) && outcome.file).map((outcome) => outcome.file!),
+		options.toolHistory
+			.filter((outcome) => outcome.success && isMutatingOutcome(outcome) && outcome.file)
+			.map((outcome) => normalizeWorkspaceReference(outcome.file, 140) ?? outcome.file!),
 		12,
 	);
 	const readFiles = uniqueTail(
-		options.fileAccessHistory.filter((outcome) => outcome.success && isReadOutcome(outcome) && outcome.file).map((outcome) => outcome.file!),
+		options.fileAccessHistory
+			.filter((outcome) => outcome.success && isReadOutcome(outcome) && outcome.file)
+			.map((outcome) => normalizeWorkspaceReference(outcome.file, 140) ?? outcome.file!),
 		12,
 	);
 	const recentMutations = uniqueTail(
 		options.toolHistory
 			.filter((outcome) => outcome.success && isMutatingOutcome(outcome))
-			.map((outcome) => normalizeSnippet(outcome.detail, 120) ?? outcome.file)
+			.map((outcome) => normalizeWorkspaceReference(outcome.detail, 120) ?? normalizeWorkspaceReference(outcome.file, 120))
 			.filter((value): value is string => typeof value === "string" && value.length > 0),
 		6,
+	);
+	const discoveryTargetFile = deriveDiscoveryTargetFile({
+		current: options.current.discoveryTargetFile,
+		toolHistory: options.toolHistory,
+	});
+	const discoveredFiles = uniqueTail(
+		[
+			...(options.current.discoveredFiles ?? []),
+			...options.toolHistory
+				.flatMap((outcome) => {
+					if (!outcome.success) return [];
+					const directFile = normalizeWorkspaceFilePath(outcome.file);
+					const discoveryFile = getDiscoveryTargetFile(outcome);
+					return [directFile, discoveryFile].filter((value): value is string => typeof value === "string");
+				}),
+		],
+		12,
 	);
 	const latestAction = getLatestMeaningfulAction(options.toolHistory, options.fileAccessHistory);
 	const progressDetail = latestAction?.detail ?? options.current.progressDetail;
@@ -303,6 +342,7 @@ export function updateAutonomousRunLedger(options: {
 	});
 	const planner = derivePlannerState({
 		current: options.current.planner,
+		taskMode: getAutonomousTaskMode(options.current),
 		status: options.status ?? options.current.status,
 		taskJournal: options.current.taskJournal,
 		research,
@@ -312,6 +352,7 @@ export function updateAutonomousRunLedger(options: {
 	});
 	const resume = deriveResumeState({
 		current: options.current.resume,
+		taskMode: getAutonomousTaskMode(options.current),
 		taskJournal: options.current.taskJournal,
 		planner,
 		completedCheckpoints,
@@ -321,6 +362,7 @@ export function updateAutonomousRunLedger(options: {
 	const activeSubtask =
 		deriveActiveSubtask({
 			current: { ...options.current, visualAssessment },
+			taskMode: getAutonomousTaskMode(options.current),
 			status: options.status ?? options.current.status,
 			currentFocus,
 			latestAction,
@@ -328,6 +370,7 @@ export function updateAutonomousRunLedger(options: {
 		}) ?? options.current.taskJournal.activeSubtask;
 	const nextAction =
 		deriveNextAction({
+			taskMode: getAutonomousTaskMode(options.current),
 			status: options.status ?? options.current.status,
 			latestActionType: latestAction?.type ?? options.current.lastActionType,
 			verificationSatisfied: options.verificationSatisfied,
@@ -337,6 +380,7 @@ export function updateAutonomousRunLedger(options: {
 			visualAssessment,
 		}) ?? options.current.taskJournal.nextAction;
 	const planItems = derivePlanItems({
+		taskMode: getAutonomousTaskMode(options.current),
 		status: options.status ?? options.current.status,
 		readFiles,
 		touchedFiles,
@@ -370,6 +414,8 @@ export function updateAutonomousRunLedger(options: {
 		lastVerificationDetail: options.lastVerificationDetail,
 		verificationFailures,
 		residualRisks,
+		discoveryTargetFile,
+		discoveredFiles,
 		taskJournal: {
 			activeSubtask,
 			nextAction,
@@ -733,7 +779,17 @@ export function applyAutonomousLedgerEvents(
 	for (const event of events) {
 		next = applyAutonomousLedgerEvent(next, event);
 	}
-	return next;
+	return syncLedgerFocusWithTaskJournal(next);
+}
+
+function syncLedgerFocusWithTaskJournal(ledger: AutonomousRunLedger): AutonomousRunLedger {
+	const repairTargetMatch = ledger.taskJournal.activeSubtask?.match(/^Repair the failed change attempt: (.+)$/);
+	if (!repairTargetMatch?.[1]) return ledger;
+	return {
+		...ledger,
+		currentFocus: `Repair the failed change target: ${repairTargetMatch[1]}`,
+		progressDetail: repairTargetMatch[1],
+	};
 }
 
 export function getLatestAutonomousRunSnapshot(entries: SessionEntry[]): AutonomousRunSnapshot | undefined {
@@ -816,6 +872,13 @@ function getLatestMeaningfulAction(
 				focus: outcome.success ? `Running verification: ${detail}` : `Address verification failure: ${detail}`,
 			};
 		}
+		if (isMutatingOutcome(outcome) && !outcome.success) {
+			return {
+				type: "mutation",
+				detail,
+				focus: `Repair the failed change target: ${detail}`,
+			};
+		}
 		if (isMutatingOutcome(outcome) && outcome.success) {
 			return {
 				type: "mutation",
@@ -831,10 +894,11 @@ function getLatestMeaningfulAction(
 			};
 		}
 		if (outcome.success) {
+			const discoveryTarget = getDiscoveryTargetFile(outcome);
 			return {
 				type: "other",
-				detail,
-				focus: `Continue from the latest tool step: ${detail}`,
+				detail: discoveryTarget ?? detail,
+				focus: `Continue from the latest tool step: ${discoveryTarget ?? detail}`,
 			};
 		}
 	}
@@ -851,7 +915,117 @@ function getLatestMeaningfulAction(
 }
 
 function describeOutcome(outcome: ToolOutcome): string | undefined {
-	return normalizeSnippet(outcome.detail, 140) ?? normalizeSnippet(outcome.file, 140);
+	if (isMutatingOutcome(outcome)) {
+		return normalizeWorkspaceReference(outcome.file, 140) ?? normalizeWorkspaceReference(outcome.detail, 140);
+	}
+	return normalizeWorkspaceReference(outcome.detail, 140) ?? normalizeWorkspaceReference(outcome.file, 140);
+}
+
+function normalizeWorkspaceReference(value: string | undefined, maxLength: number): string | undefined {
+	if (!value) return undefined;
+	const normalized = value.replace(/\\/g, "/").replace(/\s+/g, " ").trim();
+	if (!normalized) return undefined;
+
+	const withoutWorkspaceCd = normalized.replace(
+		/^cd\s+(?:\/?(?:tmp|home)\/[^\s;&|]+\/workspace)\s*&&\s*/i,
+		"",
+	);
+	if (withoutWorkspaceCd !== normalized) {
+		return normalizeSnippet(withoutWorkspaceCd, maxLength);
+	}
+
+	const workspaceRelative = extractWorkspaceRelativePath(normalized);
+	if (workspaceRelative) {
+		return normalizeSnippet(workspaceRelative, maxLength);
+	}
+
+	return normalizeSnippet(normalized, maxLength);
+}
+
+function extractWorkspaceRelativePath(value: string): string | undefined {
+	const patterns = [
+		/(?:^|\/)(src\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(tests?\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(reference\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(scripts\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(cli\/[^\s)`"'<>]+)/i,
+		/(?:^|\/)(generated\/[^\s)`"'<>]+)/i,
+	];
+	for (const pattern of patterns) {
+		const match = value.match(pattern);
+		if (match?.[1]) return match[1];
+	}
+	if (/(?:^|\/)SUMMARY\.md$/i.test(value)) return "SUMMARY.md";
+	return undefined;
+}
+
+function deriveDiscoveryTargetFile(options: {
+	current?: string;
+	toolHistory: ToolOutcome[];
+}): string | undefined {
+	for (const outcome of [...options.toolHistory].reverse()) {
+		if (!outcome.success) continue;
+		const directFile = normalizeWorkspaceFilePath(outcome.file);
+		if (directFile) return choosePreferredDiscoveryTarget(options.current, directFile, outcome);
+		const discoveryFile = getDiscoveryTargetFile(outcome);
+		if (discoveryFile) return choosePreferredDiscoveryTarget(options.current, discoveryFile, outcome);
+	}
+	return options.current;
+}
+
+function choosePreferredDiscoveryTarget(
+	current: string | undefined,
+	next: string,
+	outcome: ToolOutcome,
+): string {
+	if (!current || current === next) return next;
+	if (!/^(?:src|tests?)\//i.test(current)) return next;
+	if (/^(?:src|tests?)\//i.test(next)) return next;
+	if (isReadOutcome(outcome) || outcome.tool.toLowerCase() === "ls" || outcome.tool.toLowerCase() === "find") {
+		return current;
+	}
+	return next;
+}
+
+function getDiscoveryTargetFile(outcome: ToolOutcome): string | undefined {
+	const toolName = outcome.tool.toLowerCase();
+	if (toolName === "find") {
+		const firstMatch = normalizeWorkspaceFilePath(readMetadataString(outcome.metadata, "firstMatchPath"));
+		if (firstMatch) return firstMatch;
+	}
+	if (toolName === "ls") {
+		const directoryPath = readMetadataString(outcome.metadata, "directoryPath");
+		const entryCount = readMetadataNumber(outcome.metadata, "entryCount");
+		const entries = Array.isArray(outcome.metadata?.entriesSample)
+			? outcome.metadata.entriesSample.filter((value): value is string => typeof value === "string")
+			: [];
+		if (entryCount === 1 && entries.length >= 1) {
+			const entry = entries[0]?.replace(/\/$/, "");
+			if (entry) {
+				const joined = directoryPath && directoryPath !== "." ? `${directoryPath}/${entry}` : entry;
+				return normalizeWorkspaceFilePath(joined);
+			}
+		}
+	}
+	return undefined;
+}
+
+function normalizeWorkspaceFilePath(value: string | undefined): string | undefined {
+	const normalized = normalizeWorkspaceReference(value, 140);
+	if (!normalized) return undefined;
+	if (normalized.endsWith("/")) return undefined;
+	if (!/^(?:src|tests?|reference|scripts|cli|generated)\//i.test(normalized) && normalized !== "SUMMARY.md") {
+		return undefined;
+	}
+	return normalized;
+}
+
+function readMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+	return typeof metadata?.[key] === "string" ? (metadata[key] as string) : undefined;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown> | undefined, key: string): number | undefined {
+	return typeof metadata?.[key] === "number" ? (metadata[key] as number) : undefined;
 }
 
 function deriveResearchState(options: {
@@ -1522,6 +1696,7 @@ function deriveVisualAssessment(options: {
 
 function deriveActiveSubtask(options: {
 	current: AutonomousRunLedger;
+	taskMode: AutonomousTaskMode;
 	status: AutonomousRunLedger["status"];
 	currentFocus?: string;
 	latestAction?: { type: "mutation" | "verification" | "inspection" | "other"; detail: string; focus: string };
@@ -1540,12 +1715,16 @@ function deriveActiveSubtask(options: {
 		return `Validate the recent change: ${options.latestAction.detail}`;
 	}
 	if (options.latestAction?.type === "inspection") {
+		if (options.taskMode === "answer") {
+			return detailWithPrefix(options.latestAction.detail, "Use the inspected context to answer directly");
+		}
 		return `Turn inspected context into a concrete change: ${options.latestAction.detail}`;
 	}
 	return options.currentFocus ?? options.current.taskJournal.activeSubtask;
 }
 
 function deriveNextAction(options: {
+	taskMode: AutonomousTaskMode;
 	status: AutonomousRunLedger["status"];
 	latestActionType?: "mutation" | "verification" | "inspection" | "other";
 	verificationSatisfied: boolean;
@@ -1559,6 +1738,15 @@ function deriveNextAction(options: {
 		return `Resolve visual issue: ${options.visualAssessment.blockingIssues[0] ?? options.visualAssessment.summary}`;
 	}
 	if (options.blockedReasons.length > 0) return `Resolve blocker: ${options.blockedReasons[0]}`;
+	if (options.taskMode === "answer") {
+		if (options.latestActionType === "inspection" || options.readFiles.length > 0) {
+			return "Answer directly from the inspected evidence and stop";
+		}
+		if (options.latestActionType === "verification" && options.verificationSatisfied) {
+			return "Summarize the confirmed answer and stop";
+		}
+		return "Inspect one directly relevant file or path, then answer and stop";
+	}
 	if (!options.verificationSatisfied && options.recentMutations.length > 0) return "Run verification on the latest changes";
 	if (options.latestActionType === "inspection") return "Make the next concrete code change";
 	if (options.latestActionType === "verification" && options.verificationSatisfied) return "Summarize the verified result and any residual risks";
@@ -1569,6 +1757,7 @@ function deriveNextAction(options: {
 
 function derivePlannerState(options: {
 	current?: AutonomousPlannerState;
+	taskMode: AutonomousTaskMode;
 	status: AutonomousRunLedger["status"];
 	taskJournal: AutonomousTaskJournal;
 	research?: AutonomousResearchState;
@@ -1592,6 +1781,8 @@ function derivePlannerState(options: {
 			? "research"
 			: options.visualAssessment
 				? "visual"
+				: options.taskMode === "answer"
+					? "generic"
 				: getPlanStatus(options.taskJournal.planItems, "implement") !== "pending"
 					? "implementation"
 					: "generic";
@@ -1625,6 +1816,7 @@ function buildPlannerHandoffSummary(
 
 function deriveResumeState(options: {
 	current?: AutonomousResumeState;
+	taskMode: AutonomousTaskMode;
 	taskJournal: AutonomousTaskJournal;
 	planner: AutonomousPlannerState;
 	completedCheckpoints: string[];
@@ -1651,6 +1843,7 @@ function deriveResumeState(options: {
 }
 
 function deriveResumeMode(options: {
+	taskMode: AutonomousTaskMode;
 	taskJournal: AutonomousTaskJournal;
 	planner: AutonomousPlannerState;
 	blockedReasons: string[];
@@ -1661,7 +1854,7 @@ function deriveResumeMode(options: {
 	if (options.planner.phase === "verifying" || getPlanStatus(options.taskJournal.planItems, "verify") === "active") {
 		return "resume_verify";
 	}
-	if (options.planner.lane === "research") return "resume_research";
+	if (options.taskMode === "research" || options.planner.lane === "research") return "resume_research";
 	return "resume_execute";
 }
 
@@ -1670,6 +1863,7 @@ function applyAutonomousLedgerEvent(
 	event: AutonomousLedgerEvent,
 ): AutonomousRunLedger {
 	const journal = cloneTaskJournal(current.taskJournal);
+	const taskMode = getAutonomousTaskMode(current);
 	const detail = normalizeSnippet("detail" in event ? event.detail : undefined, 160);
 	switch (event.type) {
 		case "inspection_complete":
@@ -1677,10 +1871,17 @@ function applyAutonomousLedgerEvent(
 			if (getPlanStatus(journal.planItems, "implement") === "pending") {
 				setPlanStatus(journal.planItems, "implement", "active");
 			}
-			journal.activeSubtask = detail
-				? `Turn inspected context into a concrete change: ${detail}`
-				: "Turn inspected context into a concrete change";
-			journal.nextAction = "Make the next concrete code change";
+			if (taskMode === "answer") {
+				journal.activeSubtask = detailWithPrefix(detail, "Use the inspected context to answer directly");
+				journal.nextAction = "Answer directly from the inspected evidence and stop";
+				journal.plannedNextStep = "Answer directly from the inspected evidence and stop.";
+				journal.stepRationale = "The task is answer-only, so once the relevant local evidence is inspected the run should answer instead of widening into implementation.";
+			} else {
+				journal.activeSubtask = detail
+					? `Turn inspected context into a concrete change: ${detail}`
+					: "Turn inspected context into a concrete change";
+				journal.nextAction = "Make the next concrete code change";
+			}
 			journal.completedCheckpoints = uniqueTail(
 				[...journal.completedCheckpoints, "relevant files inspected"],
 				6,
@@ -1698,6 +1899,23 @@ function applyAutonomousLedgerEvent(
 				[...journal.completedCheckpoints, "workspace changes applied"],
 				6,
 			);
+			break;
+		case "mutation_repair_required":
+			setPlanStatus(journal.planItems, "inspect", "completed");
+			if (getPlanStatus(journal.planItems, "implement") !== "completed") {
+				setPlanStatus(journal.planItems, "implement", "active");
+			}
+			if (getPlanStatus(journal.planItems, "verify") !== "completed") {
+				setPlanStatus(journal.planItems, "verify", "pending");
+			}
+			journal.activeSubtask = detail
+				? `Repair the failed change attempt: ${detail}`
+				: "Repair the failed change attempt";
+			journal.nextAction = detail
+				? `Retry one valid edit on the same target: ${detail}`
+				: "Retry one valid edit on the same target";
+			journal.plannedNextStep = journal.nextAction;
+			journal.stepRationale = "The previous edit did not apply, so recover on the same target instead of widening scope.";
 			break;
 		case "verification_required":
 			if (getPlanStatus(journal.planItems, "verify") !== "completed") {
@@ -1754,10 +1972,18 @@ function applyAutonomousLedgerEvent(
 			break;
 		case "completion_confirmed":
 			setPlanStatus(journal.planItems, "summarize", "completed");
-			journal.activeSubtask = "Finalize and report verified completion";
-			journal.nextAction = "Stop and present the verified result";
-			journal.plannedNextStep = "Summarize the verified result and note any residual risks.";
-			journal.stepRationale = "Verification is satisfied, so the remaining work is reporting clearly and stopping.";
+			journal.activeSubtask =
+				taskMode === "answer" ? "Finalize and present the answer clearly" : "Finalize and report verified completion";
+			journal.nextAction =
+				taskMode === "answer" ? "Stop after presenting the direct answer" : "Stop and present the verified result";
+			journal.plannedNextStep =
+				taskMode === "answer"
+					? "Present the direct answer clearly, note any important caveats, and stop."
+					: "Summarize the verified result and note any residual risks.";
+			journal.stepRationale =
+				taskMode === "answer"
+					? "The task already has enough evidence for a direct answer, so the remaining work is to present it clearly and stop."
+					: "Verification is satisfied, so the remaining work is reporting clearly and stopping.";
 			break;
 		case "run_error":
 			journal.blockedReasons = uniqueTail(
@@ -1819,6 +2045,7 @@ function setPlanStatus(
 }
 
 function derivePlanItems(options: {
+	taskMode: AutonomousTaskMode;
 	status: AutonomousRunLedger["status"];
 	readFiles: string[];
 	touchedFiles: string[];
@@ -1828,6 +2055,30 @@ function derivePlanItems(options: {
 	const inspected = options.readFiles.length > 0 || options.touchedFiles.length > 0;
 	const implemented = options.touchedFiles.length > 0;
 	const hasVerifyFailure = options.verificationFailures.length > 0 && !options.verificationSatisfied;
+	if (options.taskMode === "answer") {
+		return [
+			{
+				key: "inspect",
+				title: "Inspect relevant evidence",
+				status: inspected ? "completed" : "active",
+			},
+			{
+				key: "implement",
+				title: "Compose direct answer",
+				status: options.status === "complete" ? "completed" : inspected ? "active" : "pending",
+			},
+			{
+				key: "verify",
+				title: "Confirm supporting evidence",
+				status: hasVerifyFailure ? "blocked" : "completed",
+			},
+			{
+				key: "summarize",
+				title: "Deliver final answer",
+				status: options.status === "complete" ? "completed" : inspected ? "active" : "pending",
+			},
+		];
+	}
 
 	return [
 		{
@@ -1864,7 +2115,15 @@ function derivePlanItems(options: {
 	];
 }
 
-function createInitialPlanItems(): AutonomousPlanItem[] {
+function createInitialPlanItemsForMode(taskMode: AutonomousTaskMode): AutonomousPlanItem[] {
+	if (taskMode === "answer") {
+		return [
+			{ key: "inspect", title: "Inspect relevant evidence", status: "active" },
+			{ key: "implement", title: "Compose direct answer", status: "pending" },
+			{ key: "verify", title: "Confirm supporting evidence", status: "completed" },
+			{ key: "summarize", title: "Deliver final answer", status: "pending" },
+		];
+	}
 	return [
 		{ key: "inspect", title: "Inspect relevant files", status: "active" },
 		{ key: "implement", title: "Apply workspace changes", status: "pending" },
@@ -1873,10 +2132,76 @@ function createInitialPlanItems(): AutonomousPlanItem[] {
 	];
 }
 
+function classifyAutonomousTaskMode(goal: string): AutonomousTaskMode {
+	if (hasAutonomousLocalReferenceContext(goal) && looksLikeAutonomousImplementationTask(goal)) return "implementation";
+	if (looksLikeAutonomousResearchTask(goal)) return "research";
+	if (looksLikeAutonomousVerifyOnlyTask(goal) || looksLikeAutonomousLocalAnswerTask(goal)) return "answer";
+	if (looksLikeAutonomousImplementationTask(goal)) return "implementation";
+	return "answer";
+}
+
+function createInitialTaskState(taskMode: AutonomousTaskMode): {
+	activeSubtask: string;
+	nextAction: string;
+	plannedNextStep: string;
+	stepRationale: string;
+} {
+	if (taskMode === "research") {
+		return {
+			activeSubtask: "Inspect the task and gather the first authoritative source",
+			nextAction: "Search for the most relevant authoritative source first",
+			plannedNextStep: "Search for the most relevant authoritative source first.",
+			stepRationale: "The task depends on external evidence, so the run should ground itself before answering.",
+		};
+	}
+	if (taskMode === "answer") {
+		return {
+			activeSubtask: "Inspect the task and gather only the minimum evidence needed to answer",
+			nextAction: "Take one focused inspection step, then answer directly and stop",
+			plannedNextStep: "Take one focused inspection step, then answer directly and stop.",
+			stepRationale: "This is an answer-first task, so the run should avoid widening into implementation or extra verification once the needed evidence is in hand.",
+		};
+	}
+	return {
+		activeSubtask: "Inspect the task and make the first concrete change",
+		nextAction: "Inspect the relevant files and choose the first concrete implementation step",
+		plannedNextStep: "Inspect the relevant files and choose the first concrete implementation step",
+		stepRationale: "The run needs concrete context before changing code.",
+	};
+}
+
+function detailWithPrefix(detail: string | undefined, prefix: string): string {
+	return detail ? `${prefix}: ${detail}` : prefix;
+}
+
+function getAutonomousTaskMode(ledger: Pick<AutonomousRunLedger, "taskMode" | "goal">): AutonomousTaskMode {
+	return ledger.taskMode ?? classifyAutonomousTaskMode(ledger.goal);
+}
+
 function formatVerificationFailure(outcome: ToolOutcome): string | undefined {
 	const detail = describeOutcome(outcome);
-	if (!detail) return undefined;
-	return `failed verification: ${detail}`;
+	const preview = extractVerificationFailurePreview(outcome.metadata);
+	if (!detail && !preview) return undefined;
+	if (!detail) return `failed verification: ${preview}`;
+	if (!preview) return `failed verification: ${detail}`;
+	const normalizedDetail = detail.trim().toLowerCase();
+	const normalizedPreview = preview.trim().toLowerCase();
+	if (normalizedPreview === normalizedDetail || normalizedPreview.includes(normalizedDetail)) {
+		return `failed verification: ${preview}`;
+	}
+	return `failed verification: ${detail} — ${preview}`;
+}
+
+function extractVerificationFailurePreview(metadata: Record<string, unknown> | undefined): string | undefined {
+	if (!metadata) return undefined;
+	const previewCandidates = [metadata.outputPreview, metadata.summary, metadata.error];
+	for (const candidate of previewCandidates) {
+		if (typeof candidate === "string") {
+			const normalized = normalizeSnippet(candidate, 180);
+			if (normalized) return normalized;
+		}
+	}
+	return undefined;
 }
 
 function isAutonomousRunSnapshot(value: unknown): value is AutonomousRunSnapshot {

@@ -1,4 +1,4 @@
-import { Box, Container, Spacer, Text } from "@mariozechner/pi-tui";
+import { Box, Container, Spacer, Text } from "@ag1/tui";
 import type { ThemeColor } from "../theme/theme.js";
 import { theme } from "../theme/theme.js";
 import { buildConsoleHeader } from "./console-chrome.js";

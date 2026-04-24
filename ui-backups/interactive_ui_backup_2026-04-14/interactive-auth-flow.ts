@@ -1,4 +1,4 @@
-import type { OAuthProviderId } from "@mariozechner/pi-ai";
+import type { OAuthProviderId } from "@ag1/ai";
 
 export interface InteractiveAuthStorageLike {
 	list(): string[];
