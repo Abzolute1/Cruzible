@@ -1,8 +1,8 @@
 import { Container, getKeybindings, Spacer, Text } from "@ag1/tui";
 import { theme } from "../theme/theme.js";
+import { buildConsoleBadge, buildConsoleHeader } from "./console-chrome.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
-import { buildConsoleBadge, buildConsoleHeader } from "./console-chrome.js";
 
 export interface PlanWorkflowDialogOptions {
 	title: string;
@@ -142,7 +142,15 @@ export class PlanWorkflowDialogComponent extends Container {
 		const hotkeys = new Map<string, string>();
 		for (const option of options) {
 			const hotkey = option.hotkey?.toLowerCase();
-			if (!hotkey || hotkeys.has(hotkey)) continue;
+			if (!hotkey) continue;
+			const existing = hotkeys.get(hotkey);
+			if (existing) {
+				// A collision silently shadows one of the actions — fail loudly so
+				// it is caught in tests instead of becoming an unreachable option.
+				throw new Error(
+					`Plan workflow hotkey collision: "${hotkey}" maps to both "${existing}" and "${option.id}".`,
+				);
+			}
 			hotkeys.set(hotkey, option.id);
 		}
 		return hotkeys;

@@ -160,10 +160,12 @@ export class SlackBot {
 		await this.backfillAllChannels();
 
 		this.setupEventHandlers();
-		await this.socketClient.start();
 
-		// Record startup time - messages older than this are just logged, not processed
+		// Record startup time BEFORE connecting - messages older than this are just logged,
+		// not processed. Assigning after start() would let messages arriving in the gap through.
 		this.startupTs = (Date.now() / 1000).toFixed(6);
+
+		await this.socketClient.start();
 
 		log.logConnected();
 	}
@@ -311,9 +313,13 @@ export class SlackBot {
 			// Check for stop command - execute immediately, don't queue!
 			if (slackEvent.text.toLowerCase().trim() === "stop") {
 				if (this.handler.isRunning(e.channel)) {
-					this.handler.handleStop(e.channel, this); // Don't await, don't queue
+					this.handler
+						.handleStop(e.channel, this) // Don't await, don't queue
+						.catch((err) => log.logWarning("handleStop error", err instanceof Error ? err.message : String(err)));
 				} else {
-					this.postMessage(e.channel, "_Nothing running_");
+					this.postMessage(e.channel, "_Nothing running_").catch((err) =>
+						log.logWarning("postMessage error", String(err)),
+					);
 				}
 				ack();
 				return;
@@ -321,9 +327,15 @@ export class SlackBot {
 
 			// SYNC: Check if busy
 			if (this.handler.isRunning(e.channel)) {
-				this.postMessage(e.channel, "_Already working. Say `@mom stop` to cancel._");
+				this.postMessage(e.channel, "_Already working. Say `@mom stop` to cancel._").catch((err) =>
+					log.logWarning("postMessage error", String(err)),
+				);
 			} else {
-				this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(slackEvent, this));
+				this.getQueue(e.channel).enqueue(async () => {
+					// Wait for this message's attachment downloads so the agent never reads missing files
+					await this.store.waitForDownloads((slackEvent.attachments || []).map((a) => a.local));
+					await this.handler.handleEvent(slackEvent, this);
+				});
 			}
 
 			ack();
@@ -390,18 +402,30 @@ export class SlackBot {
 				// Check for stop command - execute immediately, don't queue!
 				if (slackEvent.text.toLowerCase().trim() === "stop") {
 					if (this.handler.isRunning(e.channel)) {
-						this.handler.handleStop(e.channel, this); // Don't await, don't queue
+						this.handler
+							.handleStop(e.channel, this) // Don't await, don't queue
+							.catch((err) =>
+								log.logWarning("handleStop error", err instanceof Error ? err.message : String(err)),
+							);
 					} else {
-						this.postMessage(e.channel, "_Nothing running_");
+						this.postMessage(e.channel, "_Nothing running_").catch((err) =>
+							log.logWarning("postMessage error", String(err)),
+						);
 					}
 					ack();
 					return;
 				}
 
 				if (this.handler.isRunning(e.channel)) {
-					this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
+					this.postMessage(e.channel, "_Already working. Say `stop` to cancel._").catch((err) =>
+						log.logWarning("postMessage error", String(err)),
+					);
 				} else {
-					this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(slackEvent, this));
+					this.getQueue(e.channel).enqueue(async () => {
+						// Wait for this message's attachment downloads so the agent never reads missing files
+						await this.store.waitForDownloads((slackEvent.attachments || []).map((a) => a.local));
+						await this.handler.handleEvent(slackEvent, this);
+					});
 				}
 			}
 

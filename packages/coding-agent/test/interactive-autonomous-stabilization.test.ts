@@ -1,16 +1,16 @@
 import { describe, expect, test } from "vitest";
+import type { AutonomousRunSnapshot } from "../src/core/auton/ledger.js";
+import type { RuntimeStabilizationProfile } from "../src/core/runtime-health.js";
 import {
+	type AutonomousExecutionConfig,
 	buildAutonomousStabilizedUserMessage,
-	buildPlanningGuidanceMessage,
 	buildInteractiveStabilizedUserMessage,
+	buildPlanningGuidanceMessage,
 	buildPlanningUserMessage,
 	getInteractiveAutonomousResumeSnapshot,
 	isInteractiveAutonomousResumeRequest,
 	resolveInteractiveAutonomousRunConfig,
-	type AutonomousExecutionConfig,
 } from "../src/modes/interactive/interactive-autonomous-stabilization.js";
-import type { AutonomousRunSnapshot } from "../src/core/auton/ledger.js";
-import type { RuntimeStabilizationProfile } from "../src/core/runtime-health.js";
 
 function createProfile(overrides: Partial<RuntimeStabilizationProfile> = {}): RuntimeStabilizationProfile {
 	return {
@@ -29,7 +29,14 @@ function createSnapshot(overrides: Partial<AutonomousRunSnapshot> = {}): Autonom
 		stopReason: "blocked",
 		iterations: 2,
 		budgetStatus: "ok",
-		costSummary: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalCostUsd: 0 },
+		costSummary: {
+			totalTokens: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			totalCostUsd: 0,
+		},
 		checkpointState: { controlState: "blocked_stop" },
 		ledger: {
 			goal: "fix the failing tests",
@@ -69,8 +76,13 @@ describe("interactive-autonomous-stabilization", () => {
 		expect(planningGuidance).toContain("Planning mode guidance:");
 		expect(planningGuidance).toContain("do not edit files");
 		expect(planningGuidance).toContain("do not invent the language, framework, platform, or library");
-		expect(planningGuidance).toContain("do not inspect files or search the web before asking the clarifying questions");
-		expect(planningGuidance).toContain("use a numbered list like `1. ...`, `2. ...`");
+		expect(planningGuidance).toContain(
+			"do not inspect files or search the web before asking the clarifying questions",
+		);
+		expect(planningGuidance).toContain("deliver the plan by calling the `submit_plan` tool exactly once");
+		expect(planningGuidance).toContain("do not print the plan as markdown text");
+		expect(planningGuidance).toContain("call submit_plan with only `summary` and `openQuestions` (no steps)");
+		expect(planningGuidance).toContain("after submit_plan returns, stop");
 	});
 
 	test("does not force terse stabilization wording on expansion follow-ups", () => {

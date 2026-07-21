@@ -1,0 +1,552 @@
+{
+	"id": "benchmark-v4",
+	"name": "Benchmark v4 — expanded honest suite",
+	"description": "Expanded capability scenarios: cross-file refactor, build-error diagnosis, flaky-test repair, docs lookup, entrypoint wireup, precision multi-edit, long-file bug hunt, shell script repair, multi-file feature. All verified by external commands only.",
+	"version": 4.0,
+	"parent": "benchmark-v3_5",
+	"scenarios": [
+		{
+			"id": "refactor_cross_file_rename",
+			"category": "refactoring",
+			"description": "Rename a shared function across four files without behavior change.",
+			"weight": 4,
+			"verifyCommand": "node --test && ! grep -rq \"computeTotal\" src/",
+			"expectedChangedFilesMax": 4,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Rename `computeTotal` to `calculateTotal` in src/utils.mjs and update every usage across src/.\n2. Keep behavior identical.\n3. Do not edit the tests.\n4. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/utils.mjs",
+					"lines": [
+						"export function computeTotal(items) {",
+						"\treturn items.reduce((sum, item) => sum + item.price * item.qty, 0);",
+						"}"
+					]
+				},
+				{
+					"path": "src/orders.mjs",
+					"lines": [
+						"import { computeTotal } from \"./utils.mjs\";",
+						"",
+						"export function orderTotal(order) {",
+						"\treturn computeTotal(order.items);",
+						"}"
+					]
+				},
+				{
+					"path": "src/invoice.mjs",
+					"lines": [
+						"import { computeTotal } from \"./utils.mjs\";",
+						"",
+						"export function invoiceTotal(invoice) {",
+						"\treturn computeTotal(invoice.items) + invoice.tax;",
+						"}"
+					]
+				},
+				{
+					"path": "src/report.mjs",
+					"lines": [
+						"import { orderTotal } from \"./orders.mjs\";",
+						"import { invoiceTotal } from \"./invoice.mjs\";",
+						"",
+						"export function summary(order, invoice) {",
+						"\treturn { order: orderTotal(order), invoice: invoiceTotal(invoice) };",
+						"}"
+					]
+				},
+				{
+					"path": "tests/total.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { calculateTotal } from \"../src/utils.mjs\";",
+						"import { summary } from \"../src/report.mjs\";",
+						"",
+						"test(\"rename preserves behavior across files\", () => {",
+						"\tconst items = [",
+						"\t\t{ price: 10, qty: 2 },",
+						"\t\t{ price: 5, qty: 4 },",
+						"\t];",
+						"\tassert.equal(calculateTotal(items), 40);",
+						"\tassert.deepEqual(summary({ items }, { items, tax: 6 }), { order: 40, invoice: 46 });",
+						"});"
+					]
+				}
+			]
+		},
+		{
+			"id": "build_error_diagnosis",
+			"category": "debugging",
+			"description": "Diagnose and fix an undefined-variable crash surfaced by the test suite.",
+			"weight": 3,
+			"verifyCommand": "node --test",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. The test suite crashes. Find and fix the underlying source error.\n2. Keep the public API (function names and signatures) unchanged.\n3. Do not edit the tests.\n4. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- Keep the fix minimal.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/calc.mjs",
+					"lines": [
+						"export function sum(nums) {",
+						"\treturn nums.reduce((acc, n) => acc + n, 0);",
+						"}",
+						"",
+						"export function average(nums) {",
+						"\tif (nums.length === 0) return 0;",
+						"\treturn total / nums.length;",
+						"}"
+					]
+				},
+				{
+					"path": "src/stats.mjs",
+					"lines": [
+						"import { average, sum } from \"./calc.mjs\";",
+						"",
+						"export function describeSeries(nums) {",
+						"\treturn { total: sum(nums), mean: average(nums), count: nums.length };",
+						"}"
+					]
+				},
+				{
+					"path": "tests/calc.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { describeSeries } from \"../src/stats.mjs\";",
+						"",
+						"test(\"describeSeries reports total, mean and count\", () => {",
+						"\tassert.deepEqual(describeSeries([2, 4, 6]), { total: 12, mean: 4, count: 3 });",
+						"});",
+						"",
+						"test(\"describeSeries handles empty input\", () => {",
+						"\tassert.deepEqual(describeSeries([]), { total: 0, mean: 0, count: 0 });",
+						"});"
+					]
+				}
+			]
+		},
+		{
+			"id": "flaky_test_repair",
+			"category": "debugging",
+			"description": "Fix an inverted time-comparison that makes fresh cache entries look expired.",
+			"weight": 3,
+			"verifyCommand": "node --test",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. The cache test fails: fresh entries are reported as expired.\n2. Fix the freshness logic in src/cache.mjs.\n3. Do not edit the tests or the test doubles.\n4. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/cache.mjs",
+					"lines": [
+						"export class TtlCache {",
+						"\tconstructor(ttlMs, now = () => Date.now()) {",
+						"\t\tthis.ttlMs = ttlMs;",
+						"\t\tthis.now = now;",
+						"\t\tthis.entries = new Map();",
+						"\t}",
+						"",
+						"\tset(key, value) {",
+						"\t\tthis.entries.set(key, { value, at: this.now() });",
+						"\t}",
+						"",
+						"\tisFresh(entry) {",
+						"\t\treturn this.now() - entry.at > this.ttlMs;",
+						"\t}",
+						"",
+						"\tget(key) {",
+						"\t\tconst entry = this.entries.get(key);",
+						"\t\tif (!entry) return undefined;",
+						"\t\tif (!this.isFresh(entry)) return undefined;",
+						"\t\treturn entry.value;",
+						"\t}",
+						"}"
+					]
+				},
+				{
+					"path": "tests/cache.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { TtlCache } from \"../src/cache.mjs\";",
+						"",
+						"test(\"fresh entries are returned\", () => {",
+						"\tlet now = 1_000;",
+						"\tconst cache = new TtlCache(100, () => now);",
+						"\tcache.set(\"a\", 1);",
+						"\tassert.equal(cache.get(\"a\"), 1);",
+						"\tnow += 50;",
+						"\tassert.equal(cache.get(\"a\"), 1);",
+						"});",
+						"",
+						"test(\"expired entries are dropped\", () => {",
+						"\tlet now = 1_000;",
+						"\tconst cache = new TtlCache(100, () => now);",
+						"\tcache.set(\"a\", 1);",
+						"\tnow += 150;",
+						"\tassert.equal(cache.get(\"a\"), undefined);",
+						"});"
+					]
+				}
+			]
+		},
+		{
+			"id": "docs_lookup_answer",
+			"category": "research",
+			"description": "Extract an exact API signature from local reference docs into ANSWER.md.",
+			"weight": 3,
+			"verifyCommand": "test -f ANSWER.md && grep -q \"withRetry(fn, { retries: number, backoffMs: number\" ANSWER.md",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Read the local reference docs in reference/.\n2. Write ANSWER.md containing (a) the exact `withRetry` function signature from the docs and (b) a short usage example (2-4 lines).\n3. Keep it short — signature plus example only.\n\nConstraints:\n\n- Stay inside this workspace.\n- The signature must match the docs exactly.\n",
+			"files": [
+				{
+					"path": "reference/retry-api.md",
+					"lines": [
+						"# withRetry",
+						"",
+						"Retries an async function when it rejects, with exponential backoff.",
+						"",
+						"## Signature",
+						"",
+						"```ts",
+						"withRetry(fn, { retries: number, backoffMs: number, jitter?: boolean })",
+						"```",
+						"",
+						"- `fn`: async function to call.",
+						"- `retries`: maximum attempts (default 3).",
+						"- `backoffMs`: base delay doubled per attempt.",
+						"- `jitter`: add +/-25% randomness to the delay (default false).",
+						"",
+						"## Example",
+						"",
+						"```js",
+						"const data = await withRetry(() => fetchUser(id), { retries: 3, backoffMs: 100 });",
+						"```"
+					]
+				},
+				{
+					"path": "reference/cache-api.md",
+					"lines": [
+						"# TtlCache",
+						"",
+						"Time-to-live cache.",
+						"",
+						"## Signature",
+						"",
+						"```ts",
+						"new TtlCache(ttlMs: number)",
+						"```",
+						"",
+						"Entries expire `ttlMs` after `set`."
+					]
+				}
+			]
+		},
+		{
+			"id": "entrypoint_wireup",
+			"category": "debugging",
+			"description": "Fix an import path and a mismatched export so the app entrypoint prints READY.",
+			"weight": 3,
+			"verifyCommand": "node src/main.js | grep -q READY",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. `node src/main.js` crashes. Make it print READY.\n2. Keep changes minimal and only in src/main.js.\n3. Do not restructure the project.\n\nConstraints:\n\n- Stay inside this workspace.\n- The verification command is: `node src/main.js`\n",
+			"files": [
+				{
+					"path": "src/main.js",
+					"lines": [
+						"import { boot } from \"./utils.js\";",
+						"",
+						"boot();"
+					]
+				},
+				{
+					"path": "src/lib/utils.js",
+					"lines": [
+						"export function start() {",
+						"\tconsole.log(\"READY\");",
+						"}"
+					]
+				}
+			]
+		},
+		{
+			"id": "precision_multiedit",
+			"category": "editing",
+			"description": "Apply three exact constant changes plus one new export without touching anything else.",
+			"weight": 4,
+			"verifyCommand": "node --test",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. In src/config.mjs change PORT to 8080, HOST to \"0.0.0.0\", and TIMEOUT_MS to 2500.\n2. Add `export const VERSION = \"1.2.0\";`.\n3. Do not touch REGION or anything else.\n4. Do not edit the tests.\n5. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/config.mjs",
+					"lines": [
+						"export const PORT = 3000;",
+						"export const HOST = \"localhost\";",
+						"export const TIMEOUT_MS = 500;",
+						"export const REGION = \"us-east-1\";"
+					]
+				},
+				{
+					"path": "tests/config.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { HOST, PORT, REGION, TIMEOUT_MS, VERSION } from \"../src/config.mjs\";",
+						"",
+						"test(\"config values are updated exactly\", () => {",
+						"\tassert.equal(PORT, 8080);",
+						"\tassert.equal(HOST, \"0.0.0.0\");",
+						"\tassert.equal(TIMEOUT_MS, 2500);",
+						"});",
+						"",
+						"test(\"REGION stays untouched\", () => {",
+						"\tassert.equal(REGION, \"us-east-1\");",
+						"});",
+						"",
+						"test(\"VERSION was added\", () => {",
+						"\tassert.equal(VERSION, \"1.2.0\");",
+						"});"
+					]
+				}
+			]
+		},
+		{
+			"id": "long_file_bug_hunt",
+			"category": "debugging",
+			"description": "Locate one off-by-one bug buried in a large parser file.",
+			"weight": 5,
+			"verifyCommand": "node --test",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. The parser test fails. Locate the bug in src/parser.mjs and fix it.\n2. Do not edit the tests.\n3. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- Keep the fix minimal.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/parser.mjs",
+					"lines": [
+						"export function parseHeader(text) {",
+						"\tconst [first] = text.split(\"\\n\");",
+						"\treturn first.trim();",
+						"}",
+						"",
+						"export function splitLines(text) {",
+						"\treturn text.split(\"\\n\").filter((line) => line.trim().length > 0);",
+						"}",
+						"",
+						"export function parseKeyValue(line) {",
+						"\tconst idx = line.indexOf(\"=\");",
+						"\tif (idx === -1) return undefined;",
+						"\treturn { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() };",
+						"}",
+						"",
+						"export function parsePairs(text) {",
+						"\treturn splitLines(text).map(parseKeyValue).filter(Boolean);",
+						"}",
+						"",
+						"export function parseIntSafe(value) {",
+						"\tconst n = Number.parseInt(value, 10);",
+						"\treturn Number.isNaN(n) ? undefined : n;",
+						"}",
+						"",
+						"export function parseCsvLine(line) {",
+						"\treturn line.split(\",\").map((part) => part.trim());",
+						"}",
+						"",
+						"export function parseCsv(text) {",
+						"\treturn splitLines(text).map(parseCsvLine);",
+						"}",
+						"",
+						"export function parseBool(value) {",
+						"\tif (value === \"true\") return true;",
+						"\tif (value === \"false\") return false;",
+						"\treturn undefined;",
+						"}",
+						"",
+						"export function parseSemver(text) {",
+						"\tconst parts = text.split(\".\").map(parseIntSafe);",
+						"\tif (parts.length !== 3 || parts.some((p) => p === undefined)) return undefined;",
+						"\treturn { major: parts[0], minor: parts[1], patch: parts[2] };",
+						"}",
+						"",
+						"export function parseIsoDate(text) {",
+						"\tconst match = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(text);",
+						"\tif (!match) return undefined;",
+						"\treturn { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };",
+						"}",
+						"",
+						"export function parseUrlPath(url) {",
+						"\tconst idx = url.indexOf(\"://\");",
+						"\tif (idx === -1) return undefined;",
+						"\tconst rest = url.slice(idx + 3);",
+						"\tconst slash = rest.indexOf(\"/\");",
+						"\treturn slash === -1 ? \"/\" : rest.slice(slash);",
+						"}",
+						"",
+						"export function parseQueryString(query) {",
+						"\tif (!query) return {};",
+						"\tconst trimmed = query.startsWith(\"?\") ? query.slice(1) : query;",
+						"\tconst out = {};",
+						"\tfor (const pair of trimmed.split(\"&\")) {",
+						"\t\tconst kv = parseKeyValue(pair);",
+						"\t\tif (kv) out[kv.key] = kv.value;",
+						"\t}",
+						"\treturn out;",
+						"}",
+						"",
+						"export function parseDuration(text) {",
+						"\tconst match = /^(\\d+)(ms|s|m)$/.exec(text);",
+						"\tif (!match) return undefined;",
+						"\tconst n = Number(match[1]);",
+						"\tif (match[2] === \"ms\") return n;",
+						"\tif (match[2] === \"s\") return n * 1000;",
+						"\treturn n * 60_000;",
+						"}",
+						"",
+						"export function parseHexColor(text) {",
+						"\tconst match = /^#([0-9a-fA-F]{6})$/.exec(text);",
+						"\tif (!match) return undefined;",
+						"\tconst hex = match[1];",
+						"\treturn {",
+						"\t\tr: Number.parseInt(hex.slice(0, 2), 16),",
+						"\t\tg: Number.parseInt(hex.slice(2, 4), 16),",
+						"\t\tb: Number.parseInt(hex.slice(4, 6), 16),",
+						"\t};",
+						"}",
+						"",
+						"export function parseIndent(text) {",
+						"\tlet count = 0;",
+						"\twhile (text[count] === \" \") count++;",
+						"\treturn count;",
+						"}",
+						"",
+						"export function parseComment(line) {",
+						"\tconst idx = line.indexOf(\"//\");",
+						"\treturn idx === -1 ? undefined : line.slice(idx + 2).trim();",
+						"}",
+						"",
+						"export function parseBrackets(text) {",
+						"\tconst open = text.indexOf(\"[\");",
+						"\tconst close = text.indexOf(\"]\");",
+						"\tif (open === -1 || close === -1 || close <= open) return undefined;",
+						"\treturn text.slice(open + 1, close);",
+						"}",
+						"",
+						"export function parseTags(text) {",
+						"\tconst inner = parseBrackets(text);",
+						"\tif (!inner) return [];",
+						"\treturn inner.split(\",\").map((tag) => tag.trim()).filter(Boolean);",
+						"}",
+						"",
+						"export function parseEnvLine(line) {",
+						"\tconst kv = parseKeyValue(line);",
+						"\tif (!kv) return undefined;",
+						"\treturn { name: kv.key, value: kv.value.replace(/^\"|\"$/g, \"\") };",
+						"}",
+						"",
+						"export function parseRecords(text) {",
+						"\tconst records = splitLines(text);",
+						"\tconst out = [];",
+						"\tfor (let i = 0; i <= records.length; i++) {",
+						"\t\tout.push(parseKeyValue(records[i]));",
+						"\t}",
+						"\treturn out;",
+						"}"
+					]
+				},
+				{
+					"path": "tests/parser.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { parseRecords } from \"../src/parser.mjs\";",
+						"",
+						"test(\"parseRecords parses every record without crashing\", () => {",
+						"\tconst out = parseRecords(\"a=1\\nb=2\\nc=3\");",
+						"\tassert.equal(out.length, 3);",
+						"\tassert.deepEqual(out[0], { key: \"a\", value: \"1\" });",
+						"\tassert.deepEqual(out[2], { key: \"c\", value: \"3\" });",
+						"});"
+					]
+				}
+			]
+		},
+		{
+			"id": "shell_script_fix",
+			"category": "debugging",
+			"description": "Repair three bugs in a build script so it runs and produces the right artifact.",
+			"weight": 3,
+			"verifyCommand": "bash build.sh && grep -q OK dist/output.txt",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. `bash build.sh` fails. Fix the script so it completes and produces dist/output.txt containing OK.\n2. Only edit build.sh.\n3. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- The verification command is: `bash build.sh && grep -q OK dist/output.txt`\n",
+			"files": [
+				{
+					"path": "build.sh",
+					"lines": [
+						"#!/usr/bin/env bash",
+						"set -e",
+						"SRC_DIR=src",
+						"OUT_DIR=dist",
+						"mkdir -p \"$OUT_DIR",
+						"cp \"$SRC_DIR/input.txt\" \"$OUT_DIR/input.txt\"",
+						"echo OK > \"$OUT_DIR/outpu.txt\""
+					]
+				},
+				{
+					"path": "src/input.txt",
+					"lines": [
+						"payload"
+					]
+				}
+			]
+		},
+		{
+			"id": "multi_file_feature",
+			"category": "implementation",
+			"description": "Implement a retry helper in a new file and wire it into the client.",
+			"weight": 4,
+			"verifyCommand": "node --test",
+			"expectedChangedFilesMax": 2,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Implement `withRetry(fn, attempts = 3)` in src/retry.mjs: call fn, and if it throws/rejects, retry up to `attempts` total calls before rethrowing the last error.\n2. Wire it into src/client.mjs so `fetchData` retries the fetcher.\n3. Do not edit the tests.\n4. Run the verification command before you finish.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `node --test`\n",
+			"files": [
+				{
+					"path": "src/client.mjs",
+					"lines": [
+						"export async function fetchData(fetcher, url) {",
+						"\treturn fetcher(url);",
+						"}"
+					]
+				},
+				{
+					"path": "tests/retry.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"",
+						"import { fetchData } from \"../src/client.mjs\";",
+						"",
+						"test(\"fetchData retries a flaky fetcher until it succeeds\", async () => {",
+						"\tlet calls = 0;",
+						"\tconst flaky = async () => {",
+						"\t\tcalls++;",
+						"\t\tif (calls < 3) throw new Error(\"boom\");",
+						"\t\treturn \"data\";",
+						"\t};",
+						"\tassert.equal(await fetchData(flaky, \"x\"), \"data\");",
+						"\tassert.equal(calls, 3);",
+						"});",
+						"",
+						"test(\"fetchData rethrows after three attempts\", async () => {",
+						"\tlet calls = 0;",
+						"\tconst always = async () => {",
+						"\t\tcalls++;",
+						"\t\tthrow new Error(\"nope\");",
+						"\t};",
+						"\tawait assert.rejects(fetchData(always, \"x\"), /nope/);",
+						"\tassert.equal(calls, 3);",
+						"});"
+					]
+				}
+			]
+		}
+	]
+}

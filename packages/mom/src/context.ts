@@ -154,6 +154,14 @@ class WorkspaceSettingsStorage implements MomSettingsStorage {
 		this.settingsPath = join(workspaceDir, "settings.json");
 	}
 
+	read(scope: "global" | "project"): string | undefined {
+		if (scope === "project") {
+			// Mom stores all settings in a single workspace file.
+			return undefined;
+		}
+		return existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf-8") : undefined;
+	}
+
 	withLock(scope: "global" | "project", fn: (current: string | undefined) => string | undefined): void {
 		if (scope === "project") {
 			// Mom stores all settings in a single workspace file.

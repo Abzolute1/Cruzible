@@ -9,6 +9,12 @@ HF_TOKEN=""
 AG1_API_KEY=""
 VLLM_VERSION="release"  # Default to release
 
+# Secrets may be provided via an env file written over stdin by the CLI
+# (keeps them out of `ps` argv). CLI flags below still work as an override.
+if [ -f /tmp/pod_setup.env ]; then
+    source /tmp/pod_setup.env
+fi
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --mount)
@@ -298,16 +304,25 @@ fi
 mkdir -p ~/.config/vllm
 touch ~/.config/vllm/do_not_track
 
+# Write secrets to a separate chmod-600 file instead of ~/.bashrc
+mkdir -p ~/.config/ag1-pods
+umask 077
+cat > ~/.config/ag1-pods/env << EOF
+# AG1 pods secrets (sourced by ~/.bashrc; keep 0600)
+export HF_TOKEN="${HF_TOKEN}"
+export AG1_API_KEY="${AG1_API_KEY}"
+export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
+EOF
+chmod 600 ~/.config/ag1-pods/env
+
 # Write environment to .bashrc for persistence
 cat >> ~/.bashrc << EOF
 
 # AG1 vLLM environment
 [ -d "\$HOME/venv" ] && source "\$HOME/venv/bin/activate"
+[ -f "\$HOME/.config/ag1-pods/env" ] && source "\$HOME/.config/ag1-pods/env"
 export PATH="/usr/local/cuda-${DRIVER_CUDA_VERSION}/bin:\$HOME/.local/bin:\$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-${DRIVER_CUDA_VERSION}/lib64:\${LD_LIBRARY_PATH:-}"
-export HF_TOKEN="${HF_TOKEN}"
-export AG1_API_KEY="${AG1_API_KEY}"
-export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DO_NOT_TRACK=1

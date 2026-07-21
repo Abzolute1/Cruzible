@@ -117,10 +117,14 @@ describe("ModelRegistry", () => {
 		});
 
 		test("overriding headers resolves at request time", async () => {
+			// getApiKeyAndHeaders requires resolvable auth, so provide a literal key
 			writeRawModelsJson({
-				anthropic: overrideConfig("https://my-proxy.example.com/v1", {
-					"X-Custom-Header": "custom-value",
-				}),
+				anthropic: {
+					...overrideConfig("https://my-proxy.example.com/v1", {
+						"X-Custom-Header": "custom-value",
+					}),
+					apiKey: "sk-test-key",
+				},
 			});
 
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
@@ -632,8 +636,10 @@ describe("ModelRegistry", () => {
 		});
 
 		test("model override can add headers at request time", async () => {
+			// getApiKeyAndHeaders requires resolvable auth, so provide a literal key
 			writeRawModelsJson({
 				openrouter: {
+					apiKey: "sk-test-key",
 					modelOverrides: {
 						"anthropic/claude-sonnet-4": {
 							headers: { "X-Custom-Model-Header": "value" },

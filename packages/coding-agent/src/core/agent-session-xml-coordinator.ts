@@ -1,6 +1,8 @@
 import type { AgentTool } from "@ag1/agent-core";
 import type { AgentSessionEvent } from "./agent-session.js";
-import type { ExtensionRunner } from "./extensions/index.js";
+import type { ExtensionRunner, ToolCallEventResult } from "./extensions/index.js";
+import type { CustomMessage } from "./messages.js";
+import { buildTaggedPromptSection } from "./prompt-sections.js";
 import { appendResearchArtifactFromToolResult } from "./research-artifacts.js";
 import type { SessionManager } from "./session-manager.js";
 import {
@@ -14,8 +16,6 @@ export interface AgentSessionXmlCoordinatorOptions {
 	agentState: {
 		getMessages: () => any[];
 		setMessages: (messages: any[]) => void;
-		getSystemPrompt: () => string;
-		setSystemPrompt: (prompt: string) => void;
 		prompt: (messages: any[]) => Promise<void>;
 		continue: () => Promise<void>;
 	};
@@ -23,7 +23,10 @@ export interface AgentSessionXmlCoordinatorOptions {
 	getActiveToolNames: () => string[];
 	getTool: (name: string) => AgentTool | undefined;
 	getExtensionRunner: () => ExtensionRunner | undefined;
-	evaluateToolSafety: (toolName: string, args: Record<string, unknown>) => Promise<{ block: boolean; reason: string } | undefined>;
+	evaluateToolSafety: (
+		toolName: string,
+		args: Record<string, unknown>,
+	) => Promise<{ block: boolean; reason: string } | undefined>;
 	noteToolResult?: (observation: {
 		toolName: string;
 		args: Record<string, unknown>;
@@ -35,21 +38,21 @@ export interface AgentSessionXmlCoordinatorOptions {
 }
 
 export class AgentSessionXmlCoordinator {
-	private structuredToolCallCountThisPrompt = 0;
 	private xmlToolCallIteration = 0;
 	private readonly maxXmlToolCallIterations = 3;
 	private readonly processedAssistantTurnKeys = new Set<string>();
+	private toolAbortController: AbortController | undefined = undefined;
 
 	constructor(private readonly options: AgentSessionXmlCoordinatorOptions) {}
 
-	resetForPrompt(): void {
-		this.structuredToolCallCountThisPrompt = 0;
-		this.xmlToolCallIteration = 0;
-		this.processedAssistantTurnKeys.clear();
+	/** Abort any in-flight XML-fallback tool execution. */
+	abort(): void {
+		this.toolAbortController?.abort();
 	}
 
-	noteStructuredToolCall(): void {
-		this.structuredToolCallCountThisPrompt++;
+	resetForPrompt(): void {
+		this.xmlToolCallIteration = 0;
+		this.processedAssistantTurnKeys.clear();
 	}
 
 	async process(): Promise<void> {
@@ -103,7 +106,8 @@ export class AgentSessionXmlCoordinator {
 				arguments: xmlCall.arguments as Record<string, unknown>,
 				iteration: this.xmlToolCallIteration,
 				callCount: xmlCalls.length,
-				assistantStopReason: typeof lastAssistantMsg.stopReason === "string" ? lastAssistantMsg.stopReason : undefined,
+				assistantStopReason:
+					typeof lastAssistantMsg.stopReason === "string" ? lastAssistantMsg.stopReason : undefined,
 				assistantTextLength: textContent.length,
 				severity: xmlAnalysis.severity,
 				reasons: xmlAnalysis.reasons,
@@ -111,24 +115,36 @@ export class AgentSessionXmlCoordinator {
 			});
 		}
 
-		const previousSystemPrompt = this.options.agentState.getSystemPrompt();
 		const recoveryPrompt = buildXmlFallbackRecoveryPrompt(xmlAnalysis, {
 			toolNames: xmlCalls.map((xmlCall) => xmlCall.name),
 		});
 		if (recoveryPrompt) {
-			this.options.agentState.setSystemPrompt(`${previousSystemPrompt}\n\n${recoveryPrompt}`);
+			this.appendRecoveryMessage(recoveryPrompt);
 		}
-		this.structuredToolCallCountThisPrompt = 0;
-		try {
-			await this.options.agentState.continue();
-			await this.options.waitForRetry();
-		} finally {
-			if (recoveryPrompt) {
-				this.options.agentState.setSystemPrompt(previousSystemPrompt);
-			}
-		}
+		await this.options.agentState.continue();
+		await this.options.waitForRetry();
 
 		await this.process();
+	}
+
+	/**
+	 * Recovery guidance rides the turn tail as a hidden user-context message
+	 * (never the system prompt), so the session system prompt stays byte-stable
+	 * across XML recovery runs and provider prefix caching is not invalidated.
+	 */
+	private appendRecoveryMessage(recoveryPrompt: string): void {
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "xml-tool-recovery",
+			content: buildTaggedPromptSection("xml-tool-recovery", recoveryPrompt),
+			display: false,
+			details: undefined,
+			timestamp: Date.now(),
+		};
+		const messages = this.options.agentState.getMessages();
+		messages.push(message);
+		this.options.agentState.setMessages(messages);
+		this.options.sessionManager.appendMessage(message);
 	}
 
 	private async processSingleCall(xmlCall: XmlToolCall, activeToolNames: string[]): Promise<void> {
@@ -136,14 +152,34 @@ export class AgentSessionXmlCoordinator {
 		const extensionRunner = this.options.getExtensionRunner();
 
 		if (extensionRunner?.hasHandlers("tool_call")) {
-			await extensionRunner
-				.emitToolCall({
+			let extensionResult: ToolCallEventResult | undefined;
+			try {
+				extensionResult = await extensionRunner.emitToolCall({
 					type: "tool_call",
 					toolName: xmlCall.name,
 					toolCallId: xmlCall.id,
 					input: xmlCall.arguments as Record<string, unknown>,
-				})
-				.catch(() => {});
+				});
+			} catch (error) {
+				// Tolerate extension failures so one bad handler does not kill the
+				// XML fallback loop, but log them instead of silently swallowing.
+				console.error(`[XmlCoordinator] Extension tool_call handler failed for '${xmlCall.name}':`, error);
+			}
+			if (extensionResult?.block) {
+				// Honor extension blocks the same way the structured path does:
+				// record an error tool result instead of executing.
+				await this.appendToolResult(
+					xmlCall,
+					{
+						content: [
+							{ type: "text" as const, text: extensionResult.reason ?? `Tool call blocked by extension` },
+						],
+						details: undefined,
+					},
+					true,
+				);
+				return;
+			}
 		}
 
 		if (!tool) {
@@ -164,8 +200,8 @@ export class AgentSessionXmlCoordinator {
 		}
 
 		const preparedArguments = tool.prepareArguments
-			? tool.prepareArguments(xmlCall.arguments) as Record<string, unknown>
-			: xmlCall.arguments as Record<string, unknown>;
+			? (tool.prepareArguments(xmlCall.arguments) as Record<string, unknown>)
+			: (xmlCall.arguments as Record<string, unknown>);
 		const safetyBlock = await this.options.evaluateToolSafety(xmlCall.name, preparedArguments);
 		if (safetyBlock) {
 			await this.appendToolResult(
@@ -179,8 +215,9 @@ export class AgentSessionXmlCoordinator {
 			return;
 		}
 
+		this.toolAbortController = new AbortController();
 		try {
-			const result = await tool.execute(xmlCall.id, preparedArguments as any, undefined);
+			const result = await tool.execute(xmlCall.id, preparedArguments as any, this.toolAbortController.signal);
 			if (extensionRunner?.hasHandlers("tool_result")) {
 				await extensionRunner
 					.emitToolResult({
@@ -233,6 +270,8 @@ export class AgentSessionXmlCoordinator {
 				isError: true,
 			});
 			await this.appendToolResult(xmlCall, errorResult, true, preparedArguments);
+		} finally {
+			this.toolAbortController = undefined;
 		}
 	}
 

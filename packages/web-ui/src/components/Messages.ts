@@ -12,6 +12,7 @@ import { renderTool } from "../tools/index.js";
 import type { Attachment } from "../utils/attachment-utils.js";
 import { formatUsage } from "../utils/format.js";
 import { i18n } from "../utils/i18n.js";
+import "./SafeMarkdownBlock.js";
 import "./ThinkingBlock.js";
 import type { AgentTool } from "@ag1/agent-core";
 
@@ -61,7 +62,7 @@ export class UserMessage extends LitElement {
 		return html`
 			<div class="flex justify-start mx-4">
 				<div class="user-message-container py-2 px-4 rounded-xl">
-					<markdown-block .content=${content}></markdown-block>
+					<safe-markdown-block .content=${content}></safe-markdown-block>
 					${
 						this.message.role === "user-with-attachments" &&
 						this.message.attachments &&
@@ -107,7 +108,7 @@ export class AssistantMessage extends LitElement {
 
 		for (const chunk of this.message.content) {
 			if (chunk.type === "text" && chunk.text.trim() !== "") {
-				orderedParts.push(html`<markdown-block .content=${chunk.text}></markdown-block>`);
+				orderedParts.push(html`<safe-markdown-block .content=${chunk.text}></safe-markdown-block>`);
 			} else if (chunk.type === "thinking" && chunk.thinking.trim() !== "") {
 				orderedParts.push(
 					html`<thinking-block .content=${chunk.thinking} .isStreaming=${this.isStreaming}></thinking-block>`,

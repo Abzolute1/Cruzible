@@ -60,4 +60,40 @@ describe("AutonHook cost budget semantics", () => {
 		expect(hook.getCostSummary()).toContain("30 cache-read");
 		expect(hook.getCostSummary()).toContain("40 cache-write");
 	});
+
+	function bindSessionWithCost(
+		hook: AutonHook,
+		cost: { input: number; output: number; cacheRead: number; cacheWrite: number },
+	) {
+		hook.bindSession({
+			subscribe: () => () => {},
+			model: { cost } as never,
+		});
+	}
+
+	test("declared model cost makes --max-cost authoritative and enforcing", () => {
+		const hook = new AutonHook({ maxCost: 0.00001, modelId: "claude-sonnet-4-5" });
+		bindSessionWithCost(hook, { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+
+		hook.recordUsage(2000, 2000);
+		const status = hook.getBudgetStatus();
+
+		expect(status.costAuthoritative).toBe(true);
+		expect(status.exceeded.cost).toBe(true);
+		expect(() => hook.abortIfBudgetExceeded()).toThrow(/Cost budget exceeded/);
+		expect(hook.getCostSummary()).not.toContain("estimate");
+	});
+
+	test("all-zero declared cost (local/free model) stays a non-authoritative zero estimate", () => {
+		const hook = new AutonHook({ maxCost: 0.00001, modelId: "lm-studio" });
+		bindSessionWithCost(hook, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+
+		hook.recordUsage(5000, 5000);
+		const status = hook.getBudgetStatus();
+
+		expect(status.costUsed).toBe(0);
+		expect(status.costAuthoritative).toBe(false);
+		expect(status.exceeded.cost).toBe(false);
+		expect(hook.getCostSummary()).toContain("estimate");
+	});
 });

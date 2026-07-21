@@ -29,6 +29,7 @@ import type {
 	RpcSessionState,
 	RpcSlashCommand,
 } from "./rpc-types.js";
+import { SESSION_MUTATING_COMMANDS, validateRpcCommand } from "./rpc-validation.js";
 
 // Re-export types for consumers
 export type {
@@ -342,6 +343,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
 
+		// Session-mutating commands tear down the live session (replaceCurrentWith
+		// disposes it); never run them while a prompt is streaming.
+		if (SESSION_MUTATING_COMMANDS.has(command.type) && session.isStreaming) {
+			return error(
+				id,
+				command.type,
+				`Cannot run '${command.type}' while the agent is streaming. Send 'abort' first or wait for the prompt to complete.`,
+			);
+		}
+
 		switch (command.type) {
 			// =================================================================
 			// Prompting
@@ -627,7 +638,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await shutdown();
 	}
 
-	const handleInputLine = async (line: string) => {
+	/**
+	 * Handle lines that must not go through the serialized command queue:
+	 * unparseable input (immediate error) and extension UI responses (a queued
+	 * command may be awaiting the dialog they answer).
+	 * Returns true when the line was handled out of band.
+	 */
+	const handleOutOfBandLine = (line: string): boolean => {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
@@ -639,10 +656,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					`Failed to parse command: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
 				),
 			);
-			return;
+			return true;
 		}
 
-		// Handle extension UI responses
 		if (
 			typeof parsed === "object" &&
 			parsed !== null &&
@@ -655,6 +671,27 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				pendingExtensionRequests.delete(response.id);
 				pending.resolve(response);
 			}
+			return true;
+		}
+
+		return false;
+	};
+
+	const handleInputLine = async (line: string) => {
+		// Lines reaching here parsed successfully and are not extension UI
+		// responses (already filtered by handleOutOfBandLine).
+		const parsed: unknown = JSON.parse(line);
+
+		const validationError = validateRpcCommand(parsed);
+		if (validationError) {
+			const invalid = parsed as { id?: unknown; type?: unknown };
+			output(
+				error(
+					typeof invalid.id === "string" ? invalid.id : undefined,
+					typeof invalid.type === "string" ? invalid.type : "unknown",
+					`Invalid command: ${validationError}`,
+				),
+			);
 			return;
 		}
 
@@ -680,8 +717,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	process.stdin.on("end", onInputEnd);
 
 	detachInput = (() => {
+		// Serialize command handling: concurrent handleInputLine calls could
+		// interleave state-mutating commands (session switch/new/fork) with an
+		// active prompt. A simple promise queue keeps them ordered; prompts
+		// themselves still run in the background (events stream immediately).
+		let inputQueue: Promise<void> = Promise.resolve();
 		const detachJsonl = attachJsonlLineReader(process.stdin, (line) => {
-			void handleInputLine(line);
+			// Extension UI responses must be dispatched out of band: a queued
+			// command may be awaiting the dialog this line answers, so queuing
+			// the response behind that command would deadlock.
+			if (handleOutOfBandLine(line)) return;
+			inputQueue = inputQueue.then(() => handleInputLine(line));
 		});
 		return () => {
 			detachJsonl();

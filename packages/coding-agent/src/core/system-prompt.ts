@@ -2,8 +2,40 @@
  * System prompt construction and project context loading
  */
 
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
+
+/**
+ * Render a stable top-level listing of the workspace for system-prompt grounding.
+ * Directories first (trailing slash), `.git` skipped, capped with a "+N more" marker.
+ * Returns "" when the directory can't be read (grounding is best-effort).
+ */
+export function buildWorkspaceSnapshot(cwd: string, maxEntries = 100): string {
+	const entries: Array<{ name: string; isDir: boolean }> = [];
+	try {
+		for (const name of readdirSync(cwd)) {
+			if (name === ".git") continue;
+			let isDir = false;
+			try {
+				isDir = statSync(join(cwd, name)).isDirectory();
+			} catch {
+				// broken symlink or unreadable entry — list it as a file
+			}
+			entries.push({ name, isDir });
+		}
+	} catch {
+		return "";
+	}
+	entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+	const shown = entries.slice(0, maxEntries);
+	const lines = shown.map((entry) => (entry.isDir ? `${entry.name}/` : entry.name));
+	if (entries.length > shown.length) {
+		lines.push(`… +${entries.length - shown.length} more`);
+	}
+	return lines.join("\n");
+}
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -18,6 +50,8 @@ export interface BuildSystemPromptOptions {
 	appendSystemPrompt?: string;
 	/** Working directory. Default: process.cwd() */
 	cwd?: string;
+	/** Pre-rendered top-level workspace listing (stable snapshot taken at session start). */
+	workspaceSnapshot?: string;
 	/** Pre-loaded context files. */
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
@@ -51,6 +85,24 @@ function buildCompactAg1DocsSection(readmePath: string, docsPath: string, exampl
 	return `AG1 docs only for AG1-specific work: README ${readmePath} | Docs ${docsPath} | Examples ${examplesPath}`;
 }
 
+/**
+ * The AG1-docs pointer section is only useful when the workspace IS AG1 development
+ * (the repo or an @ag1 package). Everywhere else it's dead tokens on every turn.
+ * Deterministic check: the workspace package.json name is "ag1*" or "@ag1/*".
+ */
+function isAg1Workspace(cwd: string): boolean {
+	try {
+		const pkgPath = join(cwd, "package.json");
+		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { name?: string };
+		return (
+			typeof pkg.name === "string" &&
+			(pkg.name === "ag1" || pkg.name.startsWith("ag1-") || pkg.name.startsWith("@ag1/"))
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): string {
 	const {
@@ -75,6 +127,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
+	// Stable grounding block: lets the model skip the ls/pwd discovery turns. Must be
+	// byte-identical across turns within a session (prompt-cache friendly), so callers
+	// pass a memoized snapshot rather than a live listing.
+	const workspaceSection = options.workspaceSnapshot
+		? `\nTop-level workspace entries (snapshot at session start):\n${options.workspaceSnapshot}`
+		: "";
+
 	if (customPrompt) {
 		let prompt = customPrompt;
 
@@ -93,6 +152,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		// Add date and working directory last
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += workspaceSection;
 
 		return prompt;
 	}
@@ -101,7 +161,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
-	const compactPromptProfile = modelProvider === "local" || ((contextWindow ?? 0) > 0 && (contextWindow ?? 0) <= 64_000);
+	const compactPromptProfile =
+		modelProvider === "local" || ((contextWindow ?? 0) > 0 && (contextWindow ?? 0) <= 64_000);
 
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
@@ -168,7 +229,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			? "You are an expert coding assistant inside AG1. Use the available tools to inspect code, run commands, edit files, and answer precisely."
 			: hasReadOnlyExploration
 				? "You are an expert coding assistant inside AG1. Use the available read-only and research tools to inspect evidence and answer precisely."
-				: "You are an expert coding assistant inside AG1. Answer precisely using only the available context."
+				: "You are an expert coding assistant inside AG1. Answer precisely using only the available context.";
 
 	let prompt = `${roleLine}
 
@@ -176,9 +237,12 @@ Available tools:
 ${toolsList}
 
 Guidelines:
-${guidelines}
+${guidelines}`;
 
-${compactPromptProfile ? buildCompactAg1DocsSection(readmePath, docsPath, examplesPath) : buildAg1DocsSection(readmePath, docsPath, examplesPath)}`;
+	// AG1-docs pointer only earns its tokens in AG1 workspaces (see isAg1Workspace).
+	if (isAg1Workspace(resolvedCwd)) {
+		prompt += `\n\n${compactPromptProfile ? buildCompactAg1DocsSection(readmePath, docsPath, examplesPath) : buildAg1DocsSection(readmePath, docsPath, examplesPath)}`;
+	}
 
 	if (appendSection) {
 		prompt += appendSection;
@@ -194,6 +258,7 @@ ${compactPromptProfile ? buildCompactAg1DocsSection(readmePath, docsPath, exampl
 	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
+	prompt += workspaceSection;
 
 	return prompt;
 }

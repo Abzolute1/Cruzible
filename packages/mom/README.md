@@ -73,8 +73,9 @@ docker run -d \
   alpine:latest \
   tail -f /dev/null
 
-# Run mom in Docker mode
-mom --sandbox=docker:mom-sandbox ./data
+# Run mom (Docker sandbox is the default)
+mom ./data
+# or explicitly: mom --sandbox=docker:mom-sandbox ./data
 
 # Mom will install any tools she needs herself (git, jq, etc.)
 ```
@@ -85,8 +86,9 @@ mom --sandbox=docker:mom-sandbox ./data
 mom [options] <working-directory>
 
 Options:
-  --sandbox=host              Run tools on host (not recommended)
-  --sandbox=docker:<name>     Run tools in Docker container (recommended)
+  --sandbox=docker:<name>     Run tools in Docker container (default: docker:mom-sandbox)
+  --sandbox=host              Run tools on host (DANGEROUS: any channel member effectively
+                              gets a shell on this machine; prints a startup warning)
 ```
 
 ## Environment Variables

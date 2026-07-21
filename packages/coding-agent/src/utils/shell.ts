@@ -179,10 +179,13 @@ export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		// Use taskkill on Windows to kill process tree
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const killer = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
 			});
+			// Spawn failures (missing taskkill, EACCES) arrive as an async 'error'
+			// event; without a listener Node raises an unhandled error and crashes.
+			killer.on("error", () => {});
 		} catch {
 			// Ignore errors if taskkill fails
 		}

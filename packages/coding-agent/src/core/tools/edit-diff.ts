@@ -85,6 +85,11 @@ interface MatchedEdit {
 export interface AppliedEditsResult {
 	baseContent: string;
 	newContent: string;
+	fuzzyMatchUsed: boolean;
+}
+
+export interface ApplyEditsOptions {
+	allowFuzzyMatch?: boolean;
 }
 
 /**
@@ -93,7 +98,7 @@ export interface AppliedEditsResult {
  * fuzzy-normalized version of the content (trailing whitespace stripped,
  * Unicode quotes/dashes normalized to ASCII).
  */
-export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
+export function fuzzyFindText(content: string, oldText: string, options: ApplyEditsOptions = {}): FuzzyMatchResult {
 	// Try exact match first
 	const exactIndex = content.indexOf(oldText);
 	if (exactIndex !== -1) {
@@ -101,6 +106,16 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 			found: true,
 			index: exactIndex,
 			matchLength: oldText.length,
+			usedFuzzyMatch: false,
+			contentForReplacement: content,
+		};
+	}
+
+	if (!options.allowFuzzyMatch) {
+		return {
+			found: false,
+			index: -1,
+			matchLength: 0,
 			usedFuzzyMatch: false,
 			contentForReplacement: content,
 		};
@@ -138,7 +153,10 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-function countOccurrences(content: string, oldText: string): number {
+function countOccurrences(content: string, oldText: string, allowFuzzyMatch: boolean): number {
+	if (!allowFuzzyMatch) {
+		return content.split(oldText).length - 1;
+	}
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	return fuzzyContent.split(fuzzyOldText).length - 1;
@@ -194,7 +212,9 @@ export function applyEditsToNormalizedContent(
 	normalizedContent: string,
 	edits: Edit[],
 	path: string,
+	options: ApplyEditsOptions = {},
 ): AppliedEditsResult {
+	const allowFuzzyMatch = options.allowFuzzyMatch === true;
 	const normalizedEdits = edits.map((edit) => ({
 		oldText: normalizeToLF(edit.oldText),
 		newText: normalizeToLF(edit.newText),
@@ -206,7 +226,10 @@ export function applyEditsToNormalizedContent(
 		}
 	}
 
-	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
+	const initialMatches = normalizedEdits.map((edit) =>
+		fuzzyFindText(normalizedContent, edit.oldText, { allowFuzzyMatch }),
+	);
+	const fuzzyMatchUsed = initialMatches.some((match) => match.usedFuzzyMatch);
 	const baseContent = initialMatches.some((match) => match.usedFuzzyMatch)
 		? normalizeForFuzzyMatch(normalizedContent)
 		: normalizedContent;
@@ -214,12 +237,12 @@ export function applyEditsToNormalizedContent(
 	const matchedEdits: MatchedEdit[] = [];
 	for (let i = 0; i < normalizedEdits.length; i++) {
 		const edit = normalizedEdits[i];
-		const matchResult = fuzzyFindText(baseContent, edit.oldText);
+		const matchResult = fuzzyFindText(baseContent, edit.oldText, { allowFuzzyMatch });
 		if (!matchResult.found) {
 			throw getNotFoundError(path, i, normalizedEdits.length);
 		}
 
-		const occurrences = countOccurrences(baseContent, edit.oldText);
+		const occurrences = countOccurrences(baseContent, edit.oldText, allowFuzzyMatch);
 		if (occurrences > 1) {
 			throw getDuplicateError(path, i, normalizedEdits.length, occurrences);
 		}
@@ -256,7 +279,7 @@ export function applyEditsToNormalizedContent(
 		throw getNoChangeError(path, normalizedEdits.length);
 	}
 
-	return { baseContent, newContent };
+	return { baseContent, newContent, fuzzyMatchUsed };
 }
 
 /**

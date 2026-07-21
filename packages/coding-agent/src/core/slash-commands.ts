@@ -24,7 +24,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "copy", description: "Copy last agent message to clipboard" },
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },
-	{ name: "plan", description: "Planning mode and plan review commands (review, interview [rev], show [rev], history, routes, planner-model [ref|clear], executor-model [ref|clear], accept [rev], reject [rev], answer [rev] <response>, revise [rev] <feedback>, execute [rev], next [rev], step [rev] <step>, clear [rev], done [rev] <step>, reopen [rev] <step>)" },
+	{
+		name: "plan",
+		description:
+			"Planning mode and plan review commands (review, interview [rev], show [rev], history, routes, planner-model [ref|clear], executor-model [ref|clear], accept [rev], reject [rev], answer [rev] <response>, revise [rev] <feedback>, execute [rev], next [rev], step [rev] <step>, clear [rev], done [rev] <step>, reopen [rev] <step>)",
+	},
 	{ name: "research", description: "Show recent off-context research artifacts" },
 	{ name: "debug", description: "Show runtime-health, stabilization, and debug artifact details" },
 	{ name: "workspace", description: "Show, diff, promote, or discard autonomous workspace state" },
@@ -39,5 +43,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "set-context", description: "Set custom context window (overrides model default)" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+	{ name: "verbose", description: "Toggle verbose display (full thinking, ungrouped tool calls, expand hints)" },
 	{ name: "quit", description: "Quit AG1" },
 ];

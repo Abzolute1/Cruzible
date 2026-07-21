@@ -4,7 +4,9 @@ export interface InteractiveRuntimeTransitionResult {
 	cancelled: boolean;
 }
 
-export async function performInteractiveRuntimeReplacement<TResult extends InteractiveRuntimeTransitionResult>(options: {
+export async function performInteractiveRuntimeReplacement<
+	TResult extends InteractiveRuntimeTransitionResult,
+>(options: {
 	clearTransientUi: () => void;
 	execute: () => Promise<TResult>;
 	applyRuntimeSessionChange: () => Promise<void>;

@@ -165,6 +165,14 @@ Project agents override user agents with the same name when `agentScope: "both"`
 - **stopReason "aborted"**: User abort (Ctrl+C) kills subprocess, throws error
 - **Chain mode**: Stops at first failing step, reports which step failed
 
+## Debug Visibility
+
+Each subagent child process sets `AG1_DEBUG_SESSION_NAME` to the agent name, so
+the child's session debug log is named like a built-in `task` run —
+`Debug/subagent_<datetime>_<agent-name>_<model>/` under the child's working
+directory — instead of looking like an unrelated top-level session. Any `ag1`
+process honors the same env var if you spawn delegate sessions yourself.
+
 ## Limitations
 
 - Output truncated to last 10 items in collapsed view (expand to see all)

@@ -1,7 +1,7 @@
-import { Container } from "@ag1/tui";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Container } from "@ag1/tui";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { getAutonomousScopeGuardReason } from "../src/modes/interactive/interactive-autonomous-ui.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -49,9 +49,7 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 
 		await (InteractiveMode as any).prototype.runAutonomousLoop.call(fakeThis, "fix it", undefined);
 
-		expect(fakeThis.showWarning).toHaveBeenCalledWith(
-			expect.stringContaining("cannot run from your home directory"),
-		);
+		expect(fakeThis.showWarning).toHaveBeenCalledWith(expect.stringContaining("cannot run from your home directory"));
 	});
 
 	test("refuses autonomous mode from broad personal directories without project markers", async () => {
@@ -318,8 +316,7 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 				enableBehavioralPrompt: false,
 				enableNudges: false,
 			},
-			getAutonomousStabilizationProfile:
-				(InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
+			getAutonomousStabilizationProfile: (InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
 		};
 
 		const resolved = (InteractiveMode as any).prototype.resolveAutonomousRunConfig.call(fakeThis);
@@ -354,8 +351,7 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 					],
 				},
 			},
-			getAutonomousStabilizationProfile:
-				(InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
+			getAutonomousStabilizationProfile: (InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
 		};
 
 		const message = (InteractiveMode as any).prototype.buildAutonomousUserMessage.call(fakeThis, "fix it");
@@ -391,8 +387,7 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 					],
 				},
 			},
-			getAutonomousStabilizationProfile:
-				(InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
+			getAutonomousStabilizationProfile: (InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
 		};
 
 		const message = (InteractiveMode as any).prototype.buildInteractiveUserMessage.call(fakeThis, "fix it");
@@ -524,8 +519,10 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 					taskJournal: {
 						activeSubtask: "Finalize and report verified completion",
 						nextAction: "Stop and present the verified result",
-						plannedNextStep: "Summarize the verified result, cite the supporting source URLs, and note any residual risks.",
-						stepRationale: "Verification is satisfied, and the final report should cite the supporting sources clearly before stopping.",
+						plannedNextStep:
+							"Summarize the verified result, cite the supporting source URLs, and note any residual risks.",
+						stepRationale:
+							"Verification is satisfied, and the final report should cite the supporting sources clearly before stopping.",
 						expectedVerification: "Cite source URLs such as https://react.dev/",
 						intentStatus: "on_track",
 						lastIntentOutcome: "completion matched the planned summarize step",
@@ -547,11 +544,13 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 						lane: "research",
 						planRevision: 2,
 						executionAttempts: 3,
-						handoffSummary: "Summarize the verified result, cite the supporting source URLs, and note any residual risks. Why: Verification is satisfied, and the final report should cite the supporting sources clearly before stopping.",
+						handoffSummary:
+							"Summarize the verified result, cite the supporting source URLs, and note any residual risks. Why: Verification is satisfied, and the final report should cite the supporting sources clearly before stopping.",
 					},
 					resume: {
 						mode: "resume_summarize",
-						resumeInstruction: "Summarize the verified result, cite the supporting source URLs, and note any residual risks.",
+						resumeInstruction:
+							"Summarize the verified result, cite the supporting source URLs, and note any residual risks.",
 						resumeReason: "Verification is already satisfied, so the run can summarize and stop.",
 						lastStableCheckpoint: "verification passed: npm test",
 					},
@@ -625,10 +624,8 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 			formatRuntimeHealthIssue: (InteractiveMode as any).prototype.formatRuntimeHealthIssue,
 			formatDebugArtifactsSummary: (InteractiveMode as any).prototype.formatDebugArtifactsSummary,
 			formatRuntimeRecoverySummary: (InteractiveMode as any).prototype.formatRuntimeRecoverySummary,
-			formatAutonomousStabilizationSummary:
-				(InteractiveMode as any).prototype.formatAutonomousStabilizationSummary,
-			getAutonomousStabilizationProfile:
-				(InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
+			formatAutonomousStabilizationSummary: (InteractiveMode as any).prototype.formatAutonomousStabilizationSummary,
+			getAutonomousStabilizationProfile: (InteractiveMode as any).prototype.getAutonomousStabilizationProfile,
 			formatAutonomousControlSummary: (InteractiveMode as any).prototype.formatAutonomousControlSummary,
 			formatAutonomousResearchSummary: (InteractiveMode as any).prototype.formatAutonomousResearchSummary,
 			formatAutonomousVisualSummary: (InteractiveMode as any).prototype.formatAutonomousVisualSummary,
@@ -671,6 +668,12 @@ describe("InteractiveMode.handleWorkspaceCommand", () => {
 		expect(output).toContain("Stable Checkpoint:");
 		expect(output).toContain("Evidence Ready:");
 		expect(output).toContain("yes (visual)");
+		expect(output).toContain("Budget Pressure:");
+		expect(output).toContain("elevated");
+		expect(output).toContain("Verification:");
+		expect(output).toContain("satisfied (npm test)");
+		expect(output).toContain("Next Allowed Action:");
+		expect(output).toContain("Summarize the verified result, cite the supporting source URLs");
 		expect(output).toContain("Evidence:");
 		expect(output).toContain("sufficient");
 		expect(output).toContain("State:");

@@ -6,9 +6,7 @@ import {
 	type InteractivePlanArtifact,
 } from "../src/modes/interactive/interactive-plan-artifacts.js";
 
-function createArtifact(
-	overrides: Partial<InteractivePlanArtifact> = {},
-): InteractivePlanArtifact {
+function createArtifact(overrides: Partial<InteractivePlanArtifact> = {}): InteractivePlanArtifact {
 	return {
 		version: 1,
 		planId: "plan_123",
@@ -330,7 +328,11 @@ describe("InteractiveMode.handlePlanCommand", () => {
 			ensurePreferredModeModel,
 			shouldAllowPlanningInspection: vi.fn(() => false),
 			applySafetyPolicy: vi.fn(),
-			session: { prompt },
+			session: {
+				prompt,
+				getActiveToolNames: () => ["read", "grep", "find", "ls", "bash", "edit", "write"],
+				setActiveToolsByName: vi.fn(),
+			},
 			buildPlanningUserMessage: (InteractiveMode as any).prototype.buildPlanningUserMessage,
 			persistLatestPlanArtifact,
 			updatePendingMessagesDisplay: vi.fn(),
@@ -353,7 +355,11 @@ describe("InteractiveMode.handlePlanCommand", () => {
 			ensurePreferredModeModel: vi.fn(async () => {}),
 			shouldAllowPlanningInspection: vi.fn(() => false),
 			applySafetyPolicy: vi.fn(),
-			session: { prompt },
+			session: {
+				prompt,
+				getActiveToolNames: () => ["read", "grep", "find", "ls", "bash", "edit", "write"],
+				setActiveToolsByName: vi.fn(),
+			},
 			buildPlanningUserMessage: (InteractiveMode as any).prototype.buildPlanningUserMessage,
 			persistLatestPlanArtifact,
 			updatePendingMessagesDisplay: vi.fn(),
@@ -375,7 +381,11 @@ describe("InteractiveMode.handlePlanCommand", () => {
 			ensurePreferredModeModel: vi.fn(async () => {}),
 			shouldAllowPlanningInspection: vi.fn(() => false),
 			applySafetyPolicy: vi.fn(),
-			session: { prompt },
+			session: {
+				prompt,
+				getActiveToolNames: () => ["read", "grep", "find", "ls", "bash", "edit", "write"],
+				setActiveToolsByName: vi.fn(),
+			},
 			buildPlanningUserMessage: (InteractiveMode as any).prototype.buildPlanningUserMessage,
 			persistLatestPlanArtifact,
 			updatePendingMessagesDisplay: vi.fn(),
@@ -415,6 +425,8 @@ Steps
 Open Questions
 - Target language?
 - Platform/interface?`,
+				getActiveToolNames: () => ["read", "grep", "find", "ls", "bash", "edit", "write"],
+				setActiveToolsByName: vi.fn(),
 			},
 			sessionManager: { appendCustomEntry },
 			buildPlanningUserMessage: (InteractiveMode as any).prototype.buildPlanningUserMessage,
@@ -449,6 +461,8 @@ Open Questions
 			session: {
 				prompt,
 				getLastAssistantText: () => "Yes, let's do that.",
+				getActiveToolNames: () => ["read", "grep", "find", "ls", "bash", "edit", "write"],
+				setActiveToolsByName: vi.fn(),
 			},
 			sessionManager: { appendCustomEntry },
 			buildPlanningUserMessage: (InteractiveMode as any).prototype.buildPlanningUserMessage,
@@ -509,13 +523,7 @@ Open Questions
 			"Target language? (Python with pygame? JavaScript for web? C++/C# for terminal? Rust? Go?)",
 		);
 
-		expect(options).toEqual([
-			"Python with pygame",
-			"JavaScript for web",
-			"C++/C# for terminal",
-			"Rust",
-			"Go",
-		]);
+		expect(options).toEqual(["Python with pygame", "JavaScript for web", "C++/C# for terminal", "Rust", "Go"]);
 	});
 
 	test("prefers normalized artifact option sets for interview selectors", () => {
@@ -529,7 +537,11 @@ Open Questions
 			getPlanInterviewChoiceOptions: vi.fn(() => ["fallback"]),
 		};
 
-		const options = (InteractiveMode as any).prototype.getPlanInterviewQuestionChoiceOptions.call(fakeThis, artifact, 0);
+		const options = (InteractiveMode as any).prototype.getPlanInterviewQuestionChoiceOptions.call(
+			fakeThis,
+			artifact,
+			0,
+		);
 
 		expect(options).toEqual(["Python", "JavaScript/TypeScript", "Rust"]);
 		expect(fakeThis.getPlanInterviewChoiceOptions).not.toHaveBeenCalled();
@@ -579,7 +591,7 @@ Open Questions
 		(InteractiveMode as any).prototype.persistPlanExecutionReview.call(fakeThis, artifact, 0);
 
 		expect(showWarning).toHaveBeenCalledWith(
-			"Execution output did not include a valid structured review. Expected headings: Execution Status, Execution Summary, Files Touched, Verification, Remaining, Blockers.",
+			"Execution output did not include a valid structured review. Expected at least the headings: Execution Status, Execution Summary.",
 		);
 		expect(fakeThis.sessionManager.appendCustomEntry).not.toHaveBeenCalled();
 	});
@@ -853,7 +865,7 @@ describe("InteractiveMode.showPlanReviewSelector", () => {
 		const artifact = createArtifact({ revision: 4, status: "accepted" });
 		const showExtensionSelector = vi
 			.fn()
-			.mockResolvedValueOnce(`v4 • accepted • progress 0/2 • ${artifact.goal} • next: ${artifact.steps[0]}`)
+			.mockResolvedValueOnce(`v4 • accepted • progress 0/2 • ${artifact.goal} • next: ${artifact.steps[0]}`);
 		const showPlanWorkflowDialog = vi.fn().mockResolvedValueOnce("execute_full_plan");
 		const handlePlanCommand = vi.fn(async () => {});
 		const fakeThis: any = {

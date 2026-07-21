@@ -4,14 +4,18 @@ const AUTONOMOUS_EXTERNAL_RESEARCH_PATTERNS = [
 	/\b(compare|comparison|pricing|availability|compatibility)\b/i,
 ];
 
-const AUTONOMOUS_DOCUMENTATION_RESEARCH_PATTERNS = [/\b(documentation|docs|api reference|reference|guide|manual|spec)\b/i];
+const AUTONOMOUS_DOCUMENTATION_RESEARCH_PATTERNS = [
+	/\b(documentation|docs|api reference|reference|guide|manual|spec)\b/i,
+];
 
 const AUTONOMOUS_IMPLEMENTATION_PATTERNS = [
 	/\b(fix|debug|patch|repair|migrate|improve|update|change|modify|edit|implement|build|add|create|refactor|rewrite|replace|tighten|adjust|tweak)\b/i,
 	/\b(frontend|ui|ux|layout|styling|style|css|tailwind|component|responsive|mobile|browser|page|visual|screenshot)\b/i,
 ];
 
-const AUTONOMOUS_VERIFY_ONLY_PATTERNS = [/\b(verify|verification|check|validate|review|inspect|assess|audit|confirm)\b/i];
+const AUTONOMOUS_VERIFY_ONLY_PATTERNS = [
+	/\b(verify|verification|check|validate|review|inspect|assess|audit|confirm)\b/i,
+];
 
 const AUTONOMOUS_LOCAL_ANSWER_PATTERNS = [
 	/\b(which file|which source file|which directory|where is|where's|find where)\b/i,

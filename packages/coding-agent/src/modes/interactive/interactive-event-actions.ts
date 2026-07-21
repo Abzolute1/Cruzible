@@ -1,6 +1,6 @@
+import { Loader, Spacer, Text, type TUI } from "@ag1/tui";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
-import { Loader, Spacer, Text, type TUI } from "@ag1/tui";
 import { keyText } from "./components/keybinding-hints.js";
 import { theme } from "./theme/theme.js";
 
@@ -122,7 +122,11 @@ export function handleInteractiveCompactionEnd(options: {
 		options.chatContainer.clear();
 		options.rebuildChatFromMessages();
 		options.addMessageToChat(
-			createCompactionSummaryMessage(options.event.result.summary, options.event.result.tokensBefore, new Date().toISOString()),
+			createCompactionSummaryMessage(
+				options.event.result.summary,
+				options.event.result.tokensBefore,
+				new Date().toISOString(),
+			),
 		);
 		options.footer.invalidate();
 	} else if (options.event.errorMessage) {
@@ -179,7 +183,9 @@ export function handleInteractiveRetryEnd(options: {
 		options.statusContainer.clear();
 	}
 	if (!options.event.success) {
-		options.showError(`Retry failed after ${options.event.attempt} attempts: ${options.event.finalError || "Unknown error"}`);
+		options.showError(
+			`Retry failed after ${options.event.attempt} attempts: ${options.event.finalError || "Unknown error"}`,
+		);
 	}
 	options.ui.requestRender();
 	return { nextEscapeHandler: undefined, loader: undefined };

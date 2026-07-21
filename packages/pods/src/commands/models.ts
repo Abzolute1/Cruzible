@@ -5,7 +5,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { getActivePod, loadConfig, saveConfig } from "../config.js";
 import { getModelConfig, getModelName, isKnownModel } from "../model-configs.js";
-import { sshExec } from "../ssh.js";
+import { parseSshTarget, sshExec } from "../ssh.js";
 import type { Pod } from "../types.js";
 
 /**
@@ -89,6 +89,29 @@ export const startModel = async (
 	const { name: podName, pod } = getPod(options.pod);
 
 	// Validation
+	if (!/^[a-zA-Z0-9._-]+$/.test(name) || name === "__proto__") {
+		console.error(
+			chalk.red(`Invalid model name '${name}'. Use only letters, numbers, dots, underscores and dashes.`),
+		);
+		process.exit(1);
+	}
+	if (options.memory) {
+		const fraction = parseFloat(options.memory.replace("%", "")) / 100;
+		if (!Number.isFinite(fraction) || fraction <= 0 || fraction > 1) {
+			console.error(chalk.red(`Invalid --memory value '${options.memory}'. Use a percentage like 50% or 90.`));
+			process.exit(1);
+		}
+	}
+	if (options.context) {
+		const known = ["4k", "8k", "16k", "32k", "64k", "128k"];
+		const parsed = parseInt(options.context, 10);
+		if (!known.includes(options.context.toLowerCase()) && (!Number.isFinite(parsed) || parsed <= 0)) {
+			console.error(
+				chalk.red(`Invalid --context value '${options.context}'. Use e.g. 4k, 32k, 128k or a token count.`),
+			);
+			process.exit(1);
+		}
+	}
 	if (!pod.modelsPath) {
 		console.error(chalk.red("Pod does not have a models path configured"));
 		process.exit(1);
@@ -231,11 +254,21 @@ chmod +x /tmp/model_run_${name}.sh`,
 		.map((e) => `export ${e}`)
 		.join("\n");
 
+	// Write the environment (contains secrets) to a chmod-600 file via stdin so
+	// tokens never appear in local/remote ps argv; the start command sources it.
+	const envWrite = await sshExec(pod.ssh, `umask 077 && cat > /tmp/model_run_${name}.env`, {
+		input: `${env}\n`,
+	});
+	if (envWrite.exitCode !== 0) {
+		console.error(chalk.red("Failed to write environment file on pod"));
+		process.exit(1);
+	}
+
 	// Start the model runner with script command for pseudo-TTY (preserves colors)
 	// Note: We use script to preserve colors and create a log file
 	// setsid creates a new session so it survives SSH disconnection
 	const startCmd = `
-		${env}
+		source /tmp/model_run_${name}.env
 		mkdir -p ~/.vllm_logs
 		# Create a wrapper that monitors the script command
 		cat > /tmp/model_wrapper_${name}.sh << 'WRAPPER'
@@ -248,6 +281,8 @@ WRAPPER
 		chmod +x /tmp/model_wrapper_${name}.sh
 		setsid /tmp/model_wrapper_${name}.sh </dev/null >/dev/null 2>&1 &
 		echo $!
+		# The runner already inherited the env; scrub the secrets file
+		rm -f /tmp/model_run_${name}.env
 		exit 0
 	`;
 
@@ -273,7 +308,7 @@ WRAPPER
 	const sshParts = pod.ssh.split(" ");
 	const sshCommand = sshParts[0]; // "ssh"
 	const sshArgs = sshParts.slice(1); // ["root@86.38.238.55"]
-	const host = sshArgs[0].split("@")[1] || "localhost";
+	const host = parseSshTarget(pod.ssh)?.host || "localhost";
 	const tailCmd = `tail -f ~/.vllm_logs/${name}.log`;
 
 	// Build the full args array for spawn
@@ -287,7 +322,31 @@ WRAPPER
 	let interrupted = false;
 	let startupComplete = false;
 	let startupFailed = false;
+	let startupTimedOut = false;
 	let failureReason = "";
+
+	// Overall startup timeout (default 15 min, configurable)
+	const timeoutMinutesRaw = parseFloat(process.env.AG1_STARTUP_TIMEOUT_MINUTES || "15");
+	const startupTimeoutMinutes = Number.isFinite(timeoutMinutesRaw) && timeoutMinutesRaw > 0 ? timeoutMinutesRaw : 15;
+
+	const startupTimer = setTimeout(() => {
+		startupTimedOut = true;
+		logProcess.kill();
+	}, startupTimeoutMinutes * 60_000);
+
+	// Also poll the vLLM health endpoint - more reliable than log parsing alone
+	const healthPoll = setInterval(async () => {
+		if (startupComplete || startupFailed || startupTimedOut || interrupted) return;
+		try {
+			const res = await sshExec(pod.ssh, `curl -s -f -m 5 http://localhost:${port}/health`);
+			if (res.exitCode === 0) {
+				startupComplete = true;
+				logProcess.kill(); // Stop tailing logs
+			}
+		} catch {
+			// Poll again on next tick
+		}
+	}, 15_000);
 
 	// Handle Ctrl+C
 	const sigintHandler = () => {
@@ -339,8 +398,22 @@ WRAPPER
 
 	await new Promise<void>((resolve) => logProcess.on("exit", resolve));
 	process.removeListener("SIGINT", sigintHandler);
+	clearTimeout(startupTimer);
+	clearInterval(healthPoll);
 
-	if (startupFailed) {
+	if (startupTimedOut) {
+		// Startup took too long - dump the tail of the log and fail
+		console.log(`\n${chalk.red(`✗ Startup timed out after ${startupTimeoutMinutes} minute(s)`)}`);
+		const logTail = await sshExec(pod.ssh, `tail -n 50 ~/.vllm_logs/${name}.log 2>/dev/null`);
+		if (logTail.stdout) {
+			console.log(chalk.gray("\nLast 50 log lines:"));
+			console.log(logTail.stdout);
+		}
+		console.log(chalk.yellow("The model process may still be starting in the background."));
+		console.log(chalk.cyan(`Check status: ag1-pods logs ${name}`));
+		console.log(chalk.cyan(`Stop model:   ag1-pods stop ${name}`));
+		process.exit(1);
+	} else if (startupFailed) {
 		// Model failed to start - clean up and report error
 		console.log(`\n${chalk.red(`✗ Model failed to start: ${failureReason}`)}`);
 
@@ -365,17 +438,23 @@ WRAPPER
 		process.exit(1);
 	} else if (startupComplete) {
 		// Model started successfully - output connection details
+		const apiKey = process.env.AG1_API_KEY || "";
+		const maskedKey =
+			apiKey.length > 8 ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : apiKey ? "(set)" : "(not set)";
 		console.log(`\n${chalk.green("✓ Model started successfully!")}`);
 		console.log(`\n${chalk.bold("Connection Details:")}`);
 		console.log(chalk.cyan("─".repeat(50)));
 		console.log(chalk.white("Base URL:    ") + chalk.yellow(`http://${host}:${port}/v1`));
 		console.log(chalk.white("Model:       ") + chalk.yellow(modelId));
-		console.log(chalk.white("API Key:     ") + chalk.yellow(process.env.AG1_API_KEY || "(not set)"));
+		console.log(chalk.white("API Key:     ") + chalk.yellow(maskedKey));
+		if (apiKey) {
+			console.log(chalk.gray("(full key: echo $AG1_API_KEY)"));
+		}
 		console.log(chalk.cyan("─".repeat(50)));
 
 		console.log(`\n${chalk.bold("Export for shell:")}`);
 		console.log(chalk.gray(`export OPENAI_BASE_URL="http://${host}:${port}/v1"`));
-		console.log(chalk.gray(`export OPENAI_API_KEY="${process.env.AG1_API_KEY || "your-api-key"}"`));
+		console.log(chalk.gray(`export OPENAI_API_KEY="$AG1_API_KEY"`));
 		console.log(chalk.gray(`export OPENAI_MODEL="${modelId}"`));
 
 		console.log(`\n${chalk.bold("Example usage:")}`);
@@ -396,18 +475,14 @@ WRAPPER
     -d '{"model":"${modelId}","messages":[{"role":"user","content":"Hi"}]}'`),
 		);
 		console.log("");
-		console.log(chalk.cyan(`Chat with model:  ag1-pods agent ${name} "Your message"`));
-		console.log(chalk.cyan(`Interactive mode: ag1-pods agent ${name} -i`));
 		console.log(chalk.cyan(`Monitor logs:     ag1-pods logs ${name}`));
 		console.log(chalk.cyan(`Stop model:       ag1-pods stop ${name}`));
 	} else if (interrupted) {
 		console.log(chalk.yellow("\n\nStopped monitoring. Model deployment continues in background."));
-		console.log(chalk.cyan(`Chat with model: ag1-pods agent ${name} "Your message"`));
 		console.log(chalk.cyan(`Check status: ag1-pods logs ${name}`));
 		console.log(chalk.cyan(`Stop model: ag1-pods stop ${name}`));
 	} else {
 		console.log(chalk.yellow("\n\nLog stream ended. Model may still be running."));
-		console.log(chalk.cyan(`Chat with model: ag1-pods agent ${name} "Your message"`));
 		console.log(chalk.cyan(`Check status: ag1-pods logs ${name}`));
 		console.log(chalk.cyan(`Stop model: ag1-pods stop ${name}`));
 	}
@@ -427,16 +502,36 @@ export const stopModel = async (name: string, options: { pod?: string }) => {
 
 	console.log(chalk.yellow(`Stopping model '${name}' on pod '${podName}'...`));
 
-	// Kill the script process and all its children
-	// Using pkill to kill the process and all children
+	// The wrapper was started with setsid, so it leads its own process group
+	// (PGID == wrapper PID). Kill the whole group so vLLM and its children die too.
 	const killCmd = `
-		# Kill the script process and all its children
-		pkill -TERM -P ${model.pid} 2>/dev/null || true
-		kill ${model.pid} 2>/dev/null || true
+		kill -TERM -- -${model.pid} 2>/dev/null || kill ${model.pid} 2>/dev/null || true
+		# Wait for the process group and port to actually go away
+		for i in $(seq 1 15); do
+			if ! kill -0 ${model.pid} 2>/dev/null && ! curl -s -f -m 2 http://localhost:${model.port}/health > /dev/null 2>&1; then
+				echo "stopped"
+				exit 0
+			fi
+			sleep 2
+		done
+		# Escalate to SIGKILL on the group, then re-check
+		kill -KILL -- -${model.pid} 2>/dev/null || true
+		sleep 2
+		if curl -s -f -m 2 http://localhost:${model.port}/health > /dev/null 2>&1; then
+			echo "still-up"
+		else
+			echo "stopped"
+		fi
 	`;
-	await sshExec(pod.ssh, killCmd);
+	const result = await sshExec(pod.ssh, killCmd);
 
-	// Remove from config
+	if (result.stdout.trim() !== "stopped") {
+		console.error(chalk.red(`Failed to stop model '${name}' - still responding on port ${model.port}`));
+		console.error(chalk.yellow(`Inspect manually: ag1-pods ssh "ps aux | grep vllm"`));
+		process.exit(1);
+	}
+
+	// Remove from config (only after the port is confirmed dead)
 	const config = loadConfig();
 	delete config.pods[podName].models[name];
 	saveConfig(config);
@@ -458,13 +553,30 @@ export const stopAllModels = async (options: { pod?: string }) => {
 
 	console.log(chalk.yellow(`Stopping ${modelNames.length} model(s) on pod '${podName}'...`));
 
-	// Kill all script processes and their children
-	const pids = Object.values(pod.models).map((m) => m.pid);
+	// Wrappers were started with setsid (PGID == wrapper PID); kill each whole
+	// process group so vLLM and its children die too, then verify ports are dead.
+	const models = Object.values(pod.models);
 	const killCmd = `
-		for PID in ${pids.join(" ")}; do
-			pkill -TERM -P $PID 2>/dev/null || true
-			kill $PID 2>/dev/null || true
+		${models.map((m) => `kill -TERM -- -${m.pid} 2>/dev/null || kill ${m.pid} 2>/dev/null || true`).join("\n\t\t")}
+		for i in $(seq 1 15); do
+			ALL_DEAD=1
+			${models
+				.map(
+					(m) => `
+			if kill -0 ${m.pid} 2>/dev/null || curl -s -f -m 2 http://localhost:${m.port}/health > /dev/null 2>&1; then
+				ALL_DEAD=0
+			fi`,
+				)
+				.join("")}
+			if [ "$ALL_DEAD" = "1" ]; then
+				echo "stopped"
+				exit 0
+			fi
+			sleep 2
 		done
+		${models.map((m) => `kill -KILL -- -${m.pid} 2>/dev/null || true`).join("\n\t\t")}
+		sleep 2
+		echo "done"
 	`;
 	await sshExec(pod.ssh, killCmd);
 
@@ -489,8 +601,7 @@ export const listModels = async (options: { pod?: string }) => {
 	}
 
 	// Get pod SSH host for URL display
-	const sshParts = pod.ssh.split(" ");
-	const host = sshParts.find((p) => p.includes("@"))?.split("@")[1] || "unknown";
+	const host = parseSshTarget(pod.ssh)?.host || "unknown";
 
 	console.log(`Models on pod '${chalk.bold(podName)}':`);
 	for (const name of modelNames) {

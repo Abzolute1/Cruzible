@@ -93,6 +93,9 @@ const editSchema = Type.Object({
 	newText: Type.String({ description: "New text to replace the old text with" }),
 });
 
+// Must stay at or below the executor's 10MB stdout cap (files are read via `cat`)
+const MAX_EDIT_BYTES = 10 * 1024 * 1024;
+
 export function createEditTool(executor: Executor): AgentTool<typeof editSchema> {
 	return {
 		name: "edit",
@@ -105,6 +108,19 @@ export function createEditTool(executor: Executor): AgentTool<typeof editSchema>
 			{ path, oldText, newText }: { label: string; path: string; oldText: string; newText: string },
 			signal?: AbortSignal,
 		) => {
+			// Files are read via `cat` through the executor, whose stdout is capped at 10MB -
+			// editing larger files would silently corrupt them, so refuse up front.
+			const sizeResult = await executor.exec(`wc -c < ${shellEscape(path)}`, { signal });
+			if (sizeResult.code !== 0) {
+				throw new Error(sizeResult.stderr || `File not found: ${path}`);
+			}
+			const fileSize = Number.parseInt(sizeResult.stdout.trim(), 10);
+			if (fileSize > MAX_EDIT_BYTES) {
+				throw new Error(
+					`File too large to edit safely: ${fileSize} bytes (limit ${MAX_EDIT_BYTES}). Use bash (sed/awk) for large files.`,
+				);
+			}
+
 			// Read the file
 			const readResult = await executor.exec(`cat ${shellEscape(path)}`, { signal });
 			if (readResult.code !== 0) {
@@ -139,10 +155,12 @@ export function createEditTool(executor: Executor): AgentTool<typeof editSchema>
 				);
 			}
 
-			// Write the file back
-			const writeResult = await executor.exec(`printf '%s' ${shellEscape(newContent)} > ${shellEscape(path)}`, {
-				signal,
-			});
+			// Write via temp file + mv so a failed write never leaves the file truncated
+			// (a direct `> file` truncates before execve can fail, e.g. E2BIG on huge content)
+			const writeResult = await executor.exec(
+				`printf '%s' ${shellEscape(newContent)} > ${shellEscape(path)}.tmp.$$ && mv ${shellEscape(path)}.tmp.$$ ${shellEscape(path)}`,
+				{ signal },
+			);
 			if (writeResult.code !== 0) {
 				throw new Error(writeResult.stderr || `Failed to write file: ${path}`);
 			}

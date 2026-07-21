@@ -2,10 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	exportAgentSessionJsonl,
-	getLastAgentAssistantText,
-} from "../src/core/agent-session-inspector.js";
+import { exportAgentSessionJsonl, getLastAgentAssistantText } from "../src/core/agent-session-inspector.js";
 import { SessionManager } from "../src/core/session-manager.js";
 
 describe("agent-session-inspector", () => {

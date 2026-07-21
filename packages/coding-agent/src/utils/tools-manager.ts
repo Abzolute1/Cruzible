@@ -18,6 +18,12 @@ function isOfflineModeEnabled(): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
+function isToolAutoDownloadAllowed(): boolean {
+	const value = process.env.AG1_ALLOW_TOOL_AUTO_DOWNLOAD;
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
 interface ToolConfig {
 	name: string;
 	repo: string; // GitHub repo (e.g., "sharkdp/fd")
@@ -253,6 +259,17 @@ export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Pr
 	if (isOfflineModeEnabled()) {
 		if (!silent) {
 			console.log(chalk.yellow(`${config.name} not found. Offline mode enabled, skipping download.`));
+		}
+		return undefined;
+	}
+
+	if (!isToolAutoDownloadAllowed()) {
+		if (!silent) {
+			console.log(
+				chalk.yellow(
+					`${config.name} not found. Install ${config.binaryName} on PATH, or set AG1_ALLOW_TOOL_AUTO_DOWNLOAD=1 to let AG1 download it.`,
+				),
+			);
 		}
 		return undefined;
 	}

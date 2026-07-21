@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { canReplayContinue, captureContinueReplaySnapshot } from "../src/core/agent-session-continue-replay.js";
+import {
+	type ContinueReplayState,
+	canReplayContinue,
+	captureContinueReplaySnapshot,
+} from "../src/core/agent-session-continue-replay.js";
 
 describe("agent-session continue replay", () => {
 	it("accepts replay when transcript, model, and thinking level are unchanged", () => {
-		const state = {
+		const state: ContinueReplayState = {
 			messages: [
 				{
 					role: "user",
@@ -22,7 +26,7 @@ describe("agent-session continue replay", () => {
 	});
 
 	it("rejects replay when the model changed", () => {
-		const state = {
+		const state: ContinueReplayState = {
 			messages: [
 				{
 					role: "user",
@@ -45,7 +49,7 @@ describe("agent-session continue replay", () => {
 	});
 
 	it("rejects replay when the thinking level changed", () => {
-		const state = {
+		const state: ContinueReplayState = {
 			messages: [
 				{
 					role: "user",

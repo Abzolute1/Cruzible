@@ -93,9 +93,6 @@ const ANTIGRAVITY_SYSTEM_INSTRUCTION =
 	"**Absolute paths only**" +
 	"**Proactiveness**";
 
-// Counter for generating unique tool call IDs
-let toolCallCounter = 0;
-
 // Retry configuration
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
@@ -220,6 +217,14 @@ function isGemini3Model(modelId: string): boolean {
 }
 
 /**
+ * Create an error that must bypass the retry loop and surface immediately
+ * (non-retryable API errors, excessive server-requested retry delay).
+ */
+function terminalError(message: string): Error {
+	return Object.assign(new Error(message), { terminal: true });
+}
+
+/**
  * Check if an error is retryable (rate limit, server error, network error, etc.)
  */
 function isRetryableError(status: number, errorText: string): boolean {
@@ -254,11 +259,16 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			reject(new Error("Request was aborted"));
 			return;
 		}
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => {
+		const onAbort = () => {
 			clearTimeout(timeout);
 			reject(new Error("Request was aborted"));
-		});
+		};
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		// `once: true` so the listener is dropped after abort; the timeout path removes it on success.
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -325,6 +335,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		// Per-request counter for generating unique tool call IDs
+		let toolCallCounter = 0;
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -436,7 +448,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 						const maxDelayMs = options?.maxRetryDelayMs ?? 60000;
 						if (maxDelayMs > 0 && serverDelay && serverDelay > maxDelayMs) {
 							const delaySeconds = Math.ceil(serverDelay / 1000);
-							throw new Error(
+							throw terminalError(
 								`Server requested ${delaySeconds}s retry delay (max: ${Math.ceil(maxDelayMs / 1000)}s). ${extractErrorMessage(errorText)}`,
 							);
 						}
@@ -445,14 +457,20 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 						continue;
 					}
 
-					// Not retryable or max retries exceeded
-					throw new Error(`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`);
+					// Not retryable or max retries exceeded - surface immediately, never retried below
+					throw terminalError(
+						`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`,
+					);
 				} catch (error) {
 					// Check for abort - fetch throws AbortError, our code throws "Request was aborted"
 					if (error instanceof Error) {
 						if (error.name === "AbortError" || error.message === "Request was aborted") {
 							throw new Error("Request was aborted");
 						}
+					}
+					// Terminal errors (non-retryable API errors, excessive server retry delay) surface immediately
+					if ((error as { terminal?: boolean } | null)?.terminal) {
+						throw error;
 					}
 					// Extract detailed error message from fetch errors (Node includes cause)
 					lastError = error instanceof Error ? error : new Error(String(error));
@@ -680,7 +698,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 							}
 
 							if (candidate?.finishReason) {
-								output.stopReason = mapStopReasonString(candidate.finishReason);
+								const finishReasonResult = mapStopReasonString(candidate.finishReason);
+								output.stopReason = finishReasonResult.stopReason;
+								if (finishReasonResult.errorMessage) {
+									output.errorMessage = finishReasonResult.errorMessage;
+								}
 								if (output.content.some((b) => b.type === "toolCall")) {
 									output.stopReason = "toolUse";
 								}
@@ -783,8 +805,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });

@@ -17,14 +17,23 @@ function formatTs(ts: string): string {
 		.replace(/\.\d+Z$/, "");
 }
 
-function formatMessage(ts: string, user: string, text: string, indent = ""): string {
+function formatMessage(
+	ts: string,
+	user: string,
+	text: string,
+	indent = "",
+	files?: Array<{ name: string; url_private?: string }>,
+): string {
 	const prefix = `[${formatTs(ts)}] ${user}: `;
 	const lines = text.split("\n");
 	const firstLine = `${indent}${prefix}${lines[0]}`;
-	if (lines.length === 1) return firstLine;
 	// All continuation lines get same indent as content start
 	const contentIndent = indent + " ".repeat(prefix.length);
-	return [firstLine, ...lines.slice(1).map((l) => contentIndent + l)].join("\n");
+	const rest = lines.slice(1).map((l) => contentIndent + l);
+	for (const file of files || []) {
+		rest.push(`${contentIndent}[file: ${file.name}${file.url_private ? ` (${file.url_private})` : ""}]`);
+	}
+	return [firstLine, ...rest].join("\n");
 }
 
 export async function downloadChannel(channelId: string, botToken: string): Promise<void> {
@@ -87,8 +96,9 @@ export async function downloadChannel(channelId: string, botToken: string): Prom
 			});
 
 			if (response.messages) {
-				// Skip the first message (it's the parent)
-				replies.push(...(response.messages as Message[]).slice(1));
+				const page = response.messages as Message[];
+				// The parent message is only included on the first page
+				replies.push(...(threadCursor ? page : page.slice(1)));
 			}
 
 			threadCursor = response.response_metadata?.next_cursor;
@@ -101,13 +111,13 @@ export async function downloadChannel(channelId: string, botToken: string): Prom
 	let totalReplies = 0;
 	for (const msg of messages) {
 		// Output the message
-		console.log(formatMessage(msg.ts, msg.user || "unknown", msg.text || ""));
+		console.log(formatMessage(msg.ts, msg.user || "unknown", msg.text || "", "", msg.files));
 
 		// Output thread replies right after parent (indented)
 		const replies = threadReplies.get(msg.ts);
 		if (replies) {
 			for (const reply of replies) {
-				console.log(formatMessage(reply.ts, reply.user || "unknown", reply.text || "", "  "));
+				console.log(formatMessage(reply.ts, reply.user || "unknown", reply.text || "", "  ", reply.files));
 				totalReplies++;
 			}
 		}

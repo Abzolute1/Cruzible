@@ -1,12 +1,18 @@
 import * as path from "node:path";
+import { getAgentDir } from "../config.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
-import { runAutonomousSession } from "../core/auton/runner.js";
 import type { AutonConfig } from "../core/auton/auton-hook.js";
 import type { AutonomousRunSnapshot } from "../core/auton/ledger.js";
 import { normalizeToolName, type ToolOutcome } from "../core/auton/nudges/types.js";
+import { runAutonomousSession } from "../core/auton/runner.js";
+import { type ActivatedAutonomousWorkspace, activateAutonomousWorkspace } from "../core/auton/workspace.js";
+import { DelegationEvidenceTracker } from "../core/delegation-evidence.js";
+import type { ToolSafetyPolicy } from "../core/safety-policy.js";
 import type { TaskPolicy } from "../core/task-policy.js";
 import { inferTaskPolicy } from "../core/task-policy.js";
+import { collectExistingTestPaths } from "../core/test-paths.js";
 import { parseEmbeddedTaskPolicy } from "../core/tool-orchestrator.js";
+import { buildToolCallDigest, buildToolResultDigest } from "../core/tool-outcome-digests.js";
 import { extractTrackedFileFromToolResult } from "../core/tool-outcome-file.js";
 import { buildWorkspaceIndex, buildWorkspaceManifest } from "../core/workspace-index.js";
 
@@ -20,6 +26,10 @@ export interface AutonomousModeOptions {
 	goal: string;
 	autonConfig: AutonConfig;
 	cwd: string;
+	/** Defaults to true. Kept injectable for tests and custom embedders. */
+	isolateWorkspace?: boolean;
+	/** Defaults to AG1's configured agent directory. */
+	agentDir?: string;
 }
 
 export async function runAutonomousMode(
@@ -29,36 +39,88 @@ export async function runAutonomousMode(
 	const toolCallHistory: ToolOutcome[] = [];
 	const fileAccessHistory: ToolOutcome[] = [];
 	const pendingToolArgs = new Map<string, Record<string, unknown>>();
-	const session = runtimeHost.session;
-	installControlledToolPolicy(session, options.goal, options.cwd, (message) => {
-		process.stderr.write(`[Autonomous] ${message}\n`);
-	});
-	const unsubscribe = session.subscribe((event) => {
-		switch (event.type) {
-			case "tool_execution_start":
-				pendingToolArgs.set(event.toolCallId, event.args ?? {});
-				break;
-			case "tool_execution_end": {
-				const toolName = normalizeToolName(event.toolName);
-				const args = pendingToolArgs.get(event.toolCallId);
-				pendingToolArgs.delete(event.toolCallId);
-				const filePath = extractTrackedFileFromToolResult(toolName, args, event.result, session.sessionManager.getCwd());
-				const toolOutcome: ToolOutcome = {
-					tool: toolName,
-					success: !event.isError,
-					file: filePath,
-					detail: extractToolDetail(toolName, args),
-					estimatedTokens: estimateToolResultTokens(event.result),
-					metadata: extractToolMetadata(event.result),
-				};
-				toolCallHistory.push(toolOutcome);
-				if (filePath) fileAccessHistory.push(toolOutcome);
-				break;
-			}
-		}
-	});
+	// Bridges delegation outcomes to the ledger: tools like an extension
+	// `subagent` return no structured evidence, so observed workspace changes
+	// are attached as file evidence instead (see core/delegation-evidence.ts).
+	const delegationEvidence = new DelegationEvidenceTracker();
+	let isolatedWorkspace: ActivatedAutonomousWorkspace | undefined;
+	let unsubscribe: (() => void) | undefined;
+	const originalSafetyPolicy = runtimeHost.session.toolSafetyPolicy;
+	const originalCwd = runtimeHost.session.sessionManager.getCwd();
+	// Autonomous runs are unattended: default bash to workspace sandboxing unless
+	// the user explicitly chose a mode (explicit option/env always wins — the bash
+	// tool resolves option > AG1_BASH_SANDBOX > default).
+	const originalBashSandboxEnv = process.env.AG1_BASH_SANDBOX;
 
 	try {
+		if (options.isolateWorkspace !== false) {
+			if (originalBashSandboxEnv === undefined) {
+				process.env.AG1_BASH_SANDBOX = "workspace";
+			}
+			process.stderr.write("[Autonomous] Preparing isolated autonomous workspace...\n");
+			isolatedWorkspace = await activateAutonomousWorkspace(runtimeHost, {
+				agentDir: options.agentDir ?? getAgentDir(),
+			});
+			process.stderr.write(
+				`[Autonomous] Autonomous workspace ready (${isolatedWorkspace.strategy}): ${isolatedWorkspace.activeCwd}\n`,
+			);
+			setAutonomousSafetyPolicy(runtimeHost.session, {
+				mode: "autonomous",
+				cwd: isolatedWorkspace.activeCwd,
+				// Test files present NOW (the copied source tree) are the
+				// protected set; test files the agent creates during the run
+				// stay mutable so it can repair its own tests.
+				existingTestPaths: collectExistingTestPaths(isolatedWorkspace.activeCwd),
+				// Extension tools are user-installed code: thread their registered
+				// names into the policy so autonomous mode trusts them by default
+				// (see ToolSafetyPolicy.extensionTools in core/safety-policy.ts).
+				extensionTools: getExtensionToolNames(runtimeHost),
+			});
+		}
+
+		const session = runtimeHost.session;
+		const activeCwd = isolatedWorkspace?.activeCwd ?? session.sessionManager.getCwd() ?? options.cwd;
+		installControlledToolPolicy(session, options.goal, activeCwd, (message) => {
+			process.stderr.write(`[Autonomous] ${message}\n`);
+		});
+		unsubscribe = session.subscribe((event) => {
+			switch (event.type) {
+				case "tool_execution_start":
+					pendingToolArgs.set(event.toolCallId, event.args ?? {});
+					delegationEvidence.handleToolStart(event.toolName, event.toolCallId, activeCwd);
+					break;
+				case "tool_execution_end": {
+					const toolName = normalizeToolName(event.toolName);
+					const args = pendingToolArgs.get(event.toolCallId);
+					pendingToolArgs.delete(event.toolCallId);
+					const filePath = extractTrackedFileFromToolResult(
+						toolName,
+						args,
+						event.result,
+						session.sessionManager.getCwd(),
+					);
+					const toolOutcome: ToolOutcome = {
+						tool: toolName,
+						success: !event.isError,
+						file: filePath,
+						detail: extractToolDetail(toolName, args),
+						estimatedTokens: estimateToolResultTokens(event.result),
+						metadata: delegationEvidence.handleToolEnd(
+							toolName,
+							event.toolCallId,
+							activeCwd,
+							extractToolMetadata(event.result),
+						),
+						callDigest: buildToolCallDigest(toolName, args),
+						resultDigest: buildToolResultDigest(event.result, event.isError),
+					};
+					toolCallHistory.push(toolOutcome);
+					if (filePath && !event.isError) fileAccessHistory.push(toolOutcome);
+					break;
+				}
+			}
+		});
+
 		const result = await runAutonomousSession({
 			runtimeHost,
 			userMessage: options.goal,
@@ -86,8 +148,40 @@ export async function runAutonomousMode(
 
 		return result.stopReason === "complete" ? 0 : 1;
 	} finally {
-		unsubscribe();
+		unsubscribe?.();
+		if (originalBashSandboxEnv === undefined) {
+			delete process.env.AG1_BASH_SANDBOX;
+		} else {
+			process.env.AG1_BASH_SANDBOX = originalBashSandboxEnv;
+		}
+		if (isolatedWorkspace) {
+			await isolatedWorkspace.restore();
+			setAutonomousSafetyPolicy(runtimeHost.session, originalSafetyPolicy);
+			process.stderr.write(
+				`[Autonomous] Returned to ${originalCwd}. Autonomous workspace preserved at ${isolatedWorkspace.workspaceRoot}\n`,
+			);
+		}
 	}
+}
+
+function setAutonomousSafetyPolicy(
+	session: AgentSessionRuntime["session"] & { setToolSafetyPolicy?: (policy: ToolSafetyPolicy | undefined) => void },
+	policy: ToolSafetyPolicy | undefined,
+): void {
+	if (typeof session.setToolSafetyPolicy === "function") {
+		session.setToolSafetyPolicy(policy);
+	}
+}
+
+/**
+ * Collect the names of all tools registered through the extension system so
+ * the autonomous safety policy can trust them by default (user-installed
+ * code; see ToolSafetyPolicy.extensionTools in core/safety-policy.ts).
+ */
+function getExtensionToolNames(runtimeHost: AgentSessionRuntime): string[] {
+	const runner = runtimeHost.session.extensionRunner;
+	if (!runner) return [];
+	return runner.getAllRegisteredTools().map((tool) => tool.definition.name);
 }
 
 function installControlledToolPolicy(
@@ -118,17 +212,13 @@ function installControlledToolPolicy(
 					? true
 					: inferred.mutationExpected,
 			allowedPaths:
-				embedded.allowedPaths && embedded.allowedPaths.length > 0
-					? embedded.allowedPaths
-					: inferred.allowedPaths,
+				embedded.allowedPaths && embedded.allowedPaths.length > 0 ? embedded.allowedPaths : inferred.allowedPaths,
 			expectedChangedPaths:
 				embedded.expectedChangedPaths && embedded.expectedChangedPaths.length > 0
 					? embedded.expectedChangedPaths
 					: inferred.expectedChangedPaths,
 			likelyTests:
-				embedded.likelyTests && embedded.likelyTests.length > 0
-					? embedded.likelyTests
-					: inferred.likelyTests,
+				embedded.likelyTests && embedded.likelyTests.length > 0 ? embedded.likelyTests : inferred.likelyTests,
 			verification: embedded.verification ?? inferred.verification,
 		};
 		session.setToolPolicy(policy);
@@ -144,13 +234,18 @@ function installControlledToolPolicy(
 
 function extractToolDetail(toolName: string, args: Record<string, unknown> | undefined): string | undefined {
 	if (!args) return undefined;
+	if (toolName === "task" && typeof args.description === "string") {
+		const type = typeof args.type === "string" ? args.type : undefined;
+		return type ? `${type}: ${args.description}` : args.description;
+	}
 	if ((toolName === "bash" || toolName === "verify") && typeof args.command === "string") {
 		return args.command;
 	}
 	if (toolName === "websearch" && typeof args.query === "string") return args.query;
 	if (toolName === "webfetch" && typeof args.url === "string") return args.url;
 	if (toolName === "read") {
-		const filePath = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
+		const filePath =
+			typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
 		if (!filePath) return undefined;
 		const suffix: string[] = [];
 		if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);

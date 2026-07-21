@@ -1,15 +1,3 @@
-<!-- OSS_WEEKEND_START -->
-# 🏖️ OSS Weekend
-
-**Issue tracker reopens Monday, April 13, 2026.**
-
-OSS weekend runs Thursday, April 2, 2026 through Monday, April 13, 2026. New issues and PRs from unapproved contributors are auto-closed during this time. Approved contributors can still open issues and PRs if something is genuinely urgent, but please keep that to pressing matters only. For support, join [Discord](https://discord.com/invite/3cU7Bz4UPx).
-
-> _Current focus: at the moment i'm deep in refactoring internals, and need to focus._
-<!-- OSS_WEEKEND_END -->
-
----
-
 <p align="center">
   <a href="https://shittycodingagent.ai">
     <img src="https://shittycodingagent.ai/logo.svg" alt="AG1 logo" width="128">
@@ -26,11 +14,13 @@ OSS weekend runs Thursday, April 2, 2026 through Monday, April 13, 2026. New iss
   <a href="https://exe.dev"><img src="docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
 </p>
 
-AG1 is a minimal terminal coding harness. Adapt ag1 to your workflows, not the other way around, without having to fork and modify ag1 internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [AG1 Packages](#ag1-packages) and share them with others via npm or git.
+AG1 is a stateful terminal coding harness for supervised and autonomous work. The goal is a model-agnostic control plane that keeps context cheap, preserves structured state, verifies work, and recovers from common agent failure modes instead of looping blindly. Adapt ag1 to your workflows, not the other way around, without having to fork and modify ag1 internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [AG1 Packages](#ag1-packages) and share them with others via npm or git.
 
-AG1 ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask ag1 to build what you want or install a third party ag1 package that matches your workflow.
+AG1 ships with powerful defaults and keeps advanced workflows inspectable: autonomous runs use bounded budgets, structured run state, verification checks, and isolated workspaces. Some workflows remain intentionally extensible instead of hard-coded into core; you can build them with extensions or install a third party ag1 package that matches your process.
 
 AG1 runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
+
+AG1 is under active hardening. It includes safety policies, path containment, compaction, and autonomous workspace isolation, but it is not a perfect sandbox. Run unattended work in an OS/container sandbox when the target repo or commands are untrusted.
 
 ## Share your OSS coding agent sessions
 

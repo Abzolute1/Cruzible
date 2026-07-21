@@ -1,7 +1,7 @@
 import type { AssistantMessage, Model } from "@ag1/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.js";
 import { generateBranchSummary } from "../src/core/compaction/branch-summarization.js";
+import type { SessionEntry } from "../src/core/session-manager.js";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),

@@ -37,7 +37,7 @@ describe("interactive working verbs", () => {
 	test("classifies grep-style bash commands separately", () => {
 		const activity = describeWorkingActivity({
 			toolName: "bash",
-			args: { command: "rg \"handleBashCommand\" packages/coding-agent/src" },
+			args: { command: 'rg "handleBashCommand" packages/coding-agent/src' },
 		});
 
 		expect(activity.context).toBe("grep_search");
@@ -51,7 +51,9 @@ describe("interactive working verbs", () => {
 
 		expect(activity.context).toBe("thinking");
 		expect(activity.target).toBeUndefined();
-		expect(formatWorkingActivityText({ promptText: "fix the footer alignment and reduce visual noise" }).length).toBeGreaterThan(0);
+		expect(
+			formatWorkingActivityText({ promptText: "fix the footer alignment and reduce visual noise" }).length,
+		).toBeGreaterThan(0);
 	});
 
 	test("groups web search and web fetch into the same research phase", () => {

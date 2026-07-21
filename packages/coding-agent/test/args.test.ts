@@ -90,9 +90,13 @@ describe("parseArgs", () => {
 			expect(result.model).toBe("gpt-4o");
 		});
 
-		test("parses --api-key", () => {
+		test("parses --api-key and warns about argv exposure", () => {
 			const result = parseArgs(["--api-key", "sk-test-key"]);
 			expect(result.apiKey).toBe("sk-test-key");
+			expect(result.diagnostics).toHaveLength(1);
+			expect(result.diagnostics[0].type).toBe("warning");
+			expect(result.diagnostics[0].message).toContain("process list");
+			expect(result.diagnostics[0].message).toContain("ANTHROPIC_API_KEY");
 		});
 
 		test("parses --system-prompt", () => {
@@ -297,10 +301,16 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["explain this"]);
 		});
 
-		test("captures unknown long flags with string values", () => {
+		test("treats unknown long flags as boolean without eating the prompt", () => {
 			const result = parseArgs(["--unknown-flag", "message"]);
-			expect(result.messages).toEqual([]);
-			expect(result.unknownFlags.get("unknown-flag")).toBe("message");
+			expect(result.unknownFlags.get("unknown-flag")).toBe(true);
+			expect(result.messages).toEqual(["message"]);
+		});
+
+		test("does not eat the first prompt word after an unknown flag", () => {
+			const result = parseArgs(["--foo", "do", "the", "thing"]);
+			expect(result.unknownFlags.get("foo")).toBe(true);
+			expect(result.messages).toEqual(["do", "the", "thing"]);
 		});
 
 		test("captures unknown boolean long flags", () => {

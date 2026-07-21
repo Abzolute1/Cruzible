@@ -77,15 +77,15 @@ function extractAssistantText(message: AssistantMessage): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof (block as any).text === "string")
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				block.type === "text" && typeof (block as any).text === "string",
+		)
 		.map((block) => block.text)
 		.join("");
 }
 
-function buildRecoveryHint(
-	severity: TurnDegradationSeverity,
-	reasons: string[],
-): string | undefined {
+function buildRecoveryHint(severity: TurnDegradationSeverity, reasons: string[]): string | undefined {
 	if (severity === "normal") return undefined;
 	if (severity === "critical") {
 		if (reasons.includes("truncated_turn")) {

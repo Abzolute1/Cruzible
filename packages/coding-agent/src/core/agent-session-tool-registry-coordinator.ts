@@ -1,13 +1,12 @@
 import type { AgentTool } from "@ag1/agent-core";
 import type { Model } from "@ag1/ai";
 import type { ExtensionRunner, ToolDefinition } from "./extensions/index.js";
-import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { wrapRegisteredTools } from "./extensions/index.js";
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
-import {
-	createInteractThenScreenshotToolDefinition,
-	createScreenshotUrlToolDefinition,
-} from "./tools/visual/index.js";
+import { createInteractThenScreenshotToolDefinition, createScreenshotUrlToolDefinition } from "./tools/visual/index.js";
+import { createVerifyUiToolDefinition } from "./tools/visual/verify-ui.js";
+import { modelSupportsVision } from "./tools/visual/vision.js";
 
 export interface ToolDefinitionEntryState {
 	definition: ToolDefinition;
@@ -16,6 +15,12 @@ export interface ToolDefinitionEntryState {
 
 export interface AgentSessionToolRegistryCoordinatorOptions {
 	getModel: () => Model<any> | undefined;
+	/** Independent reviewer model for verify_ui's judge; falls back to getModel when unset or unresolvable. */
+	getVerifierModel?: () => Model<any> | undefined;
+	/** "auto" (default): visual tools only when the model declares vision; "on": force-enable; "off": disable. */
+	getVisualToolsMode?: () => "auto" | "on" | "off";
+	/** Probed vision verdict, layered over registry metadata in "auto" mode. */
+	getVisionVerdict?: (model: Model<any>) => "yes" | "no" | undefined;
 	getExtensionRunner: () => ExtensionRunner | undefined;
 	getBaseToolDefinitions: () => Map<string, ToolDefinition>;
 	getCustomTools: () => ToolDefinition[];
@@ -134,27 +139,24 @@ export class AgentSessionToolRegistryCoordinator {
 	}
 
 	private getVisualToolDefinitions(): ToolDefinition<any, any>[] {
+		const mode = this.options.getVisualToolsMode?.() ?? "auto";
+		if (mode === "off") return [];
+
 		const model = this.options.getModel();
-		if (!model || !AgentSessionToolRegistryCoordinator.modelSupportsVision(model)) {
-			return [];
+		if (mode === "auto") {
+			// A probed verdict wins over registry metadata in both directions;
+			// without one, fall back to declared metadata.
+			const verdict = model ? this.options.getVisionVerdict?.(model) : undefined;
+			if (verdict === "no") return [];
+			if (verdict !== "yes" && (!model || !modelSupportsVision(model))) return [];
 		}
 
 		return [
 			createScreenshotUrlToolDefinition() as ToolDefinition<any, any>,
 			createInteractThenScreenshotToolDefinition() as ToolDefinition<any, any>,
+			createVerifyUiToolDefinition({
+				getJudgeModel: () => this.options.getVerifierModel?.() ?? this.options.getModel(),
+			}) as ToolDefinition<any, any>,
 		];
-	}
-
-	private static modelSupportsVision(model: Model<any>): boolean {
-		const inputTypes = (model.input ?? []) as string[];
-		if (inputTypes.includes("image") || inputTypes.includes("image_url") || inputTypes.includes("vision")) {
-			return true;
-		}
-
-		const capabilities = (model as any).capabilities;
-		if (Array.isArray(capabilities) && capabilities.includes("vision")) return true;
-		if (capabilities?.vision === true) return true;
-
-		return false;
 	}
 }

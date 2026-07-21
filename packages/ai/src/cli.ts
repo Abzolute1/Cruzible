@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { getOAuthProvider, getOAuthProviders } from "./utils/oauth/index.js";
 import type { OAuthCredentials, OAuthProviderId } from "./utils/oauth/types.js";
 
-const AUTH_FILE = "auth.json";
+// Store credentials in the shared agent config dir (~/.ag1/agent/auth.json),
+// matching the coding-agent auth-storage convention.
+const AUTH_DIR = process.env.AG1_CODING_AGENT_DIR || join(homedir(), ".ag1", "agent");
+const AUTH_FILE = join(AUTH_DIR, "auth.json");
+const LEGACY_AUTH_FILE = "auth.json";
 const PROVIDERS = getOAuthProviders();
 
 function prompt(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
@@ -13,16 +19,22 @@ function prompt(rl: ReturnType<typeof createInterface>, question: string): Promi
 }
 
 function loadAuth(): Record<string, { type: "oauth" } & OAuthCredentials> {
-	if (!existsSync(AUTH_FILE)) return {};
+	// Fall back to the legacy CWD-relative auth.json if the config-dir file doesn't exist yet
+	const path = existsSync(AUTH_FILE) ? AUTH_FILE : LEGACY_AUTH_FILE;
+	if (!existsSync(path)) return {};
 	try {
-		return JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+		return JSON.parse(readFileSync(path, "utf-8"));
 	} catch {
 		return {};
 	}
 }
 
 function saveAuth(auth: Record<string, { type: "oauth" } & OAuthCredentials>): void {
-	writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), "utf-8");
+	mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
+	// Write to a temp file then rename for atomicity; 0o600 since this holds live tokens
+	const tmpFile = `${AUTH_FILE}.${process.pid}.tmp`;
+	writeFileSync(tmpFile, JSON.stringify(auth, null, 2), { encoding: "utf-8", mode: 0o600 });
+	renameSync(tmpFile, AUTH_FILE);
 }
 
 async function login(providerId: OAuthProviderId): Promise<void> {

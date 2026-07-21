@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { InteractivePlanArtifact } from "../src/modes/interactive/interactive-plan-artifacts.js";
 import {
 	buildInteractiveExpandedPlanCardLines,
 	buildInteractivePlanCardLines,
@@ -6,7 +7,6 @@ import {
 	buildInteractivePlanReviewLines,
 	summarizeInteractivePlanForModeLine,
 } from "../src/modes/interactive/interactive-plan-review-ui.js";
-import type { InteractivePlanArtifact } from "../src/modes/interactive/interactive-plan-artifacts.js";
 
 function createArtifact(overrides: Partial<InteractivePlanArtifact> = {}): InteractivePlanArtifact {
 	return {
@@ -67,7 +67,9 @@ describe("interactive-plan-review-ui", () => {
 		expect(clarifyingLines).toContain("Current question: Should revision review be inline or selector-driven?");
 		expect(clarifyingLines).toContain("Interview: 0/1 answered");
 		expect(clarifyingLines).toContain("Actions: interview, continue planning, clear");
-		expect(buildInteractivePlanReviewLines(clarifyingArtifact)).toContain("Plan Review: v3 • clarifying • interview 0/1");
+		expect(buildInteractivePlanReviewLines(clarifyingArtifact)).toContain(
+			"Plan Review: v3 • clarifying • interview 0/1",
+		);
 		expect(buildInteractivePlanReviewLines(clarifyingArtifact)).toContain("Interview: 0/1 answered");
 		expect(buildInteractivePlanReviewLines(clarifyingArtifact)).toContain(
 			"Current question: Should revision review be inline or selector-driven?",

@@ -19,14 +19,12 @@ import type {
 	OverlayOptions,
 	SlashCommand,
 } from "@ag1/tui";
-import { spawn, spawnSync } from "child_process";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
 	fuzzyFilter,
 	Loader,
-	Markdown,
 	matchesKey,
 	ProcessTerminal,
 	Spacer,
@@ -34,24 +32,24 @@ import {
 	Text,
 	TUI,
 } from "@ag1/tui";
-import { APP_NAME, getAgentDir, getAuthPath, getDebugLogPath, VERSION } from "../../config.js";
+import { spawnSync } from "child_process";
+import { getAgentDir, getAuthPath, getDebugLogPath, VERSION } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import {
-	activateAutonomousWorkspace,
-	diffAutonomousWorkspace,
-	promoteAutonomousWorkspace,
-	type ActivatedAutonomousWorkspace,
-	type PreparedAutonomousWorkspace,
-} from "../../core/auton/workspace.js";
-import {
+	type AutonomousRunSnapshot,
 	formatAutonomousRunLedger,
 	getLatestAutonomousRunSnapshot,
-	type AutonomousRunSnapshot,
 } from "../../core/auton/ledger.js";
+import { buildToolOutcomeFingerprint, normalizeToolName } from "../../core/auton/nudges/types.js";
 import type { AutonomousRunConfig, AutonomousRunResult } from "../../core/auton/runner.js";
 import { runAutonomousSession } from "../../core/auton/runner.js";
-import { buildToolOutcomeFingerprint, normalizeToolName } from "../../core/auton/nudges/types.js";
+import {
+	type ActivatedAutonomousWorkspace,
+	activateAutonomousWorkspace,
+	type PreparedAutonomousWorkspace,
+} from "../../core/auton/workspace.js";
+import { DelegationEvidenceTracker } from "../../core/delegation-evidence.js";
 import type {
 	ExtensionContext,
 	ExtensionRunner,
@@ -59,19 +57,19 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
+import { trustProject } from "../../core/extensions/loader.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import {
 	buildLocalEvidencePromptAddendum,
 	buildRuntimeContinuationMessage,
+	isPromptSteeringEnabled,
 } from "../../core/local-evidence-steering.js";
-import { buildPromptIntentAddendum } from "../../core/prompt-intent-steering.js";
 import { findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
 import { deduplicateWarnings, evaluateInteractiveNudges } from "../../core/nudge-warnings.js";
-import { DefaultPackageManager } from "../../core/package-manager.js";
-import type { ResourceDiagnostic } from "../../core/resource-loader.js";
+import { buildPromptIntentAddendum } from "../../core/prompt-intent-steering.js";
 import { getRecentResearchArtifacts } from "../../core/research-artifacts.js";
-import { extractTrackedFileFromToolResult } from "../../core/tool-outcome-file.js";
+import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import {
 	appendRuntimeHealthSnapshotIfChanged,
 	createRuntimeHealthSnapshotFromState,
@@ -80,187 +78,87 @@ import {
 	type RuntimeStabilizationProfile,
 } from "../../core/runtime-health.js";
 import type { ToolApprovalRequest, ToolSafetyPolicy } from "../../core/safety-policy.js";
-import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
+import { formatMissingSessionCwdPrompt, type MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionDebugLogger } from "../../core/session-debug-logger.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
+import { collectExistingTestPaths } from "../../core/test-paths.js";
+import {
+	appendTodoSnapshot,
+	clearTodoList,
+	isTodoListStale,
+	readLatestTodoSnapshot,
+	replaceTodoList,
+	summarizeTodos,
+	type TodoItem,
+	type TodoListSnapshot,
+} from "../../core/todos.js";
+import { buildToolCallDigest, buildToolResultDigest } from "../../core/tool-outcome-digests.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
-import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
+import { modelSupportsVision } from "../../core/tools/visual/vision.js";
+import { getChangelogPath, parseChangelog } from "../../utils/changelog.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
 import { parseGitUrl } from "../../utils/git.js";
 import { ensureTool } from "../../utils/tools-manager.js";
+import { Ag1GreeterComponent, type Ag1GreeterOptions } from "./components/ag1-greeter.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
-import { CenteredBannerComponent, SplitPanelBannerComponent } from "./components/centered-banner.js";
+import { CenteredBannerComponent } from "./components/centered-banner.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
 import { ContextInputDialog } from "./components/context-input-dialog.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
-import { DynamicBorder } from "./components/dynamic-border.js";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.js";
-import { ExtensionEditorComponent } from "./components/extension-editor.js";
-import { ExtensionInputComponent } from "./components/extension-input.js";
-import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
 import { keyText } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
 import { ModelSelectorComponent } from "./components/model-selector.js";
 import { NoticeCardComponent } from "./components/notice-card.js";
 import { OAuthSelectorComponent } from "./components/oauth-selector.js";
-import { PlanReviewCardComponent } from "./components/plan-review-card.js";
-import {
-	PlanWorkflowDialogComponent,
-	type PlanWorkflowDialogOption,
-} from "./components/plan-workflow-dialog.js";
+import type { PlanWorkflowDialogOption } from "./components/plan-workflow-dialog.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
 import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
+import { TurnRail } from "./components/turn-rail.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
-import {
-	formatPersistentModeLine,
-	getAutonomousScopeGuardReason,
-	summarizeAutonomousLiveStatus,
-} from "./interactive-autonomous-ui.js";
-import {
-	classifyWorkingPhase,
-	describeWorkingActivity,
-	describeWorkingPhaseActivity,
-	type WorkingVerbPhase,
-	type WorkingVerbTone,
-} from "./interactive-working-verbs.js";
-import {
-	buildAutonomousStabilizedUserMessage,
-	buildPlanningGuidanceMessage,
-	buildInteractiveStabilizedUserMessage,
-	buildPlanningUserMessage,
-	getInteractiveAutonomousResumeSnapshot,
-	resolveInteractiveAutonomousRunConfig,
-} from "./interactive-autonomous-stabilization.js";
-import { restoreInteractiveRuntimeState } from "./interactive-runtime-state.js";
-import { applyConfiguredTheme, applyInteractiveRuntimeSettings } from "./interactive-runtime-settings.js";
-import {
-	performInteractiveRuntimeReplacement,
-	performInteractiveRuntimeTransition,
-} from "./interactive-runtime-transitions.js";
-import { restoreEditorHost, showEditorHostComponent } from "./interactive-editor-host.js";
-import { handleInteractiveEditorSubmitAfterBuiltin } from "./interactive-editor-submit.js";
-import {
-	buildFallbackInteractivePlanArtifact,
-	createInteractivePlanArtifactRef,
-	createInteractivePlanSelection,
-	buildPlanClarificationPrompt,
-	buildPlanExecutionPrompt,
-	buildPlanStepExecutionPrompt,
-	buildPlanRevisionPrompt,
-	extractInteractivePlanArtifact,
-	getAnsweredClarificationCount,
-	formatInteractivePlanHistory,
-	getClarificationAnswers,
-	getCompletedStepCount,
-	getCompletedStepIndexes,
-	getInteractivePlanArtifacts,
-	getLatestInteractivePlanStepExecutionRecord,
-	getLatestInteractivePlanArtifact,
-	getLatestInteractivePlanSelection,
-	getNextInteractivePlanStep,
-	getNextInteractivePlanStepIndex,
-	INTERACTIVE_PLAN_ARTIFACT_TYPE,
-	INTERACTIVE_PLAN_SELECTION_TYPE,
-	isSameInteractivePlanArtifactRef,
-	markInteractivePlanStepComplete,
-	recordInteractivePlanStepExecutionReview,
-	resolveInteractivePlanArtifactRef,
-	reopenInteractivePlanStep,
-	setInteractivePlanClarificationAnswer,
-	type InteractivePlanArtifact,
-	type InteractivePlanSelection,
-	updateInteractivePlanArtifactStatus,
-} from "./interactive-plan-artifacts.js";
-import {
-	clearInteractiveQueuedMessages,
-	combineQueuedMessagesForEditor,
-	flushInteractiveCompactionQueue,
-	getInteractiveQueuedMessages,
-	handleInteractiveFollowUpSubmit,
-	type CompactionQueuedMessage,
-} from "./interactive-queued-messages.js";
+import { type GenerationStatsEvent, GenerationStatsTracker } from "./generation-stats.js";
 import {
 	hasLoggedInOAuthProviders,
 	performInteractiveOAuthLogout,
 	runInteractiveOAuthLogin,
 } from "./interactive-auth-flow.js";
 import {
-	formatAutonomousCheckpointStatus as buildAutonomousCheckpointStatus,
-	formatAutonomousControlSummary as buildAutonomousControlSummary,
-	formatAutonomousRecoverySummary as buildAutonomousRecoverySummary,
-	formatAutonomousResearchSummary as buildAutonomousResearchSummary,
-	formatAutonomousStabilizationSummary as buildAutonomousStabilizationSummary,
-	formatAutonomousVisualSummary as buildAutonomousVisualSummary,
-	formatDebugArtifactsSummary as buildDebugArtifactsSummary,
-	formatDegradedTurnWarning as buildDegradedTurnWarning,
-	formatRequestFailureWarning as buildRequestFailureWarning,
-	formatRuntimeHealthIssue as buildRuntimeHealthIssue,
-	formatRuntimeHealthSummary as buildRuntimeHealthSummary,
-	formatRuntimeHealthTimelineSummary as buildRuntimeHealthTimelineSummary,
-	formatRuntimeRecoverySummary as buildRuntimeRecoverySummary,
-	formatVisualActionRecipeSummary as buildVisualActionRecipeSummary,
-	formatXmlFallbackWarning as buildXmlFallbackWarning,
-	getAutonomousControlStateFromSnapshot as deriveAutonomousControlStateFromSnapshot,
-	getAutonomousEvidenceReadyKind,
-	getAutonomousRecoveryActions as buildAutonomousRecoveryActions,
-} from "./interactive-session-formatters.js";
-import {
-	formatWorkspaceCommandSummary,
-	formatWorkspaceDiffSummary,
-	formatWorkspaceDiscardSummary,
-	formatWorkspacePromotionSummary,
-} from "./interactive-command-presenters.js";
-import {
-	getInteractiveWorkspaceSummary,
-	renderInteractiveDebugLogStatus,
-	renderInteractiveResearchArtifacts,
-	renderInteractiveSessionInfo,
-	writeInteractiveDebugLog,
-} from "./interactive-report-actions.js";
-import {
-	buildInteractiveExpandedPlanCardLines,
-	buildInteractivePlanInterviewLines,
-	buildInteractivePlanReviewLines,
-} from "./interactive-plan-review-ui.js";
-import {
-	getInteractiveAppKeyDisplay,
-	renderInteractiveChangelog,
-	renderInteractiveHotkeys,
-} from "./interactive-reference-actions.js";
-import {
-	getInteractiveStartupChangelog,
-	renderInteractiveStartupNotices,
-	runInteractiveStartupPrompts,
-} from "./interactive-startup-actions.js";
-import {
-	buildInteractiveQueuedContextLines,
-	normalizeInteractiveWorkspaceSummaryLines,
-} from "./interactive-ui-context.js";
+	buildAutonomousStabilizedUserMessage,
+	buildInteractiveStabilizedUserMessage,
+	buildPlanningUserMessage,
+	getInteractiveAutonomousResumeSnapshot,
+	resolveInteractiveAutonomousRunConfig,
+} from "./interactive-autonomous-stabilization.js";
+import { formatPersistentModeLine, getAutonomousScopeGuardReason } from "./interactive-autonomous-ui.js";
+import { dispatchInteractiveBuiltinCommand } from "./interactive-command-actions.js";
+import type { InteractiveBuiltinCommand } from "./interactive-command-parser.js";
+import { parseInteractiveBuiltinCommand } from "./interactive-command-parser.js";
+import { resolveInteractiveContextWindowInput } from "./interactive-context-window.js";
+import { restoreEditorHost, showEditorHostComponent } from "./interactive-editor-host.js";
+import { handleInteractiveEditorSubmitAfterBuiltin } from "./interactive-editor-submit.js";
 import {
 	handleInteractiveCompactionEnd,
 	handleInteractiveCompactionStart,
-	handleInteractiveRecoveryReplaySkipped,
 	handleInteractiveDegradedTurnEvent,
+	handleInteractiveRecoveryReplaySkipped,
 	handleInteractiveRetryEnd,
 	handleInteractiveRetryStart,
 	handleInteractiveXmlFallbackEvent,
 } from "./interactive-event-actions.js";
-import { dispatchInteractiveBuiltinCommand } from "./interactive-command-actions.js";
-import { parseInteractiveBuiltinCommand } from "./interactive-command-parser.js";
-import type { InteractiveBuiltinCommand } from "./interactive-command-parser.js";
+import { ExtensionDialogStack } from "./interactive-extension-dialogs.js";
 import {
 	performInteractiveCopyLastAssistantMessage,
 	performInteractiveReload,
@@ -273,24 +171,131 @@ import {
 	deriveInteractiveScopedModelSelection,
 } from "./interactive-model-scope.js";
 import {
-	resolveInteractiveContextWindowInput,
-} from "./interactive-context-window.js";
+	createInteractivePlanArtifactRef,
+	createInteractivePlanSelection,
+	getInteractivePlanArtifacts,
+	getLatestInteractivePlanArtifact,
+	getLatestInteractivePlanSelection,
+	INTERACTIVE_PLAN_SELECTION_TYPE,
+	type InteractivePlanArtifact,
+	type InteractivePlanSelection,
+	isSameInteractivePlanArtifactRef,
+	resolveInteractivePlanArtifactRef,
+	type SubmitPlanSubmission,
+} from "./interactive-plan-artifacts.js";
+import { handlePlanCommand } from "./interactive-plan-commands.js";
 import {
-	performInteractiveSessionFork,
-	performInteractiveSessionResume,
-} from "./interactive-session-actions.js";
+	answerClarifyingPlanArtifact,
+	executeNextPlanStep,
+	executePlanArtifact,
+	getPlanStepSelectorOptions,
+	markPlanStepComplete,
+	type PlanStepMutationDeps,
+	persistLatestPlanArtifact,
+	persistPlanExecutionReview,
+	type RunPlanningPromptOptions,
+	rejectPlanArtifact,
+	reopenPlanStep,
+	revisePlanArtifact,
+	runPlanningPrompt,
+	SUBMIT_PLAN_TOOL_NAME,
+	showPlanArtifactCard,
+} from "./interactive-plan-execution.js";
 import {
-	performInteractiveModelSwitch,
-	renameInteractiveSession,
-} from "./interactive-selector-actions.js";
+	createPlanWorkflowOption,
+	getPlanInterviewChoiceOptions,
+	getPlanInterviewQuestionChoiceOptions,
+	PlanInterviewFlow,
+	splitPlanInterviewChoiceOptions,
+} from "./interactive-plan-interview.js";
 import {
-	applyInteractiveTreeNavigationSuccess,
-	performInteractiveTreeNavigation,
-} from "./interactive-tree-actions.js";
+	acceptPlanArtifact,
+	formatPlanSelectorOption,
+	getPlanReviewActions,
+	handlePlanReviewAction,
+	offerAcceptedPlanHandoff,
+	type PlanReviewActionId,
+	showImmediatePlanActionSelector,
+	showPlanReviewSelector,
+} from "./interactive-plan-review.js";
+import { buildInteractivePlanReviewLines } from "./interactive-plan-review-ui.js";
 import {
-	buildInteractiveSettingsConfig,
-	createInteractiveSettingsCallbacks,
-} from "./interactive-settings-selector.js";
+	type CompactionQueuedMessage,
+	clearInteractiveQueuedMessages,
+	combineQueuedMessagesForEditor,
+	flushInteractiveCompactionQueue,
+	getInteractiveQueuedMessages,
+	handleInteractiveFollowUpSubmit,
+} from "./interactive-queued-messages.js";
+import {
+	getInteractiveAppKeyDisplay,
+	renderInteractiveChangelog,
+	renderInteractiveHotkeys,
+} from "./interactive-reference-actions.js";
+import {
+	getInteractiveWorkspaceSummary,
+	renderInteractiveDebugLogStatus,
+	renderInteractiveResearchArtifacts,
+	renderInteractiveSessionInfo,
+	writeInteractiveDebugLog,
+} from "./interactive-report-actions.js";
+import {
+	buildScopeGroups,
+	formatDiagnostics,
+	formatDisplayPath,
+	formatScopeGroups,
+	getShortPath,
+} from "./interactive-resource-formatting.js";
+import { applyConfiguredTheme, applyInteractiveRuntimeSettings } from "./interactive-runtime-settings.js";
+import { restoreInteractiveRuntimeState } from "./interactive-runtime-state.js";
+import {
+	performInteractiveRuntimeReplacement,
+	performInteractiveRuntimeTransition,
+} from "./interactive-runtime-transitions.js";
+import { performInteractiveModelSwitch, renameInteractiveSession } from "./interactive-selector-actions.js";
+import { performInteractiveSessionFork, performInteractiveSessionResume } from "./interactive-session-actions.js";
+import {
+	formatAutonomousCheckpointStatus as buildAutonomousCheckpointStatus,
+	formatAutonomousControlSummary as buildAutonomousControlSummary,
+	getAutonomousRecoveryActions as buildAutonomousRecoveryActions,
+	formatAutonomousRecoverySummary as buildAutonomousRecoverySummary,
+	formatAutonomousResearchSummary as buildAutonomousResearchSummary,
+	formatAutonomousStabilizationSummary as buildAutonomousStabilizationSummary,
+	formatAutonomousVisualSummary as buildAutonomousVisualSummary,
+	formatDebugArtifactsSummary as buildDebugArtifactsSummary,
+	formatDegradedTurnWarning as buildDegradedTurnWarning,
+	formatRequestFailureWarning as buildRequestFailureWarning,
+	formatRuntimeHealthIssue as buildRuntimeHealthIssue,
+	formatRuntimeHealthSummary as buildRuntimeHealthSummary,
+	formatRuntimeHealthTimelineSummary as buildRuntimeHealthTimelineSummary,
+	formatRuntimeRecoverySummary as buildRuntimeRecoverySummary,
+	formatXmlFallbackWarning as buildXmlFallbackWarning,
+	getAutonomousControlStateFromSnapshot as deriveAutonomousControlStateFromSnapshot,
+} from "./interactive-session-formatters.js";
+import { buildInteractiveSettingsConfig, createInteractiveSettingsCallbacks } from "./interactive-settings-selector.js";
+import {
+	checkForNewVersion,
+	checkForPackageUpdates,
+	checkTmuxKeyboardSetup,
+	getInteractiveStartupChangelog,
+	renderInteractiveStartupNotices,
+	renderPackageUpdateNotification,
+	runInteractiveStartupPrompts,
+} from "./interactive-startup-actions.js";
+import {
+	estimateInteractiveToolResultTokens,
+	extractInteractiveToolDetail,
+	extractInteractiveToolFile,
+	extractInteractiveToolMetadata,
+} from "./interactive-tool-outcomes.js";
+import { applyInteractiveTreeNavigationSuccess, performInteractiveTreeNavigation } from "./interactive-tree-actions.js";
+import { resolveInteractiveBranchSummaryChoice } from "./interactive-tree-navigation.js";
+import {
+	buildInteractiveQueuedContextLines,
+	normalizeInteractiveWorkspaceSummaryLines,
+} from "./interactive-ui-context.js";
+import { WorkingActivityTracker } from "./interactive-working-activity.js";
+import { WorkingVerbAnimator, type WorkingVerbPhase, type WorkingVerbTone } from "./interactive-working-verbs.js";
 import { executeInteractiveWorkspaceCommand } from "./interactive-workspace-actions.js";
 import {
 	getAvailableThemes,
@@ -308,7 +313,8 @@ import {
 	type ThemeColor,
 	theme,
 } from "./theme/theme.js";
-import { resolveInteractiveBranchSummaryChoice } from "./interactive-tree-navigation.js";
+
+const GREETER_DISPLAY_VERSION = ".01.3";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -323,6 +329,8 @@ type XmlFallbackEvent = Extract<AgentSessionEvent, { type: "xml_tool_call" }>;
 type DegradedTurnEvent = Extract<AgentSessionEvent, { type: "degraded_turn" }>;
 type SessionActivityState = { isStreaming?: boolean; isCompacting?: boolean };
 type PlanArtifactCommandTarget = "current" | "planning" | "execution";
+type ModelRouteMode = "planning" | "execution" | "verifier";
+
 type PlanArtifactCommandResolution = { artifact: InteractivePlanArtifact | undefined; ambiguousRevision?: number };
 type PlanArtifactCommandResolver = (
 	revision: number | undefined,
@@ -331,23 +339,6 @@ type PlanArtifactCommandResolver = (
 type PlanSelectionAppender = (updates: Partial<InteractivePlanSelection>) => void;
 type PlanSelectionGetter = () => InteractivePlanSelection | undefined;
 type PlanSelectionClearer = (artifact: InteractivePlanArtifact) => void;
-type PlanReviewActionId =
-	| "show_revision"
-	| "approve_plan"
-	| "approve_and_clear"
-	| "execute_full_plan"
-	| "clear_context_for_implementation"
-	| "execute_next_step"
-	| "execute_selected_step"
-	| "mark_step_complete"
-	| "mark_executing_step_complete"
-	| "reopen_completed_step"
-	| "clear_revision"
-	| "reject_revision"
-	| "revise_plan"
-	| "continue_planning"
-	| "continue_interview";
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -360,7 +351,7 @@ function getOptionalReceiverMethod<T extends (...args: any[]) => any>(receiver: 
 function getOptionalReceiverSessionState(receiver: unknown): SessionActivityState | undefined {
 	const record = asRecord(receiver);
 	if (!record) return undefined;
-	if (Object.prototype.hasOwnProperty.call(record, "session")) {
+	if (Object.hasOwn(record, "session")) {
 		return asRecord(record.session) as SessionActivityState | undefined;
 	}
 	return asRecord(asRecord(record.runtimeHost)?.session) as SessionActivityState | undefined;
@@ -373,7 +364,9 @@ function resolvePlanArtifactForCommandWithFallback(
 	defaultTarget: PlanArtifactCommandTarget = "current",
 ): PlanArtifactCommandResolution {
 	const resolver = getOptionalReceiverMethod<PlanArtifactCommandResolver>(receiver, "resolvePlanArtifactForCommand");
-	return resolver ? resolver.call(receiver, revision, defaultTarget) : { artifact: getPlanArtifactByRevision(revision) };
+	return resolver
+		? resolver.call(receiver, revision, defaultTarget)
+		: { artifact: getPlanArtifactByRevision(revision) };
 }
 
 function appendPlanSelectionForReceiver(receiver: unknown, updates: Partial<InteractivePlanSelection>): void {
@@ -387,12 +380,11 @@ function getLatestPlanSelectionForReceiver(receiver: unknown): InteractivePlanSe
 }
 
 function clearPlanSelectionForArtifactForReceiver(receiver: unknown, artifact: InteractivePlanArtifact): void {
-	const clearPlanSelection = getOptionalReceiverMethod<PlanSelectionClearer>(receiver, "clearPlanSelectionForArtifact");
+	const clearPlanSelection = getOptionalReceiverMethod<PlanSelectionClearer>(
+		receiver,
+		"clearPlanSelectionForArtifact",
+	);
 	clearPlanSelection?.call(receiver, artifact);
-}
-
-function createPlanWorkflowOption(id: string, label: string, hotkey?: string): PlanWorkflowDialogOption {
-	return { id, label, hotkey };
 }
 
 export interface AutonomousExecutionConfig extends AutonomousRunConfig {
@@ -441,10 +433,35 @@ export class InteractiveMode {
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private loadingAnimation: Loader | undefined = undefined;
+	/** Left-rail grouping the current assistant turn's rendered content. */
+	private currentTurnRail: TurnRail | undefined;
+
+	/** Target container for assistant-turn content (streaming message, tool calls, groups). */
+	private assistantContentTarget(): Container {
+		// Self-heals after any chatContainer.clear() (rebuilds, /new, verbose toggles).
+		if (!this.currentTurnRail || !this.chatContainer.children.includes(this.currentTurnRail)) {
+			this.currentTurnRail = new TurnRail();
+			this.chatContainer.addChild(this.currentTurnRail);
+		}
+		return this.currentTurnRail;
+	}
+	private readonly generationStats = new GenerationStatsTracker();
+
+	/** Live generation stats suffix for the loader (phase, ~tokens, tok/s, elapsed, silence tone). */
+	private generationStatsLine(): string | undefined {
+		const line = this.generationStats?.statsLine();
+		if (!line) return undefined;
+		const colored =
+			line.tone === "alert"
+				? theme.fg("error", line.text)
+				: line.tone === "warn"
+					? theme.fg("warning", line.text)
+					: theme.fg("muted", line.text);
+		return `${theme.fg("muted", "·")} ${colored}`;
+	}
 	private pendingWorkingMessage: string | undefined = undefined;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
-	private lastSubmittedPromptText: string | undefined = undefined;
 	private activeWorkingVerb:
 		| {
 				phase: WorkingVerbPhase;
@@ -454,9 +471,6 @@ export class InteractiveMode {
 				interruptible: boolean;
 		  }
 		| undefined = undefined;
-	private loadingVerbAnimationTimer: NodeJS.Timeout | undefined = undefined;
-	private loadingVerbAnimationFrame = 0;
-	private managedWorkingMessageEnabled = false;
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
@@ -475,6 +489,10 @@ export class InteractiveMode {
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private pendingToolArgs = new Map<string, Record<string, unknown>>();
+	// Bridges delegation outcomes to the ledger: tools like an extension
+	// `subagent` return no structured evidence, so observed workspace changes
+	// are attached as file evidence instead (see core/delegation-evidence.ts).
+	private delegationEvidence = new DelegationEvidenceTracker();
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -501,6 +519,11 @@ export class InteractiveMode {
 	// Track pending bash components (shown in pending area, moved to chat on submit)
 	private pendingBashComponents: BashExecutionComponent[] = [];
 
+	// Working verb animator (extracted)
+	private workingVerbAnimator: WorkingVerbAnimator;
+	// Working activity tracker (extracted): prompt memory + managed working message logic
+	private workingActivity: WorkingActivityTracker;
+
 	// Auto-compaction state
 	private autoCompactionLoader: Loader | undefined = undefined;
 	private autoCompactionEscapeHandler?: () => void;
@@ -516,12 +539,12 @@ export class InteractiveMode {
 	private shutdownRequested = false;
 
 	// Extension UI state
-	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
-	private planWorkflowDialog: PlanWorkflowDialogComponent | undefined = undefined;
-	private planWorkflowDialogResolver: ((value: string | undefined) => void) | undefined = undefined;
-	private extensionInput: ExtensionInputComponent | undefined = undefined;
-	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	private extensionDialogs: ExtensionDialogStack;
+	private planInterviewFlow: PlanInterviewFlow;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
+
+	// Workspace-trust prompt for project-local extensions (asked once per app run)
+	private projectTrustPromptHandled = false;
 
 	// Extension widgets (components rendered above/below the editor)
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
@@ -557,6 +580,12 @@ export class InteractiveMode {
 	// detection), and completion (no tool calls + LLM said stop).
 	private autonomousMode: boolean;
 	private planningMode = false;
+	/** Structured plan payload from the submit_plan tool during the current planning turn. */
+	private lastSubmitPlanPayload: SubmitPlanSubmission | undefined;
+	/** Current todo list; undefined until lazily seeded from the session journal. */
+	private todoSnapshot: TodoListSnapshot | null | undefined;
+	/** Tool calls since the last todo write, for staleness nudges. */
+	private toolCallsSinceTodoUpdate = 0;
 	private autonomousConfig: AutonomousExecutionConfig;
 	private activeAutonomousWorkspace: ActivatedAutonomousWorkspace | undefined = undefined;
 	private lastAutonomousWorkspace: PreparedAutonomousWorkspace | undefined = undefined;
@@ -606,6 +635,28 @@ export class InteractiveMode {
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
+		this.extensionDialogs = new ExtensionDialogStack({
+			ui: this.ui,
+			keybindings: this.keybindings,
+			editorContainer: this.editorContainer,
+			getEditor: () => this.editor,
+			showStatus: (message) => this.showStatus(message),
+			showWarning: (message) => this.showWarning(message),
+			showError: (message) => this.showError(message),
+		});
+		this.planInterviewFlow = new PlanInterviewFlow({
+			sessionManager: this.sessionManager,
+			showPlanWorkflowDialog: (title, lines, options, dialogOptions) =>
+				this.showPlanWorkflowDialog(title, lines, options, dialogOptions),
+			showExtensionEditor: (title, prefill) => this.showExtensionEditor(title, prefill),
+			showExtensionInput: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+			updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+			updateModeDisplay: () => this.updateModeDisplay(),
+			showStatus: (message) => this.showStatus(message),
+			answerClarifyingPlanArtifact: (artifact, answer) => this.answerClarifyingPlanArtifact(artifact, answer),
+			showPlanArtifactCard: (artifact, options) => this.showPlanArtifactCard(artifact, options),
+			handlePlanCommand: (command) => this.handlePlanCommand(command),
+		});
 		this.modeStripContainer = new Container();
 		this.modeStrip = new CenteredBannerComponent();
 		this.modeStripContainer.addChild(this.modeStrip);
@@ -621,6 +672,34 @@ export class InteractiveMode {
 		// engage or disengage the loop once the UI is running.
 		this.autonomousConfig = options.autonomousConfig ?? {};
 		this.autonomousMode = this.autonomousConfig.startInAutonomousMode ?? false;
+
+		// Working verb animator (high quality extraction)
+		this.workingVerbAnimator = new WorkingVerbAnimator({
+			isAutonomous: () => this.autonomousMode,
+			setMessage: (msg: string) => {
+				if (this.loadingAnimation) {
+					this.loadingAnimation.setMessage(msg);
+				} else {
+					this.pendingWorkingMessage = msg;
+				}
+			},
+			requestRender: () => this.ui.requestRender(),
+		});
+		this.workingActivity = new WorkingActivityTracker({
+			isAutonomous: () => this.autonomousMode,
+			getActiveWorkingVerb: () => this.activeWorkingVerb,
+			setActiveWorkingVerb: (state) => {
+				this.activeWorkingVerb = state;
+			},
+			animator: this.workingVerbAnimator,
+			deliverMessage: (message) => {
+				if (this.loadingAnimation) {
+					this.loadingAnimation.setMessage(message);
+				} else {
+					this.pendingWorkingMessage = message;
+				}
+			},
+		});
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -793,8 +872,8 @@ export class InteractiveMode {
 		// Load changelog (only show new entries, skip for resumed sessions)
 		this.changelogMarkdown = this.getChangelogForDisplay();
 
-		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
-		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
+		// Prefer fd and rg when they are already available. Managed downloads are
+		// opt-in via AG1_ALLOW_TOOL_AUTO_DOWNLOAD=1.
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 
@@ -804,13 +883,7 @@ export class InteractiveMode {
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
 			const greeter = this.getBuiltInGreeterContent();
-			this.builtInHeader = new SplitPanelBannerComponent(
-				greeter.label,
-				greeter.leftTitle,
-				greeter.leftLines,
-				greeter.rightTitle,
-				greeter.rightLines,
-			);
+			this.builtInHeader = new Ag1GreeterComponent(greeter);
 
 			// Setup UI layout
 			this.headerContainer.addChild(new Spacer(1));
@@ -897,22 +970,31 @@ export class InteractiveMode {
 	async run(): Promise<void> {
 		await this.init();
 
-		// Start version check asynchronously
-		this.checkForNewVersion().then((newVersion) => {
-			if (newVersion) {
-				this.showNewVersionNotification(newVersion);
-			}
+		// Ask once about untrusted project-local extensions before any initial
+		// message is sent (accepting reloads resources, which should not race a prompt).
+		await this.maybePromptProjectTrust();
+
+		// Version check is performed but notifications are currently disabled in this fork.
+		checkForNewVersion({ version: this.version }).then(() => {
+			// no-op: showNewVersionNotification is intentionally disabled
 		});
 
 		// Start package update check asynchronously
-		this.checkForPackageUpdates().then((updates) => {
+		checkForPackageUpdates({
+			cwd: this.sessionManager.getCwd(),
+			settingsManager: this.settingsManager,
+		}).then((updates) => {
 			if (updates.length > 0) {
-				this.showPackageUpdateNotification(updates);
+				renderPackageUpdateNotification({
+					chatContainer: this.chatContainer,
+					ui: this.ui,
+					packages: updates,
+				});
 			}
 		});
 
 		// Check tmux keyboard setup asynchronously
-		this.checkTmuxKeyboardSetup().then((warning) => {
+		checkTmuxKeyboardSetup().then((warning) => {
 			if (warning) {
 				this.showWarning(warning);
 			}
@@ -980,98 +1062,6 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Check npm registry for a newer version.
-	 */
-	private async checkForNewVersion(): Promise<string | undefined> {
-		if (process.env.AG1_SKIP_VERSION_CHECK || process.env.AG1_OFFLINE) {
-			return undefined;
-		}
-
-		try {
-			const response = await fetch("https://registry.npmjs.org/@ag1/coding-agent/latest", {
-				signal: AbortSignal.timeout(10000),
-			});
-			if (!response.ok) return undefined;
-
-			const data = (await response.json()) as { version?: string };
-			const latestVersion = data.version;
-
-			if (latestVersion && latestVersion !== this.version) {
-				return latestVersion;
-			}
-
-			return undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.AG1_OFFLINE) {
-			return [];
-		}
-
-		try {
-			const packageManager = new DefaultPackageManager({
-				cwd: this.sessionManager.getCwd(),
-				agentDir: getAgentDir(),
-				settingsManager: this.settingsManager,
-			});
-			const updates = await packageManager.checkForAvailableUpdates();
-			return updates.map((update) => update.displayName);
-		} catch {
-			return [];
-		}
-	}
-
-	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
-		if (!process.env.TMUX) return undefined;
-
-		const runTmuxShow = (option: string): Promise<string | undefined> => {
-			return new Promise((resolve) => {
-				const proc = spawn("tmux", ["show", "-gv", option], {
-					stdio: ["ignore", "pipe", "ignore"],
-				});
-				let stdout = "";
-				const timer = setTimeout(() => {
-					proc.kill();
-					resolve(undefined);
-				}, 2000);
-
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.on("error", () => {
-					clearTimeout(timer);
-					resolve(undefined);
-				});
-				proc.on("close", (code) => {
-					clearTimeout(timer);
-					resolve(code === 0 ? stdout.trim() : undefined);
-				});
-			});
-		};
-
-		const [extendedKeys, extendedKeysFormat] = await Promise.all([
-			runTmuxShow("extended-keys"),
-			runTmuxShow("extended-keys-format"),
-		]);
-
-		// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
-		if (extendedKeys === undefined) return undefined;
-
-		if (extendedKeys !== "on" && extendedKeys !== "always") {
-			return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
-		}
-
-		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. AG1 works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
-		}
-
-		return undefined;
-	}
-
-	/**
 	 * Get changelog entries to display on startup.
 	 * Only shows new entries since last seen version, skips for resumed sessions.
 	 */
@@ -1089,227 +1079,6 @@ export class InteractiveMode {
 	// =========================================================================
 	// Extension System
 	// =========================================================================
-
-	private formatDisplayPath(p: string): string {
-		const home = os.homedir();
-		let result = p;
-
-		// Replace home directory with ~
-		if (result.startsWith(home)) {
-			result = `~${result.slice(home.length)}`;
-		}
-
-		return result;
-	}
-
-	/**
-	 * Get a short path relative to the package root for display.
-	 */
-	private getShortPath(fullPath: string, sourceInfo?: SourceInfo): string {
-		const source = sourceInfo?.source ?? "";
-		const npmMatch = fullPath.match(/node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/);
-		if (npmMatch && source.startsWith("npm:")) {
-			return npmMatch[2];
-		}
-
-		const gitMatch = fullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
-		if (gitMatch && source.startsWith("git:")) {
-			return gitMatch[1];
-		}
-
-		return this.formatDisplayPath(fullPath);
-	}
-
-	private getDisplaySourceInfo(sourceInfo?: SourceInfo): {
-		label: string;
-		scopeLabel?: string;
-		color: "accent" | "muted";
-	} {
-		const source = sourceInfo?.source ?? "local";
-		const scope = sourceInfo?.scope ?? "project";
-		if (source === "local") {
-			if (scope === "user") {
-				return { label: "user", color: "muted" };
-			}
-			if (scope === "project") {
-				return { label: "project", color: "muted" };
-			}
-			if (scope === "temporary") {
-				return { label: "path", scopeLabel: "temp", color: "muted" };
-			}
-			return { label: "path", color: "muted" };
-		}
-
-		if (source === "cli") {
-			return { label: "path", scopeLabel: scope === "temporary" ? "temp" : undefined, color: "muted" };
-		}
-
-		const scopeLabel =
-			scope === "user" ? "user" : scope === "project" ? "project" : scope === "temporary" ? "temp" : undefined;
-		return { label: source, scopeLabel, color: "accent" };
-	}
-
-	private getScopeGroup(sourceInfo?: SourceInfo): "user" | "project" | "path" {
-		const source = sourceInfo?.source ?? "local";
-		const scope = sourceInfo?.scope ?? "project";
-		if (source === "cli" || scope === "temporary") return "path";
-		if (scope === "user") return "user";
-		if (scope === "project") return "project";
-		return "path";
-	}
-
-	private isPackageSource(sourceInfo?: SourceInfo): boolean {
-		const source = sourceInfo?.source ?? "";
-		return source.startsWith("npm:") || source.startsWith("git:");
-	}
-
-	private buildScopeGroups(items: Array<{ path: string; sourceInfo?: SourceInfo }>): Array<{
-		scope: "user" | "project" | "path";
-		paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-		packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-	}> {
-		const groups: Record<
-			"user" | "project" | "path",
-			{
-				scope: "user" | "project" | "path";
-				paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-				packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-			}
-		> = {
-			user: { scope: "user", paths: [], packages: new Map() },
-			project: { scope: "project", paths: [], packages: new Map() },
-			path: { scope: "path", paths: [], packages: new Map() },
-		};
-
-		for (const item of items) {
-			const groupKey = this.getScopeGroup(item.sourceInfo);
-			const group = groups[groupKey];
-			const source = item.sourceInfo?.source ?? "local";
-
-			if (this.isPackageSource(item.sourceInfo)) {
-				const list = group.packages.get(source) ?? [];
-				list.push(item);
-				group.packages.set(source, list);
-			} else {
-				group.paths.push(item);
-			}
-		}
-
-		return [groups.project, groups.user, groups.path].filter(
-			(group) => group.paths.length > 0 || group.packages.size > 0,
-		);
-	}
-
-	private formatScopeGroups(
-		groups: Array<{
-			scope: "user" | "project" | "path";
-			paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-			packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-		}>,
-		options: {
-			formatPath: (item: { path: string; sourceInfo?: SourceInfo }) => string;
-			formatPackagePath: (item: { path: string; sourceInfo?: SourceInfo }, source: string) => string;
-		},
-	): string {
-		const lines: string[] = [];
-
-		for (const group of groups) {
-			lines.push(`  ${theme.fg("accent", group.scope)}`);
-
-			const sortedPaths = [...group.paths].sort((a, b) => a.path.localeCompare(b.path));
-			for (const item of sortedPaths) {
-				lines.push(theme.fg("dim", `    ${options.formatPath(item)}`));
-			}
-
-			const sortedPackages = Array.from(group.packages.entries()).sort(([a], [b]) => a.localeCompare(b));
-			for (const [source, items] of sortedPackages) {
-				lines.push(`    ${theme.fg("mdLink", source)}`);
-				const sortedPackagePaths = [...items].sort((a, b) => a.path.localeCompare(b.path));
-				for (const item of sortedPackagePaths) {
-					lines.push(theme.fg("dim", `      ${options.formatPackagePath(item, source)}`));
-				}
-			}
-		}
-
-		return lines.join("\n");
-	}
-
-	private findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined {
-		const exact = sourceInfos.get(p);
-		if (exact) return exact;
-
-		let current = p;
-		while (current.includes("/")) {
-			current = current.substring(0, current.lastIndexOf("/"));
-			const parent = sourceInfos.get(current);
-			if (parent) return parent;
-		}
-
-		return undefined;
-	}
-
-	private formatPathWithSource(p: string, sourceInfo?: SourceInfo): string {
-		if (sourceInfo) {
-			const shortPath = this.getShortPath(p, sourceInfo);
-			const { label, scopeLabel } = this.getDisplaySourceInfo(sourceInfo);
-			const labelText = scopeLabel ? `${label} (${scopeLabel})` : label;
-			return `${labelText} ${shortPath}`;
-		}
-		return this.formatDisplayPath(p);
-	}
-
-	private formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string {
-		const lines: string[] = [];
-
-		// Group collision diagnostics by name
-		const collisions = new Map<string, ResourceDiagnostic[]>();
-		const otherDiagnostics: ResourceDiagnostic[] = [];
-
-		for (const d of diagnostics) {
-			if (d.type === "collision" && d.collision) {
-				const list = collisions.get(d.collision.name) ?? [];
-				list.push(d);
-				collisions.set(d.collision.name, list);
-			} else {
-				otherDiagnostics.push(d);
-			}
-		}
-
-		// Format collision diagnostics grouped by name
-		for (const [name, collisionList] of collisions) {
-			const first = collisionList[0]?.collision;
-			if (!first) continue;
-			lines.push(theme.fg("warning", `  "${name}" collision:`));
-			lines.push(
-				theme.fg(
-					"dim",
-					`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}`,
-				),
-			);
-			for (const d of collisionList) {
-				if (d.collision) {
-					lines.push(
-						theme.fg(
-							"dim",
-							`    ${theme.fg("warning", "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))} (skipped)`,
-						),
-					);
-				}
-			}
-		}
-
-		for (const d of otherDiagnostics) {
-			if (d.path) {
-				const formattedPath = this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${formattedPath}`));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${d.message}`));
-			} else {
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${d.message}`));
-			}
-		}
-
-		return lines.join("\n");
-	}
 
 	private showLoadedResources(options?: {
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
@@ -1359,21 +1128,19 @@ export class InteractiveMode {
 			const contextFiles = this.session.resourceLoader.getAgentsFiles().agentsFiles;
 			if (contextFiles.length > 0) {
 				this.chatContainer.addChild(new Spacer(1));
-				const contextList = contextFiles
-					.map((f) => theme.fg("dim", `  ${this.formatDisplayPath(f.path)}`))
-					.join("\n");
+				const contextList = contextFiles.map((f) => theme.fg("dim", `  ${formatDisplayPath(f.path)}`)).join("\n");
 				this.chatContainer.addChild(new Text(`${sectionHeader("Context")}\n${contextList}`, 0, 0));
 				this.chatContainer.addChild(new Spacer(1));
 			}
 
 			const skills = skillsResult.skills;
 			if (skills.length > 0) {
-				const groups = this.buildScopeGroups(
+				const groups = buildScopeGroups(
 					skills.map((skill) => ({ path: skill.filePath, sourceInfo: skill.sourceInfo })),
 				);
-				const skillList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+				const skillList = formatScopeGroups(groups, {
+					formatPath: (item) => formatDisplayPath(item.path),
+					formatPackagePath: (item) => getShortPath(item.path, item.sourceInfo),
 				});
 				this.chatContainer.addChild(new Text(`${sectionHeader("Skills")}\n${skillList}`, 0, 0));
 				this.chatContainer.addChild(new Spacer(1));
@@ -1381,18 +1148,18 @@ export class InteractiveMode {
 
 			const templates = this.session.promptTemplates;
 			if (templates.length > 0) {
-				const groups = this.buildScopeGroups(
+				const groups = buildScopeGroups(
 					templates.map((template) => ({ path: template.filePath, sourceInfo: template.sourceInfo })),
 				);
 				const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
-				const templateList = this.formatScopeGroups(groups, {
+				const templateList = formatScopeGroups(groups, {
 					formatPath: (item) => {
 						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+						return template ? `/${template.name}` : formatDisplayPath(item.path);
 					},
 					formatPackagePath: (item) => {
 						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+						return template ? `/${template.name}` : formatDisplayPath(item.path);
 					},
 				});
 				this.chatContainer.addChild(new Text(`${sectionHeader("Prompts")}\n${templateList}`, 0, 0));
@@ -1400,10 +1167,10 @@ export class InteractiveMode {
 			}
 
 			if (extensions.length > 0) {
-				const groups = this.buildScopeGroups(extensions);
-				const extList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+				const groups = buildScopeGroups(extensions);
+				const extList = formatScopeGroups(groups, {
+					formatPath: (item) => formatDisplayPath(item.path),
+					formatPackagePath: (item) => getShortPath(item.path, item.sourceInfo),
 				});
 				this.chatContainer.addChild(new Text(`${sectionHeader("Extensions", "mdHeading")}\n${extList}`, 0, 0));
 				this.chatContainer.addChild(new Spacer(1));
@@ -1413,15 +1180,15 @@ export class InteractiveMode {
 			const loadedThemes = themesResult.themes;
 			const customThemes = loadedThemes.filter((t) => t.sourcePath);
 			if (customThemes.length > 0) {
-				const groups = this.buildScopeGroups(
+				const groups = buildScopeGroups(
 					customThemes.map((loadedTheme) => ({
 						path: loadedTheme.sourcePath!,
 						sourceInfo: loadedTheme.sourceInfo,
 					})),
 				);
-				const themeList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+				const themeList = formatScopeGroups(groups, {
+					formatPath: (item) => formatDisplayPath(item.path),
+					formatPackagePath: (item) => getShortPath(item.path, item.sourceInfo),
 				});
 				this.chatContainer.addChild(new Text(`${sectionHeader("Themes")}\n${themeList}`, 0, 0));
 				this.chatContainer.addChild(new Spacer(1));
@@ -1431,13 +1198,13 @@ export class InteractiveMode {
 		if (showDiagnostics) {
 			const skillDiagnostics = skillsResult.diagnostics;
 			if (skillDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+				const warningLines = formatDiagnostics(skillDiagnostics, sourceInfos);
 				(InteractiveMode as any).prototype.showDiagnosticNotice.call(this, "[Skill conflicts]", warningLines);
 			}
 
 			const promptDiagnostics = promptsResult.diagnostics;
 			if (promptDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
+				const warningLines = formatDiagnostics(promptDiagnostics, sourceInfos);
 				(InteractiveMode as any).prototype.showDiagnosticNotice.call(this, "[Prompt conflicts]", warningLines);
 			}
 
@@ -1457,13 +1224,13 @@ export class InteractiveMode {
 			extensionDiagnostics.push(...shortcutDiagnostics);
 
 			if (extensionDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
+				const warningLines = formatDiagnostics(extensionDiagnostics, sourceInfos);
 				(InteractiveMode as any).prototype.showDiagnosticNotice.call(this, "[Extension issues]", warningLines);
 			}
 
 			const themeDiagnostics = themesResult.diagnostics;
 			if (themeDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
+				const warningLines = formatDiagnostics(themeDiagnostics, sourceInfos);
 				(InteractiveMode as any).prototype.showDiagnosticNotice.call(this, "[Theme conflicts]", warningLines);
 			}
 		}
@@ -1532,6 +1299,43 @@ export class InteractiveMode {
 		this.setupExtensionShortcuts(extensionRunner);
 		this.showLoadedResources({ force: false });
 		this.showStartupNoticesIfNeeded();
+	}
+
+	/**
+	 * Workspace-trust prompt for project-local extensions (wave-2 trust gate follow-up).
+	 *
+	 * The extension loader skips untrusted project-local extensions and records
+	 * LoadExtensionsResult.pendingTrustPrompt. We ask the user ONCE here at startup
+	 * using the standard confirm dialog (the UI is already running, so a dialog is
+	 * feasible and matches how other startup confirmations work). On accept we
+	 * persist trust via trustProject() and run the normal /reload flow so the
+	 * extensions actually load; on decline the loader warning has already explained
+	 * the manual escape hatches (trustedProjects setting, AG1_TRUST_PROJECT=1).
+	 */
+	private async maybePromptProjectTrust(): Promise<void> {
+		if (this.projectTrustPromptHandled) return;
+		const pending = this.session.resourceLoader.getExtensions().pendingTrustPrompt;
+		if (!pending) return;
+		this.projectTrustPromptHandled = true;
+
+		const confirmed = await this.showExtensionConfirm(
+			"Trust project extensions?",
+			`This project ships ${pending.extensionPaths.length} extension(s) under ${pending.projectConfigDir}.\n` +
+				"Extensions can execute arbitrary code with your credentials. Trust and load them?",
+		);
+		if (!confirmed) {
+			this.showWarning(
+				"Project extensions remain disabled. To enable them later, trust the project " +
+					"and run /reload, or set AG1_TRUST_PROJECT=1.",
+			);
+			return;
+		}
+		try {
+			await trustProject(pending.projectConfigDir, this.sessionManager.getCwd(), getAgentDir());
+			await this.handleReloadCommand();
+		} catch (error) {
+			this.showError(`Failed to trust project: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private applyRuntimeSettings(): void {
@@ -1623,12 +1427,17 @@ export class InteractiveMode {
 			approvalHandler: mode === "interactive" ? (request) => this.requestToolApproval(request) : undefined,
 			planningReadOnlyTools:
 				mode === "planning" ? (this.planningReadOnlyToolsAllowed ? "allow" : "block") : undefined,
+			existingTestPaths: collectExistingTestPaths(this.sessionManager.getCwd()),
+			extensionTools:
+				this.session.extensionRunner?.getAllRegisteredTools().map((tool) => tool.definition.name) ?? [],
 		});
 	}
 
 	private getAssistantTextContent(message: AssistantMessage): string {
 		return message.content
-			.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
+			.filter(
+				(part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string",
+			)
 			.map((part) => part.text)
 			.join("\n")
 			.trim();
@@ -1847,18 +1656,7 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
-		if (this.extensionSelector) {
-			this.hideExtensionSelector();
-		}
-		if (this.planWorkflowDialog) {
-			this.hidePlanWorkflowDialog();
-		}
-		if (this.extensionInput) {
-			this.hideExtensionInput();
-		}
-		if (this.extensionEditor) {
-			this.hideExtensionEditor();
-		}
+		this.extensionDialogs.resetExtensionDialogs();
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
 		this.setExtensionFooter(undefined);
@@ -2001,175 +1799,20 @@ export class InteractiveMode {
 	}
 
 	private rememberSubmittedPrompt(text: string): void {
-		const normalized = text.trim();
-		if (normalized) {
-			this.lastSubmittedPromptText = normalized;
-		}
-	}
-
-	private setManagedWorkingActivity(
-		options?: { toolName?: string; args?: Record<string, unknown>; promptText?: string },
-		config: { interruptible?: boolean; resetPhase?: boolean } = {},
-	): string {
-		const interruptible = config.interruptible ?? true;
-		const hasExplicitActivity =
-			options?.toolName !== undefined || options?.args !== undefined || options?.promptText !== undefined;
-		if (!hasExplicitActivity && this.activeWorkingVerb && !config.resetPhase) {
-			this.activeWorkingVerb = {
-				...this.activeWorkingVerb,
-				interruptible,
-			};
-			this.managedWorkingMessageEnabled = true;
-			if (!this.autonomousMode) {
-				this.startWorkingVerbAnimation();
-			}
-			const message = this.buildManagedWorkingMessage();
-			if (this.loadingAnimation) {
-				this.loadingAnimation.setMessage(message);
-			} else {
-				this.pendingWorkingMessage = message;
-			}
-			return message;
-		}
-		const nextPhase = classifyWorkingPhase({
-			toolName: options?.toolName,
-			args: options?.args,
-			command: typeof options?.args?.command === "string" ? options.args.command : undefined,
-			promptText: options?.promptText ?? this.lastSubmittedPromptText,
-		});
-		const shouldSwitchPhase =
-			config.resetPhase ||
-			!this.activeWorkingVerb ||
-			this.activeWorkingVerb.phase !== nextPhase;
-		const phase = shouldSwitchPhase ? nextPhase : (this.activeWorkingVerb?.phase ?? nextPhase);
-		const activity = describeWorkingPhaseActivity(
-			phase,
-			{
-				toolName: options?.toolName,
-				args: options?.args,
-				command: typeof options?.args?.command === "string" ? options.args.command : undefined,
-				promptText: options?.promptText ?? this.lastSubmittedPromptText,
-			},
-			this.lastSubmittedPromptText,
-		);
-
-		this.activeWorkingVerb = {
-			phase,
-			verb: shouldSwitchPhase ? activity.verb : this.activeWorkingVerb?.verb ?? activity.verb,
-			tone: shouldSwitchPhase ? activity.tone : this.activeWorkingVerb?.tone ?? activity.tone,
-			target: activity.target,
-			interruptible,
-		};
-		this.managedWorkingMessageEnabled = true;
-		if (!this.autonomousMode) {
-			this.startWorkingVerbAnimation();
-		}
-		const message = this.buildManagedWorkingMessage();
-		if (this.loadingAnimation) {
-			this.loadingAnimation.setMessage(message);
-		} else {
-			this.pendingWorkingMessage = message;
-		}
-		return message;
-	}
-
-	private buildManagedWorkingMessage(): string {
-		if (!this.activeWorkingVerb) {
-			const activity = describeWorkingActivity({ promptText: this.lastSubmittedPromptText });
-			const verb = theme.bold(theme.fg(activity.tone, activity.verb));
-			const detail = activity.target ? theme.fg("muted", ` ${activity.target}`) : "";
-			return `${verb}${detail}`;
-		}
-
-		const verb = this.renderShimmeringVerb(
-			this.activeWorkingVerb.verb,
-			this.activeWorkingVerb.tone,
-			this.loadingVerbAnimationFrame,
-		);
-		const detail = this.activeWorkingVerb.target ? theme.fg("muted", ` ${this.activeWorkingVerb.target}`) : "";
-		const helper = this.activeWorkingVerb.interruptible
-			? theme.fg("dim", ` (${keyText("app.interrupt")} to interrupt)`)
-			: "";
-		return `${verb}${detail}${helper}`;
-	}
-
-	private renderShimmeringVerb(verb: string, tone: WorkingVerbTone, frame: number): string {
-		if (this.autonomousMode) {
-			return theme.bold(theme.fg(tone, verb));
-		}
-		const chars = [...verb];
-		if (chars.length === 0) return theme.bold(theme.fg(tone, verb));
-		const pulseWidth = Math.max(2, Math.min(4, Math.ceil(chars.length / 4)));
-		const cycle = chars.length + pulseWidth;
-		const head = frame % cycle;
-		const tailStart = head - pulseWidth;
-		return chars
-			.map((char, index) => {
-				const inPulse = index >= tailStart && index < head;
-				if (inPulse && char.trim().length > 0) {
-					return theme.bold(theme.fg(this.getWorkingVerbShimmerTone(tone), char));
-				}
-				return theme.bold(theme.fg(tone, char));
-			})
-			.join("");
-	}
-
-	private getWorkingVerbShimmerTone(tone: WorkingVerbTone): "accentShimmer" | "successShimmer" | "bashModeShimmer" {
-		switch (tone) {
-			case "accent":
-				return "accentShimmer";
-			case "success":
-				return "successShimmer";
-			case "bashMode":
-			default:
-				return "bashModeShimmer";
-		}
-	}
-
-	private startWorkingVerbAnimation(): void {
-		if (this.loadingVerbAnimationTimer || this.autonomousMode) return;
-		this.loadingVerbAnimationTimer = setInterval(() => {
-			if (!this.loadingAnimation || !this.managedWorkingMessageEnabled || !this.activeWorkingVerb) {
-				return;
-			}
-			this.loadingVerbAnimationFrame = (this.loadingVerbAnimationFrame + 1) % 64;
-			this.loadingAnimation.setMessage(this.buildManagedWorkingMessage());
-			this.ui.requestRender();
-		}, 140);
+		this.workingActivity.rememberSubmittedPrompt(text);
 	}
 
 	private stopWorkingVerbAnimation(): void {
-		if (this.loadingVerbAnimationTimer) {
-			clearInterval(this.loadingVerbAnimationTimer);
-			this.loadingVerbAnimationTimer = undefined;
-		}
-		this.loadingVerbAnimationFrame = 0;
+		this.workingVerbAnimator.stopAnimation();
 	}
 
 	private disableManagedWorkingMessage(): void {
-		this.managedWorkingMessageEnabled = false;
+		this.workingVerbAnimator.setState(undefined, false);
 		this.stopWorkingVerbAnimation();
 	}
 
-	private formatWorkingMessage(options?: { toolName?: string; args?: Record<string, unknown>; promptText?: string }): string {
-		const activity = describeWorkingActivity({
-			toolName: options?.toolName,
-			args: options?.args,
-			command: typeof options?.args?.command === "string" ? options.args.command : undefined,
-			promptText: options?.promptText ?? this.lastSubmittedPromptText,
-		});
-		const verb = theme.bold(theme.fg(activity.tone, activity.verb));
-		const detail = activity.target ? theme.fg("muted", ` ${activity.target}`) : "";
-		return `${verb}${detail}`;
-	}
-
 	private getDefaultWorkingMessage(): string {
-		return this.setManagedWorkingActivity(
-			{
-				promptText: this.lastSubmittedPromptText,
-			},
-			{ interruptible: false, resetPhase: true },
-		);
+		return this.workingActivity.getDefaultWorkingMessage();
 	}
 
 	private getInterruptibleWorkingMessage(options?: {
@@ -2177,16 +1820,15 @@ export class InteractiveMode {
 		args?: Record<string, unknown>;
 		promptText?: string;
 	}): string {
-		return `${this.formatWorkingMessage(options)} (${keyText("app.interrupt")} to interrupt)`;
+		return this.workingActivity.getInterruptibleWorkingMessage(options);
 	}
 
 	private resetLoadingAnimationMessage(): void {
-		this.setManagedWorkingActivity(undefined, { interruptible: true });
+		this.workingActivity.resetLoadingAnimationMessage();
 	}
 
 	private setToolAwareLoadingMessage(toolName: string, args?: Record<string, unknown>): void {
-		if (this.autonomousMode) return;
-		this.setManagedWorkingActivity({ toolName, args }, { interruptible: true });
+		this.workingActivity.setToolAwareLoadingMessage(toolName, args);
 	}
 
 	/**
@@ -2252,48 +1894,12 @@ export class InteractiveMode {
 		};
 	}
 
-	/**
-	 * Show a selector for extensions.
-	 */
 	private showExtensionSelector(
 		title: string,
 		options: string[],
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			if (opts?.signal?.aborted) {
-				resolve(undefined);
-				return;
-			}
-
-			const onAbort = () => {
-				this.hideExtensionSelector();
-				resolve(undefined);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionSelector = new ExtensionSelectorComponent(
-				title,
-				options,
-				(option) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(option);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout },
-			);
-
-			showEditorHostComponent({
-				container: this.editorContainer,
-				ui: this.ui,
-				component: this.extensionSelector,
-			});
-		});
+		return this.extensionDialogs.showExtensionSelector(title, options, opts);
 	}
 
 	private showPlanWorkflowDialog(
@@ -2302,74 +1908,15 @@ export class InteractiveMode {
 		options: PlanWorkflowDialogOption[],
 		dialogOptions?: { accent?: "accent" | "warning" | "success" },
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			this.planWorkflowDialogResolver = resolve;
-			this.planWorkflowDialog = new PlanWorkflowDialogComponent({
-				title,
-				lines,
-				options,
-				accent: dialogOptions?.accent,
-				onSelect: (option) => {
-					this.closePlanWorkflowDialog();
-					this.settlePlanWorkflowDialog(option);
-				},
-				onCancel: () => {
-					this.closePlanWorkflowDialog();
-					this.settlePlanWorkflowDialog(undefined);
-				},
-			});
-
-			showEditorHostComponent({
-				container: this.editorContainer,
-				ui: this.ui,
-				component: this.planWorkflowDialog,
-			});
-		});
+		return this.extensionDialogs.showPlanWorkflowDialog(title, lines, options, dialogOptions);
 	}
 
-	private settlePlanWorkflowDialog(value: string | undefined): void {
-		const resolve = this.planWorkflowDialogResolver;
-		this.planWorkflowDialogResolver = undefined;
-		resolve?.(value);
-	}
-
-	/**
-	 * Hide the extension selector.
-	 */
-	private hideExtensionSelector(): void {
-		this.extensionSelector?.dispose();
-		restoreEditorHost({
-			container: this.editorContainer,
-			ui: this.ui,
-			editor: this.editor,
-		});
-		this.extensionSelector = undefined;
-	}
-
-	private closePlanWorkflowDialog(): void {
-		restoreEditorHost({
-			container: this.editorContainer,
-			ui: this.ui,
-			editor: this.editor,
-		});
-		this.planWorkflowDialog = undefined;
-	}
-
-	private hidePlanWorkflowDialog(): void {
-		this.closePlanWorkflowDialog();
-		this.settlePlanWorkflowDialog(undefined);
-	}
-
-	/**
-	 * Show a confirmation dialog for extensions.
-	 */
 	private async showExtensionConfirm(
 		title: string,
 		message: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
-		return result === "Yes";
+		return this.extensionDialogs.showExtensionConfirm(title, message, opts);
 	}
 
 	private async promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<string | undefined> {
@@ -2380,101 +1927,16 @@ export class InteractiveMode {
 		return confirmed ? error.issue.fallbackCwd : undefined;
 	}
 
-	/**
-	 * Show a text input for extensions.
-	 */
 	private showExtensionInput(
 		title: string,
 		placeholder?: string,
 		opts?: ExtensionUIDialogOptions & { initialValue?: string },
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			if (opts?.signal?.aborted) {
-				resolve(undefined);
-				return;
-			}
-
-			const onAbort = () => {
-				this.hideExtensionInput();
-				resolve(undefined);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionInput = new ExtensionInputComponent(
-				title,
-				placeholder,
-				(value) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(value);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout, initialValue: opts?.initialValue },
-			);
-
-			showEditorHostComponent({
-				container: this.editorContainer,
-				ui: this.ui,
-				component: this.extensionInput,
-			});
-		});
+		return this.extensionDialogs.showExtensionInput(title, placeholder, opts);
 	}
 
-	/**
-	 * Hide the extension input.
-	 */
-	private hideExtensionInput(): void {
-		this.extensionInput?.dispose();
-		restoreEditorHost({
-			container: this.editorContainer,
-			ui: this.ui,
-			editor: this.editor,
-		});
-		this.extensionInput = undefined;
-	}
-
-	/**
-	 * Show a multi-line editor for extensions (with Ctrl+G support).
-	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			this.extensionEditor = new ExtensionEditorComponent(
-				this.ui,
-				this.keybindings,
-				title,
-				prefill,
-				(value) => {
-					this.hideExtensionEditor();
-					resolve(value);
-				},
-				() => {
-					this.hideExtensionEditor();
-					resolve(undefined);
-				},
-			);
-
-			showEditorHostComponent({
-				container: this.editorContainer,
-				ui: this.ui,
-				component: this.extensionEditor,
-			});
-		});
-	}
-
-	/**
-	 * Hide the extension editor.
-	 */
-	private hideExtensionEditor(): void {
-		restoreEditorHost({
-			container: this.editorContainer,
-			ui: this.ui,
-			editor: this.editor,
-		});
-		this.extensionEditor = undefined;
+		return this.extensionDialogs.showExtensionEditor(title, prefill);
 	}
 
 	/**
@@ -2551,13 +2013,7 @@ export class InteractiveMode {
 	 * Show a notification for extensions.
 	 */
 	private showExtensionNotify(message: string, type?: "info" | "warning" | "error"): void {
-		if (type === "error") {
-			this.showError(message);
-		} else if (type === "warning") {
-			this.showWarning(message);
-		} else {
-			this.showStatus(message);
-		}
+		this.extensionDialogs.showExtensionNotify(message, type);
 	}
 
 	/** Show a custom component with keyboard focus. Overlay mode renders on top of existing content. */
@@ -2781,6 +2237,7 @@ export class InteractiveMode {
 					handleWorkspaceCommand: (commandText) => this.handleWorkspaceCommand(commandText),
 					handleChangelogCommand: () => this.handleChangelogCommand(),
 					handleHotkeysCommand: () => this.handleHotkeysCommand(),
+					handleTodoCommand: () => this.handleTodoCommand(),
 					showUserMessageSelector: () => this.showUserMessageSelector(),
 					showTreeSelector: () => this.showTreeSelector(),
 					showOAuthSelector: (mode) => this.showOAuthSelector(mode),
@@ -2793,6 +2250,7 @@ export class InteractiveMode {
 					handleReloadCommand: () => this.handleReloadCommand(),
 					handleArminSaysHi: () => this.handleArminSaysHi(),
 					showSessionSelector: () => this.showSessionSelector(),
+					toggleVerboseMode: () => this.toggleVerboseMode(),
 					shutdown: () => this.shutdown(),
 				});
 				return;
@@ -2848,6 +2306,7 @@ export class InteractiveMode {
 		}
 
 		this.footer.invalidate();
+		this.generationStats?.handleEvent(event as unknown as GenerationStatsEvent);
 
 		switch (event.type) {
 			case "agent_start":
@@ -2866,7 +2325,7 @@ export class InteractiveMode {
 				}
 				this.stopWorkingVerbAnimation();
 				this.activeWorkingVerb = undefined;
-				this.managedWorkingMessageEnabled = false;
+				this.workingVerbAnimator.setState(undefined, false);
 				this.statusContainer.clear();
 				this.loadingAnimation = new Loader(
 					this.ui,
@@ -2874,6 +2333,7 @@ export class InteractiveMode {
 					(text) => text,
 					this.getDefaultWorkingMessage(),
 				);
+				this.loadingAnimation.setStatsProvider(() => this.generationStatsLine());
 				this.statusContainer.addChild(this.loadingAnimation);
 				// Apply any pending working message queued before loader existed
 				if (this.pendingWorkingMessage !== undefined) {
@@ -2897,6 +2357,7 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
+					this.currentTurnRail = undefined;
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
@@ -2911,8 +2372,10 @@ export class InteractiveMode {
 						this.getMarkdownThemeWithSettings(),
 						this.hiddenThinkingLabel,
 					);
+					this.streamingComponent.setVerbose(this.settingsManager.getVerboseMode());
+					this.streamingComponent.setStreaming(true);
 					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
+					this.assistantContentTarget().addChild(this.streamingComponent);
 					this.streamingComponent.updateContent(this.streamingMessage);
 					this.ui.requestRender();
 				}
@@ -2946,7 +2409,8 @@ export class InteractiveMode {
 									this.sessionManager.getCwd(),
 								);
 								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
+								component.setVerbose(this.settingsManager.getVerboseMode());
+								this.assistantContentTarget().addChild(component);
 								this.pendingTools.set(content.id, component);
 							} else {
 								const component = this.pendingTools.get(content.id);
@@ -2981,6 +2445,7 @@ export class InteractiveMode {
 						this.streamingMessage.errorMessage = errorMessage;
 					}
 					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.setStreaming?.(false);
 
 					const requestFailureWarning =
 						this.streamingMessage.stopReason === "error"
@@ -3021,6 +2486,7 @@ export class InteractiveMode {
 				}
 				this.setToolAwareLoadingMessage(event.toolName, event.args);
 				this.pendingToolArgs.set(event.toolCallId, event.args ?? {});
+				this.delegationEvidence?.handleToolStart(event.toolName, event.toolCallId, this.sessionManager.getCwd());
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
 					component = new ToolExecutionComponent(
@@ -3035,9 +2501,12 @@ export class InteractiveMode {
 						this.sessionManager.getCwd(),
 					);
 					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(component);
+					component.setVerbose(this.settingsManager.getVerboseMode());
+					this.assistantContentTarget().addChild(component);
 					this.pendingTools.set(event.toolCallId, component);
 				}
+				// Execution start implies the args are finalized
+				component.setArgsComplete();
 				component.markExecutionStarted();
 				this.ui.requestRender();
 				break;
@@ -3059,6 +2528,7 @@ export class InteractiveMode {
 				if (this.shouldSuppressPlanningToolUi()) {
 					this.pendingTools.delete(event.toolCallId);
 					this.pendingToolArgs.delete(event.toolCallId);
+					this.delegationEvidence?.discard(event.toolCallId);
 					break;
 				}
 				const component = this.pendingTools.get(event.toolCallId);
@@ -3070,10 +2540,21 @@ export class InteractiveMode {
 
 					// Track tool outcome for nudge evaluation
 					const toolName = normalizeToolName(event.toolName);
-					const filePath = this.extractFileFromToolArgs(toolName, toolArgs, event.result);
-					const detail = this.extractToolDetail(toolName, toolArgs);
-					const metadata = this.extractToolMetadata(event.result);
-					const estimatedTokens = this.estimateToolResultTokens(event.result);
+					const filePath = extractInteractiveToolFile({
+						toolName,
+						args: toolArgs,
+						result: event.result,
+						cwd: this.sessionManager.getCwd(),
+					});
+					const detail = extractInteractiveToolDetail(toolName, toolArgs);
+					const metadata =
+						this.delegationEvidence?.handleToolEnd(
+							toolName,
+							event.toolCallId,
+							this.sessionManager.getCwd(),
+							extractInteractiveToolMetadata(event.result),
+						) ?? extractInteractiveToolMetadata(event.result);
+					const estimatedTokens = estimateInteractiveToolResultTokens(event.result);
 					const toolOutcome: import("../../core/auton/nudges/types.js").ToolOutcome = {
 						tool: toolName,
 						success: !event.isError,
@@ -3081,14 +2562,31 @@ export class InteractiveMode {
 						detail,
 						estimatedTokens,
 						metadata,
+						callDigest: buildToolCallDigest(toolName, toolArgs),
+						resultDigest: buildToolResultDigest(event.result, event.isError),
 					};
 					toolOutcome.fingerprint = buildToolOutcomeFingerprint(toolOutcome);
+					this.session.recordToolOutcome(toolOutcome);
 					this.nudgeToolCallHistory.push(toolOutcome);
 					this.currentTurnToolCallHistory.push(toolOutcome);
 
-					if (filePath) {
+					if (filePath && !event.isError) {
 						this.nudgeFileAccessHistory.push(toolOutcome);
 						this.currentTurnFileAccessHistory.push(toolOutcome);
+					}
+
+					// Capture structured plan submissions (submit_plan during planning turns)
+					if (toolName === SUBMIT_PLAN_TOOL_NAME && !event.isError) {
+						const plan = asRecord(asRecord(event.result)?.details)?.plan;
+						if (plan) {
+							this.lastSubmitPlanPayload = plan as SubmitPlanSubmission;
+						}
+					}
+
+					// Track todo list state + staleness counter
+					this.toolCallsSinceTodoUpdate++;
+					if (toolName === "todo" && !event.isError) {
+						this.applyTodoToolResult(event.result);
 					}
 
 					this.resetLoadingAnimationMessage();
@@ -3130,6 +2628,7 @@ export class InteractiveMode {
 			}
 
 			case "agent_end":
+				this.currentTurnRail = undefined;
 				if (this.loadingAnimation) {
 					this.loadingAnimation.stop();
 					this.loadingAnimation = undefined;
@@ -3137,7 +2636,7 @@ export class InteractiveMode {
 				}
 				this.stopWorkingVerbAnimation();
 				this.activeWorkingVerb = undefined;
-				this.managedWorkingMessageEnabled = false;
+				this.workingVerbAnimator.setState(undefined, false);
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
@@ -3150,8 +2649,12 @@ export class InteractiveMode {
 						toolCallHistory: this.currentTurnToolCallHistory,
 						fileAccessHistory: this.currentTurnFileAccessHistory,
 					};
-					this.pendingRuntimePromptAddendum = buildLocalEvidencePromptAddendum(steeringContext);
-					const continuationMessage = buildRuntimeContinuationMessage(steeringContext);
+					this.pendingRuntimePromptAddendum = isPromptSteeringEnabled()
+						? buildLocalEvidencePromptAddendum(steeringContext)
+						: undefined;
+					const continuationMessage = isPromptSteeringEnabled()
+						? buildRuntimeContinuationMessage(steeringContext)
+						: undefined;
 					if (continuationMessage) {
 						await this.session.sendCustomMessage(
 							{
@@ -3244,6 +2747,10 @@ export class InteractiveMode {
 					ui: this.ui,
 				});
 				break;
+
+			case "recovery_replay_error":
+				this.showError(event.message);
+				break;
 		}
 	}
 
@@ -3330,6 +2837,7 @@ export class InteractiveMode {
 				break;
 			}
 			case "user": {
+				this.currentTurnRail = undefined;
 				const textContent = this.getUserMessageText(message);
 				if (textContent) {
 					const skillBlock = parseSkillBlock(textContent);
@@ -3370,7 +2878,8 @@ export class InteractiveMode {
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
 				);
-				this.chatContainer.addChild(assistantComponent);
+				assistantComponent.setVerbose(this.settingsManager.getVerboseMode());
+				this.assistantContentTarget().addChild(assistantComponent);
 				break;
 			}
 			case "toolResult": {
@@ -3421,7 +2930,8 @@ export class InteractiveMode {
 							this.sessionManager.getCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
+						component.setVerbose(this.settingsManager.getVerboseMode());
+						this.assistantContentTarget().addChild(component);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							let errorMessage: string;
@@ -3697,6 +3207,18 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private toggleVerboseMode(): void {
+		const next = !this.settingsManager.getVerboseMode();
+		this.settingsManager.setVerboseMode(next);
+		this.showStatus(
+			next
+				? "Verbose mode: full thinking, ungrouped tool calls"
+				: "Condensed mode: thinking collapsed, tool runs grouped",
+		);
+		this.chatContainer.clear();
+		this.rebuildChatFromMessages();
+	}
+
 	private toggleThinkingBlockVisibility(): void {
 		this.hideThinkingBlock = !this.hideThinkingBlock;
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
@@ -3709,7 +3231,7 @@ export class InteractiveMode {
 		if (this.streamingComponent && this.streamingMessage) {
 			this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
 			this.streamingComponent.updateContent(this.streamingMessage);
-			this.chatContainer.addChild(this.streamingComponent);
+			this.assistantContentTarget().addChild(this.streamingComponent);
 		}
 
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
@@ -3798,27 +3320,6 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	showNewVersionNotification(_newVersion: string): void {
-		// Disabled in AG1 fork
-	}
-
-	showPackageUpdateNotification(packages: string[]): void {
-		const action = theme.fg("accent", `${APP_NAME} update`);
-		const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
-		const packageLines = packages.map((pkg) => theme.fg("text", `- ${pkg}`));
-
-		this.chatContainer.addChild(
-			new NoticeCardComponent({
-				badge: "update",
-				badgeColor: "warning",
-				title: "Package Updates Available",
-				lines: [updateInstruction, "", theme.fg("muted", "Packages:"), ...packageLines],
-				tone: "warning",
-			}),
-		);
-		this.ui.requestRender();
-	}
-
 	private showDiagnosticNotice(title: string, warningLines: string): void {
 		this.chatContainer.addChild(
 			new NoticeCardComponent({
@@ -3851,10 +3352,7 @@ export class InteractiveMode {
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
 		const { steering, followUp } = this.session.clearQueue();
-		const cleared = clearInteractiveQueuedMessages(
-			{ steering, followUp },
-			this.compactionQueuedMessages,
-		);
+		const cleared = clearInteractiveQueuedMessages({ steering, followUp }, this.compactionQueuedMessages);
 		this.compactionQueuedMessages = [];
 		return cleared;
 	}
@@ -3866,7 +3364,12 @@ export class InteractiveMode {
 		const workspace = this.activeAutonomousWorkspace ?? this.lastAutonomousWorkspace;
 		const workspaceSummary = getInteractiveWorkspaceSummary(workspace, Boolean(this.activeAutonomousWorkspace));
 		const workspaceLines = normalizeInteractiveWorkspaceSummaryLines(workspaceSummary);
-		if (steeringMessages.length > 0 || followUpMessages.length > 0 || planReviewLines.length > 0 || workspaceLines.length > 0) {
+		if (
+			steeringMessages.length > 0 ||
+			followUpMessages.length > 0 ||
+			planReviewLines.length > 0 ||
+			workspaceLines.length > 0
+		) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 		}
 		const queuedLines = buildInteractiveQueuedContextLines({
@@ -4049,6 +3552,12 @@ export class InteractiveMode {
 						for (const child of this.chatContainer.children) {
 							if (child instanceof ToolExecutionComponent) {
 								child.setShowImages(enabled);
+							} else if (child instanceof TurnRail) {
+								for (const nested of child.children) {
+									if (nested instanceof ToolExecutionComponent) {
+										nested.setShowImages(enabled);
+									}
+								}
 							}
 						}
 					},
@@ -4093,11 +3602,57 @@ export class InteractiveMode {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
 			this.checkDaxnutsEasterEgg(model);
+			this.warnIfModelMayHaveUndeclaredVision(model);
+			this.watchVisualToolActivation(model);
 			if (statusMessage) {
 				this.showStatus(statusMessage);
 			}
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private visionWarningShownFor = new Set<string>();
+
+	/**
+	 * The visual-tools gate trusts registry metadata. Warn once per model when
+	 * the name strongly suggests vision support but the metadata doesn't declare
+	 * it, so the user knows why screenshot/verify tools are missing.
+	 */
+	private warnIfModelMayHaveUndeclaredVision(model: Model<any>): void {
+		if (this.settingsManager.getVisualToolsMode() !== "auto") return;
+		if (modelSupportsVision(model)) return;
+		if (this.session.getVisionVerdict(model) !== undefined) return; // probed already — metadata is moot
+		const ref = this.formatModelReference(model);
+		if (this.visionWarningShownFor.has(ref)) return;
+		const name = `${model.provider}/${model.id}`.toLowerCase();
+		const looksVisionCapable =
+			/vision|\bvl\b|vl[-_.]|llava|pixtral|gpt-4o|gpt-4-turbo|claude-(3|3\.5|4|sonnet|opus|haiku)|gemini|qwen\d*[-_.]?vl|glm-4v|internvl/.test(
+				name,
+			);
+		if (!looksVisionCapable) return;
+		this.visionWarningShownFor.add(ref);
+		this.showWarning(
+			`${ref} looks vision-capable but doesn't declare image input, so visual tools (screenshot_url, verify_ui) are disabled. Set visualTools: "on" in settings to force-enable them.`,
+		);
+	}
+
+	/**
+	 * Vision probing is async. If visual tools aren't active right after model
+	 * selection, poll briefly and announce when the probe enables them.
+	 */
+	private watchVisualToolActivation(model: Model<any>): void {
+		if (this.settingsManager.getVisualToolsMode() !== "auto") return;
+		if (modelSupportsVision(model)) return;
+		const modelKey = this.formatModelReference(model);
+		const delays = [2000, 5000, 10000];
+		for (const delay of delays) {
+			setTimeout(() => {
+				if (this.formatModelReference(this.session.model ?? model) !== modelKey) return;
+				if (this.session.getActiveToolNames().includes("verify_ui")) {
+					this.showStatus(`Vision capability detected via provider probe — visual tools enabled for ${modelKey}.`);
+				}
+			}, delay);
 		}
 	}
 
@@ -4111,6 +3666,30 @@ export class InteractiveMode {
 
 	private getPreferredExecutionModelRef(): string | undefined {
 		return this.settingsManager.getExecutionModel();
+	}
+
+	private getPreferredVerifierModelRef(): string | undefined {
+		return this.settingsManager.getVerifierModel();
+	}
+
+	private getPreferredModelRef(mode: ModelRouteMode): string | undefined {
+		if (mode === "planning") return this.getPreferredPlanningModelRef();
+		if (mode === "execution") return this.getPreferredExecutionModelRef();
+		return this.getPreferredVerifierModelRef();
+	}
+
+	private setPreferredModelRef(mode: ModelRouteMode, ref: string | undefined): void {
+		if (mode === "planning") {
+			this.settingsManager.setPlanningModel(ref);
+		} else if (mode === "execution") {
+			this.settingsManager.setExecutionModel(ref);
+		} else {
+			this.settingsManager.setVerifierModel(ref);
+		}
+	}
+
+	private modelRouteCommandName(mode: ModelRouteMode): string {
+		return mode === "planning" ? "planner-model" : mode === "execution" ? "executor-model" : "verifier-model";
 	}
 
 	private shouldAllowPlanningInspection(
@@ -4164,21 +3743,24 @@ export class InteractiveMode {
 	private formatPlanRouteSummaryLines(): string[] {
 		const planning = this.getPreferredPlanningModelRef() ?? "(inherit active model)";
 		const execution = this.getPreferredExecutionModelRef() ?? "(inherit active model)";
+		const verifier = this.getPreferredVerifierModelRef() ?? "(inherit active model)";
 		const active = this.session.model ? this.formatModelReference(this.session.model) : "(no active model)";
 		return [
 			theme.bold("Plan Routing"),
 			`Planning model: ${planning}`,
 			`Execution model: ${execution}`,
+			`Verifier model: ${verifier}`,
 			`Active model: ${active}`,
 			"",
 			"Commands",
 			"/plan planner-model [provider/model|clear]",
 			"/plan executor-model [provider/model|clear]",
+			"/plan verifier-model [provider/model|clear]",
 		];
 	}
 
 	private async ensurePreferredModeModel(mode: "planning" | "execution"): Promise<void> {
-		const configuredRef = mode === "planning" ? this.getPreferredPlanningModelRef() : this.getPreferredExecutionModelRef();
+		const configuredRef = this.getPreferredModelRef(mode);
 		if (!configuredRef) return;
 
 		const currentModel = this.session.model;
@@ -4189,24 +3771,25 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(configuredRef);
 		if (!model) {
 			this.showWarning(
-				`Configured ${mode} model ${configuredRef} is not currently available. Update it with /plan ${
-					mode === "planning" ? "planner-model" : "executor-model"
-				}.`,
+				`Configured ${mode} model ${configuredRef} is not currently available. Update it with /plan ${this.modelRouteCommandName(mode)}.`,
 			);
 			return;
 		}
 
-		await this.applyInteractiveModelSelection(model, `Switched to ${mode} model: ${this.formatModelReference(model)}`);
+		await this.applyInteractiveModelSelection(
+			model,
+			`Switched to ${mode} model: ${this.formatModelReference(model)}`,
+		);
 	}
 
-	private async showPlanRouteSelector(mode: "planning" | "execution"): Promise<void> {
+	private async showPlanRouteSelector(mode: ModelRouteMode): Promise<void> {
 		const models = await this.getModelCandidates();
 		if (models.length === 0) {
 			this.showWarning("No models are currently available for plan routing.");
 			return;
 		}
 
-		const configuredRef = mode === "planning" ? this.getPreferredPlanningModelRef() : this.getPreferredExecutionModelRef();
+		const configuredRef = this.getPreferredModelRef(mode);
 		const activeRef = this.session.model ? this.formatModelReference(this.session.model) : undefined;
 		const modelOptions = models.map((model) => {
 			const ref = this.formatModelReference(model);
@@ -4220,49 +3803,38 @@ export class InteractiveMode {
 			...(configuredRef ? [createPlanWorkflowOption("clear_configured_route", "Clear configured route", "d")] : []),
 			...modelOptions.map((option) => createPlanWorkflowOption(option, option)),
 		];
+		const modeLabel = mode === "planning" ? "Planner" : mode === "execution" ? "Executor" : "Verifier";
 		const selected = await this.showPlanWorkflowDialog(
-			`${mode === "planning" ? "Planner" : "Executor"} model route`,
+			`${modeLabel} model route`,
 			[
 				`Current route: ${configuredRef ?? "(inherit active model)"}`,
 				`Active model: ${activeRef ?? "(no active model)"}`,
 				"",
-				"Pick a model for this plan phase or clear the override.",
+				"Pick a model for this route or clear the override.",
 			],
 			options,
 			{ accent: mode === "planning" ? "warning" : "success" },
 		);
 		if (!selected) return;
 		if (selected === "clear_configured_route") {
-			if (mode === "planning") {
-				this.settingsManager.setPlanningModel(undefined);
-			} else {
-				this.settingsManager.setExecutionModel(undefined);
-			}
+			this.setPreferredModelRef(mode, undefined);
 			this.showStatus(`Cleared ${mode} model route.`);
 			return;
 		}
 
 		const modelRef = selected.replace(/\s+\[[^\]]+\]$/, "");
-		if (mode === "planning") {
-			this.settingsManager.setPlanningModel(modelRef);
-		} else {
-			this.settingsManager.setExecutionModel(modelRef);
-		}
+		this.setPreferredModelRef(mode, modelRef);
 		this.showStatus(`Set ${mode} model route to ${modelRef}.`);
 	}
 
-	private async handlePlanModelRouteCommand(mode: "planning" | "execution", modelRef?: string): Promise<void> {
+	private async handlePlanModelRouteCommand(mode: ModelRouteMode, modelRef?: string): Promise<void> {
 		const normalized = modelRef?.trim();
 		if (!normalized) {
 			await this.showPlanRouteSelector(mode);
 			return;
 		}
 		if (normalized.toLowerCase() === "clear") {
-			if (mode === "planning") {
-				this.settingsManager.setPlanningModel(undefined);
-			} else {
-				this.settingsManager.setExecutionModel(undefined);
-			}
+			this.setPreferredModelRef(mode, undefined);
 			this.showStatus(`Cleared ${mode} model route.`);
 			return;
 		}
@@ -4273,11 +3845,7 @@ export class InteractiveMode {
 			return;
 		}
 		const ref = this.formatModelReference(model);
-		if (mode === "planning") {
-			this.settingsManager.setPlanningModel(ref);
-		} else {
-			this.settingsManager.setExecutionModel(ref);
-		}
+		this.setPreferredModelRef(mode, ref);
 		this.showStatus(`Set ${mode} model route to ${ref}.`);
 	}
 
@@ -4466,8 +4034,7 @@ export class InteractiveMode {
 								"Summarize",
 								"Summarize with custom prompt",
 							]),
-						showCustomInstructionsEditor: () =>
-							this.showExtensionEditor("Custom summarization instructions"),
+						showCustomInstructionsEditor: () => this.showExtensionEditor("Custom summarization instructions"),
 					});
 					if (summaryChoice.cancelledToTree) {
 						this.showTreeSelector(entryId);
@@ -4671,35 +4238,35 @@ export class InteractiveMode {
 			showError: (message) => this.showError(message),
 			showStatus: (message) => this.showStatus(message),
 			reload: async () => {
-			await this.session.reload();
-			this.keybindings.reload();
-			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-			const themeResult = applyConfiguredTheme(this.settingsManager, setTheme);
-			if (!themeResult.success) {
-				this.showError(
-					`Failed to load theme "${themeResult.themeName}": ${themeResult.error}\nFell back to dark theme.`,
-				);
-			}
-			this.hideThinkingBlock = applyInteractiveRuntimeSettings({
-				settings: this.settingsManager,
-				ui: this.ui,
-				defaultEditor: this.defaultEditor,
-				editor: this.editor,
-			}).hideThinkingBlock;
-			this.setupAutocomplete(this.fdPath);
-			const runner = this.session.extensionRunner;
-			if (runner) {
-				this.setupExtensionShortcuts(runner);
-			}
-			this.rebuildChatFromMessages();
-			this.showLoadedResources({
-				force: false,
-				showDiagnosticsWhenQuiet: true,
-			});
-			const modelsJsonError = this.session.modelRegistry.getError();
-			if (modelsJsonError) {
-				this.showError(`models.json error: ${modelsJsonError}`);
-			}
+				await this.session.reload();
+				this.keybindings.reload();
+				setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+				const themeResult = applyConfiguredTheme(this.settingsManager, setTheme);
+				if (!themeResult.success) {
+					this.showError(
+						`Failed to load theme "${themeResult.themeName}": ${themeResult.error}\nFell back to dark theme.`,
+					);
+				}
+				this.hideThinkingBlock = applyInteractiveRuntimeSettings({
+					settings: this.settingsManager,
+					ui: this.ui,
+					defaultEditor: this.defaultEditor,
+					editor: this.editor,
+				}).hideThinkingBlock;
+				this.setupAutocomplete(this.fdPath);
+				const runner = this.session.extensionRunner;
+				if (runner) {
+					this.setupExtensionShortcuts(runner);
+				}
+				this.rebuildChatFromMessages();
+				this.showLoadedResources({
+					force: false,
+					showDiagnosticsWhenQuiet: true,
+				});
+				const modelsJsonError = this.session.modelRegistry.getError();
+				if (modelsJsonError) {
+					this.showError(`models.json error: ${modelsJsonError}`);
+				}
 			},
 		});
 	}
@@ -4788,351 +4355,71 @@ export class InteractiveMode {
 	}
 
 	private async handlePlanCommand(command: Extract<InteractiveBuiltinCommand, { kind: "plan" }>): Promise<void> {
-		try {
-			const maybeSession = getOptionalReceiverSessionState(this);
-			const planMutationActions = new Set<Extract<InteractiveBuiltinCommand, { kind: "plan" }>["action"]>([
-				"accept",
-				"reject",
-				"clear",
-				"revise",
-				"done",
-				"reopen",
-				"next",
-				"step",
-				"execute",
-				"answer",
-			]);
-			if (planMutationActions.has(command.action) && (maybeSession?.isStreaming || maybeSession?.isCompacting)) {
-				this.showWarning("Wait for the current agent turn to finish before changing plan state.");
-				return;
-			}
-			const resolvePlanArtifact = (
-				revision: number | undefined,
-				defaultTarget: "current" | "planning" | "execution" = "current",
-			): InteractivePlanArtifact | undefined => {
-				const resolved = resolvePlanArtifactForCommandWithFallback(
-					this,
-					this.getPlanArtifactByRevision.bind(this),
-					revision,
-					defaultTarget,
-				);
-				if (resolved.ambiguousRevision !== undefined) {
-					this.showWarning(
-						`Plan revision ${resolved.ambiguousRevision} matches multiple plan threads. Open /plan review and pick the exact plan instead.`,
-					);
-					return undefined;
-				}
-				return resolved.artifact;
-			};
-			switch (command.action) {
-				case "toggle":
-					this.togglePlanningMode();
-					return;
-				case "routes":
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(this.formatPlanRouteSummaryLines().join("\n"), 1, 0));
-					this.ui.requestRender();
-					return;
-				case "planner-model":
-					await this.handlePlanModelRouteCommand("planning", command.modelRef);
-					return;
-				case "executor-model":
-					await this.handlePlanModelRouteCommand("execution", command.modelRef);
-					return;
-				case "review":
-					await this.showPlanReviewSelector();
-					return;
-					case "interview": {
-						const artifact = resolvePlanArtifact(command.revision, "planning");
-						if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved clarifying plan artifact yet."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					if (artifact.status !== "clarifying") {
-						this.showWarning(
-							command.revision === undefined
-								? "The latest saved plan is not awaiting clarification."
-								: `Plan revision ${artifact.revision} is not awaiting clarification.`,
-						);
-						return;
-					}
-					await this.showPlanInterview(artifact);
-					return;
-				}
-					case "answer": {
-						const artifact = resolvePlanArtifact(command.revision, "planning");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved clarifying plan artifact yet."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					if (artifact.status !== "clarifying") {
-						this.showWarning(
-							command.revision === undefined
-								? "The latest saved plan is not awaiting clarification."
-								: `Plan revision ${artifact.revision} is not awaiting clarification.`,
-						);
-						return;
-					}
-					if (!command.feedback) {
-						await this.showPlanInterview(artifact);
-						return;
-					}
-					await this.answerClarifyingPlanArtifact(artifact, command.feedback);
-					return;
-				}
-					case "show": {
-						const artifact = resolvePlanArtifact(command.revision);
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact yet. Enter planning mode and ask for a plan first."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					this.showPlanArtifactCard(artifact, { expanded: true });
-					return;
-				}
-				case "history": {
-					const artifacts = this.getPlanArtifacts(5);
-					if (artifacts.length === 0) {
-						this.showWarning("No saved plan history yet. Enter planning mode and ask for a plan first.");
-						return;
-					}
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(formatInteractivePlanHistory(artifacts), 1, 0));
-					this.ui.requestRender();
-					return;
-				}
-					case "accept": {
-						const artifact = resolvePlanArtifact(command.revision, "planning");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to accept."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-						if (artifact.status === "accepted") {
-							this.showStatus(`Plan v${artifact.revision} is already accepted.`);
-							return;
-						}
-						if (artifact.status === "clarifying") {
-							this.showWarning(
-								command.revision === undefined
-								? "Answer the clarifying questions first with /plan interview before accepting the plan."
-								: `Plan revision ${artifact.revision} is still awaiting clarification. Open the interview first.`,
-							);
-							return;
-						}
-						if (artifact.status !== "draft") {
-							this.showWarning(
-								command.revision === undefined
-									? `Only draft plans can be accepted. The current plan is ${artifact.status}.`
-									: `Plan revision ${artifact.revision} cannot be accepted from ${artifact.status}.`,
-							);
-							return;
-						}
-						await this.acceptPlanArtifact(artifact);
-					return;
-				}
-					case "reject": {
-						const artifact = resolvePlanArtifact(command.revision);
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to reject."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					await this.rejectPlanArtifact(artifact, "");
-					return;
-				}
-					case "clear": {
-						const artifact = resolvePlanArtifact(command.revision);
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to clear."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-						}
-						const discardedArtifact = updateInteractivePlanArtifactStatus(artifact, "discarded");
-						this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, discardedArtifact);
-						clearPlanSelectionForArtifactForReceiver(this, artifact);
-						this.updatePendingMessagesDisplay();
-					this.updateModeDisplay();
-					this.showPlanArtifactCard(discardedArtifact);
-					this.showStatus(`Cleared plan v${artifact.revision}.`);
-					return;
-				}
-					case "revise": {
-						const artifact = resolvePlanArtifact(command.revision);
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to revise."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					if (!command.feedback) {
-						this.showWarning("Usage: /plan revise [revision] <what to change>");
-						return;
-					}
-					this.setExecutionMode("planning");
-					await this.runPlanningPrompt(`Revise plan v${artifact.revision} for: ${artifact.goal}`, {
-						goal: artifact.goal,
-						previousArtifact: artifact,
-						feedback: command.feedback,
-						hiddenPromptAddendum: buildPlanRevisionPrompt(artifact, command.feedback),
-					});
-					return;
-				}
-					case "done": {
-						const artifact = resolvePlanArtifact(command.revision, "execution");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to update."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-						if (command.stepIndex === undefined || !artifact.steps[command.stepIndex]) {
-							this.showWarning("Usage: /plan done [revision] <step-number>");
-							return;
-						}
-						if (artifact.status !== "accepted" && artifact.status !== "executing") {
-							this.showWarning(`Plan v${artifact.revision} cannot mark steps complete from ${artifact.status}.`);
-							return;
-						}
-						await this.markPlanStepComplete(artifact, command.stepIndex);
-						return;
-					}
-					case "reopen": {
-						const artifact = resolvePlanArtifact(command.revision, "execution");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No saved plan artifact to update."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-						if (command.stepIndex === undefined || !artifact.steps[command.stepIndex]) {
-							this.showWarning("Usage: /plan reopen [revision] <step-number>");
-							return;
-						}
-						if (artifact.status !== "accepted" && artifact.status !== "executing") {
-							this.showWarning(`Plan v${artifact.revision} cannot reopen steps from ${artifact.status}.`);
-							return;
-						}
-						await this.reopenPlanStep(artifact, command.stepIndex);
-						return;
-					}
-				case "next":
-					await this.executeNextPlanStep(command.revision);
-					return;
-					case "step": {
-						const artifact = resolvePlanArtifact(command.revision, "execution");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No accepted plan artifact to execute."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					if (artifact.status !== "accepted" && artifact.status !== "executing") {
-						this.showWarning(
-							command.revision === undefined
-								? "Accept the latest plan first with /plan accept before executing a step."
-								: `Accept plan revision ${artifact.revision} first with /plan accept ${artifact.revision} before executing a step.`,
-						);
-						return;
-					}
-					if (command.stepIndex === undefined || !artifact.steps[command.stepIndex]) {
-						this.showWarning("Usage: /plan step [revision] <step-number>");
-						return;
-					}
-					await this.executePlanArtifact(artifact, command.stepIndex);
-					return;
-				}
-					case "execute": {
-						const artifact = resolvePlanArtifact(command.revision, "execution");
-					if (!artifact) {
-						this.showWarning(
-							command.revision === undefined
-								? "No accepted plan artifact to execute."
-								: `No saved plan artifact for revision ${command.revision}.`,
-						);
-						return;
-					}
-					if (artifact.status !== "accepted") {
-						this.showWarning(
-							command.revision === undefined
-								? "Accept the latest plan first with /plan accept before executing it."
-								: `Accept plan revision ${artifact.revision} first with /plan accept ${artifact.revision} before executing it.`,
-						);
-						return;
-					}
-					await this.executePlanArtifact(artifact);
-					return;
-				}
-			}
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
+		return handlePlanCommand(
+			{
+				resolvePlanArtifact: (revision, defaultTarget) =>
+					resolvePlanArtifactForCommandWithFallback(
+						this,
+						this.getPlanArtifactByRevision.bind(this),
+						revision,
+						defaultTarget,
+					),
+				getSessionActivityState: () => getOptionalReceiverSessionState(this),
+				showWarning: (message) => this.showWarning(message),
+				showStatus: (message) => this.showStatus(message),
+				showError: (message) => this.showError(message),
+				togglePlanningMode: () => this.togglePlanningMode(),
+				chatContainer: this.chatContainer,
+				ui: this.ui,
+				formatPlanRouteSummaryLines: () => this.formatPlanRouteSummaryLines(),
+				handlePlanModelRouteCommand: (mode, modelRef) => this.handlePlanModelRouteCommand(mode, modelRef),
+				showPlanReviewSelector: () => this.showPlanReviewSelector(),
+				showPlanInterview: (artifact) => this.showPlanInterview(artifact),
+				answerClarifyingPlanArtifact: (artifact, answer) => this.answerClarifyingPlanArtifact(artifact, answer),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+				getPlanArtifacts: (limit) => this.getPlanArtifacts(limit),
+				acceptPlanArtifact: (planArtifact, options) =>
+					options === undefined
+						? this.acceptPlanArtifact(planArtifact)
+						: this.acceptPlanArtifact(planArtifact, options),
+				rejectPlanArtifact: (planArtifact, reason) => this.rejectPlanArtifact(planArtifact, reason),
+				sessionManager: this.sessionManager,
+				clearPlanSelectionForArtifact: (planArtifact) =>
+					clearPlanSelectionForArtifactForReceiver(this, planArtifact),
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				runPlanningPrompt: (promptBody, options) => this.runPlanningPrompt(promptBody, options),
+				markPlanStepComplete: (planArtifact, stepIndex) => this.markPlanStepComplete(planArtifact, stepIndex),
+				reopenPlanStep: (planArtifact, stepIndex) => this.reopenPlanStep(planArtifact, stepIndex),
+				executeNextPlanStep: (revision) => this.executeNextPlanStep(revision),
+				executePlanArtifact: (planArtifact, stepIndex) =>
+					stepIndex === undefined
+						? this.executePlanArtifact(planArtifact)
+						: this.executePlanArtifact(planArtifact, stepIndex),
+			},
+			command,
+		);
 	}
 
 	private async executeNextPlanStep(revision?: number): Promise<void> {
-		const resolved = resolvePlanArtifactForCommandWithFallback(
-			this,
-			this.getPlanArtifactByRevision.bind(this),
+		return executeNextPlanStep(
+			{
+				resolvePlanArtifact: (rev, defaultTarget) =>
+					resolvePlanArtifactForCommandWithFallback(
+						this,
+						this.getPlanArtifactByRevision.bind(this),
+						rev,
+						defaultTarget,
+					),
+				showWarning: (message) => this.showWarning(message),
+				executePlanArtifact: (artifact, stepIndex) => this.executePlanArtifact(artifact, stepIndex),
+			},
 			revision,
-			"execution",
 		);
-		if (resolved.ambiguousRevision !== undefined) {
-			this.showWarning(
-				`Plan revision ${resolved.ambiguousRevision} matches multiple plan threads. Open /plan review and pick the exact plan instead.`,
-			);
-			return;
-		}
-		const artifact = resolved.artifact;
-		if (!artifact) {
-			this.showWarning(
-				revision === undefined
-					? "No accepted plan artifact to execute."
-					: `No saved plan artifact for revision ${revision}.`,
-			);
-			return;
-		}
-		if (artifact.status !== "accepted" && artifact.status !== "executing") {
-			this.showWarning(
-				revision === undefined
-					? "Accept the latest plan first with /plan accept before executing the next step."
-					: `Accept plan revision ${artifact.revision} first with /plan accept ${artifact.revision} before executing the next step.`,
-			);
-			return;
-		}
-		const nextStepIndex = getNextInteractivePlanStepIndex(artifact);
-		if (nextStepIndex === undefined) {
-			this.showWarning(`Plan v${artifact.revision} has no remaining steps to execute.`);
-			return;
-		}
-		await this.executePlanArtifact(artifact, nextStepIndex);
 	}
 
 	private handleSessionCommand(): void {
@@ -5200,14 +4487,18 @@ export class InteractiveMode {
 		}
 
 		const limit = arg === "latest" ? 1 : 5;
-		if (!renderInteractiveResearchArtifacts({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			sessionEntries: this.session.sessionManager.getEntries(),
-			limit,
-		})) {
+		if (
+			!renderInteractiveResearchArtifacts({
+				chatContainer: this.chatContainer,
+				ui: this.ui,
+				sessionEntries: this.session.sessionManager.getEntries(),
+				limit,
+			})
+		) {
 			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(theme.fg("dim", "No research artifacts saved in this session yet."), 1, 0));
+			this.chatContainer.addChild(
+				new Text(theme.fg("dim", "No research artifacts saved in this session yet."), 1, 0),
+			);
 			this.ui.requestRender();
 		}
 	}
@@ -5229,7 +4520,9 @@ export class InteractiveMode {
 	}
 
 	private formatRuntimeHealthTimelineSummary(): string {
-		return buildRuntimeHealthTimelineSummary(getRecentRuntimeHealthSnapshots(this.session.sessionManager.getEntries(), 3));
+		return buildRuntimeHealthTimelineSummary(
+			getRecentRuntimeHealthSnapshots(this.session.sessionManager.getEntries(), 3),
+		);
 	}
 
 	private formatDebugArtifactsSummary(): string {
@@ -5256,6 +4549,7 @@ export class InteractiveMode {
 		);
 	}
 
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: invoked reflectively by runPlanningPrompt via its deps.receiver probe (getOptionalReceiverMethod-style lookup)
 	private getPlanningStabilizationProfile(): RuntimeStabilizationProfile {
 		return {
 			level: "none",
@@ -5300,6 +4594,7 @@ export class InteractiveMode {
 		return selection;
 	}
 
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: invoked reflectively by clearPlanSelectionForArtifactForReceiver via getOptionalReceiverMethod(receiver, "clearPlanSelectionForArtifact")
 	private clearPlanSelectionForArtifact(artifact: InteractivePlanArtifact): InteractivePlanSelection {
 		const ref = createInteractivePlanArtifactRef(artifact);
 		const selection = this.getLatestPlanSelection();
@@ -5337,7 +4632,9 @@ export class InteractiveMode {
 	}
 
 	private getLatestPlanArtifact(): InteractivePlanArtifact | undefined {
-		return this.planningMode ? this.getCurrentPlanningArtifact() : this.getActiveExecutablePlanArtifact() ?? this.getCurrentPlanningArtifact();
+		return this.planningMode
+			? this.getCurrentPlanningArtifact()
+			: (this.getActiveExecutablePlanArtifact() ?? this.getCurrentPlanningArtifact());
 	}
 
 	private getPlanArtifacts(limit?: number): InteractivePlanArtifact[] {
@@ -5360,7 +4657,9 @@ export class InteractiveMode {
 				return { artifact: this.getActiveExecutablePlanArtifact() };
 			}
 			return {
-				artifact: this.planningMode ? this.getCurrentPlanningArtifact() : this.getActiveExecutablePlanArtifact() ?? this.getCurrentPlanningArtifact(),
+				artifact: this.planningMode
+					? this.getCurrentPlanningArtifact()
+					: (this.getActiveExecutablePlanArtifact() ?? this.getCurrentPlanningArtifact()),
 			};
 		}
 		const matches = this.getPlanArtifactsByRevision(revision);
@@ -5375,597 +4674,193 @@ export class InteractiveMode {
 	}
 
 	private formatPlanSelectorOption(artifact: InteractivePlanArtifact): string {
-		const parts = [`v${artifact.revision}`, artifact.status];
-		if (artifact.status === "clarifying") {
-			parts.push(`interview ${getAnsweredClarificationCount(artifact)}/${artifact.openQuestions.length}`);
-			parts.push(artifact.goal);
-			const answers = getClarificationAnswers(artifact);
-			const nextQuestionIndex = artifact.openQuestions.findIndex((_, index) => !answers[index]?.trim());
-			const nextQuestion = artifact.openQuestions[nextQuestionIndex];
-			if (nextQuestion) {
-				parts.push(`next: ${nextQuestion}`);
-			} else if (artifact.openQuestions[0]) {
-				parts.push(`next: ${artifact.openQuestions[0]}`);
-			}
-			return parts.join(" • ");
-		}
-		if (artifact.steps.length > 0) {
-			parts.push(`progress ${getCompletedStepCount(artifact)}/${artifact.steps.length}`);
-		}
-		parts.push(artifact.goal);
-		const nextStep = getNextInteractivePlanStep(artifact);
-		if (nextStep) {
-			parts.push(`next: ${nextStep}`);
-		}
-		return parts.join(" • ");
+		return formatPlanSelectorOption(artifact);
 	}
 
 	private getPlanReviewActions(artifact: InteractivePlanArtifact): PlanWorkflowDialogOption[] {
-		const hasCompletedSteps = getCompletedStepCount(artifact) > 0;
-		const hasRemainingSteps = getNextInteractivePlanStepIndex(artifact) !== undefined;
-		switch (artifact.status) {
-			case "clarifying": {
-				const answered = getAnsweredClarificationCount(artifact);
-				return [
-					createPlanWorkflowOption("show_revision", "Show revision", "s"),
-					createPlanWorkflowOption(
-						"continue_interview",
-						answered > 0 ? "Continue interview" : "Start interview",
-						"i",
-					),
-					...(answered > 0 ? [createPlanWorkflowOption("continue_planning", "Continue planning", "p")] : []),
-					createPlanWorkflowOption("reject_revision", "Reject revision", "x"),
-					createPlanWorkflowOption("clear_revision", "Clear revision", "d"),
-				];
-			}
-			case "draft":
-				return [
-					createPlanWorkflowOption("show_revision", "Show revision", "s"),
-					createPlanWorkflowOption("approve_plan", "Approve plan", "a"),
-					createPlanWorkflowOption("approve_and_clear", "Approve and clear context", "c"),
-					createPlanWorkflowOption("revise_plan", "Revise plan", "r"),
-					createPlanWorkflowOption("reject_revision", "Reject revision", "x"),
-					createPlanWorkflowOption("clear_revision", "Clear revision", "d"),
-				];
-			case "accepted":
-				return [
-					createPlanWorkflowOption("show_revision", "Show revision", "s"),
-					createPlanWorkflowOption("clear_context_for_implementation", "Clear context for implementation", "l"),
-					...(hasRemainingSteps
-						? [
-								createPlanWorkflowOption("execute_full_plan", "Execute full plan", "e"),
-								createPlanWorkflowOption("execute_next_step", "Execute next step", "n"),
-								createPlanWorkflowOption("execute_selected_step", "Execute selected step", "t"),
-								createPlanWorkflowOption("mark_step_complete", "Mark step complete", "m"),
-							]
-						: []),
-					...(hasCompletedSteps
-						? [createPlanWorkflowOption("reopen_completed_step", "Reopen completed step", "o")]
-						: []),
-					createPlanWorkflowOption("revise_plan", "Revise plan", "r"),
-					createPlanWorkflowOption("reject_revision", "Reject revision", "x"),
-					createPlanWorkflowOption("clear_revision", "Clear revision", "d"),
-				];
-			case "rejected":
-				return [
-					createPlanWorkflowOption("show_revision", "Show revision", "s"),
-					createPlanWorkflowOption("revise_plan", "Revise plan", "r"),
-				];
-			case "superseded":
-				return [createPlanWorkflowOption("show_revision", "Show revision", "s")];
-			case "executing":
-				return [
-					createPlanWorkflowOption("show_revision", "Show revision", "s"),
-					...(artifact.executionStepIndex !== undefined
-						? [createPlanWorkflowOption("mark_executing_step_complete", "Mark executing step complete", "m")]
-						: []),
-					...(hasCompletedSteps
-						? [createPlanWorkflowOption("reopen_completed_step", "Reopen completed step", "o")]
-						: []),
-					createPlanWorkflowOption("revise_plan", "Revise plan", "r"),
-				];
-			case "discarded":
-				return [createPlanWorkflowOption("show_revision", "Show revision", "s")];
-		}
+		return getPlanReviewActions(artifact);
 	}
 
 	private async acceptPlanArtifact(
 		artifact: InteractivePlanArtifact,
 		options?: { compactContext?: boolean },
 	): Promise<void> {
-		const wasPlanningMode = this.planningMode;
-		const acceptedArtifact = updateInteractivePlanArtifactStatus(artifact, "accepted");
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, acceptedArtifact);
-		appendPlanSelectionForReceiver(this, {
-			planning: undefined,
-			accepted: createInteractivePlanArtifactRef(acceptedArtifact),
-			executing: undefined,
-		});
-		this.setExecutionMode("interactive");
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(acceptedArtifact);
-		if (options?.compactContext) {
-			await this.ensurePreferredModeModel("execution");
-			this.showStatus(`Accepted plan v${artifact.revision}. Compacting session around the approved plan.`);
-			await this.handleCompactCommand(this.buildPlanCompactionInstructions(acceptedArtifact));
-			this.showStatus(
-				`Accepted plan v${artifact.revision} and cleared context. Use /plan next, /plan step <n>, or ${getInteractiveAppKeyDisplay("app.plan.nextStep")} to continue.`,
-			);
-			return;
-		}
-		if (wasPlanningMode) {
-			const handoffHandled = await this.offerAcceptedPlanHandoff(acceptedArtifact);
-			if (handoffHandled) return;
-		}
-		this.showStatus(`Accepted plan v${artifact.revision}. Interactive mode ready. Use /plan next, /plan execute, or /plan review.`);
+		return acceptPlanArtifact(
+			{
+				planningMode: this.planningMode,
+				sessionManager: this.sessionManager,
+				appendPlanSelection: (updates) => appendPlanSelectionForReceiver(this, updates),
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+				showWarning: (message) => this.showWarning(message),
+				showStatus: (message) => this.showStatus(message),
+				ensurePreferredModeModel: (mode) => this.ensurePreferredModeModel(mode),
+				handleCompactCommand: (customInstructions) => this.handleCompactCommand(customInstructions),
+				offerAcceptedPlanHandoff: (acceptedArtifact) => this.offerAcceptedPlanHandoff(acceptedArtifact),
+			},
+			artifact,
+			options,
+		);
 	}
 
 	private async offerAcceptedPlanHandoff(artifact: InteractivePlanArtifact): Promise<boolean> {
-		const nextStepIndex = getNextInteractivePlanStepIndex(artifact);
-		const options = [
-			...(nextStepIndex === undefined ? [] : [createPlanWorkflowOption("execute_next_step", "Execute next step", "n")]),
-			...(nextStepIndex === undefined ? [] : [createPlanWorkflowOption("execute_full_plan", "Execute full plan", "e")]),
-			createPlanWorkflowOption("stay_in_interactive_mode", "Stay in interactive mode", "i"),
-		];
-		const selection = await this.showPlanWorkflowDialog(
-			`Plan accepted • v${artifact.revision}`,
-			[
-				`Goal: ${artifact.goal}`,
-				`Progress: ${getCompletedStepCount(artifact)}/${artifact.steps.length} complete`,
-				...(nextStepIndex === undefined ? [] : [`Next: ${artifact.steps[nextStepIndex]}`]),
-				"",
-				"Choose what should happen now.",
-			],
-			options,
-			{ accent: "success" },
+		return offerAcceptedPlanHandoff(
+			{
+				showPlanWorkflowDialog: (title, lines, options, dialogOptions) =>
+					this.showPlanWorkflowDialog(title, lines, options, dialogOptions),
+				executePlanArtifact: (planArtifact, stepIndex) =>
+					stepIndex === undefined
+						? this.executePlanArtifact(planArtifact)
+						: this.executePlanArtifact(planArtifact, stepIndex),
+			},
+			artifact,
 		);
-		if (!selection || selection === "stay_in_interactive_mode") return false;
-		if (selection === "execute_next_step" && nextStepIndex !== undefined) {
-			await this.executePlanArtifact(artifact, nextStepIndex);
-			return true;
-		}
-		if (selection === "execute_full_plan") {
-			await this.executePlanArtifact(artifact);
-			return true;
-		}
-		return false;
-	}
-
-	private buildPlanCompactionInstructions(artifact: InteractivePlanArtifact): string {
-		return [
-			`Compact the session around the approved plan for this goal: ${artifact.goal}`,
-			"- preserve the current objective and the approved implementation plan",
-			"- preserve completed step progress, the next incomplete step, and any explicit verification requirements",
-			"- preserve critical user constraints and assumptions",
-			"- remove planning chatter and exploratory discussion that is no longer needed",
-			"- optimize the remaining context for immediate implementation of the approved plan",
-		].join("\n");
 	}
 
 	private async handlePlanReviewAction(artifact: InteractivePlanArtifact, action: PlanReviewActionId): Promise<void> {
-		switch (action) {
-			case "show_revision":
-				await this.handlePlanCommand({ kind: "plan", action: "show", revision: artifact.revision });
-				return;
-			case "approve_plan":
-				await this.acceptPlanArtifact(artifact);
-				return;
-			case "approve_and_clear":
-				await this.acceptPlanArtifact(artifact, { compactContext: true });
-				return;
-			case "execute_full_plan":
-				await this.handlePlanCommand({ kind: "plan", action: "execute", revision: artifact.revision });
-				return;
-			case "clear_context_for_implementation":
-				this.setExecutionMode("interactive");
-				await this.handleCompactCommand(this.buildPlanCompactionInstructions(artifact));
-				this.showStatus(`Cleared context around accepted plan v${artifact.revision}. Use /plan next or /plan step <n>.`);
-				return;
-			case "execute_next_step":
-				if (getNextInteractivePlanStepIndex(artifact) === undefined) {
-					this.showWarning(`Plan v${artifact.revision} has no remaining steps to execute.`);
-					return;
-				}
-				await this.executePlanArtifact(artifact, getNextInteractivePlanStepIndex(artifact));
-				return;
-			case "execute_selected_step": {
-				const selectedStep = await this.showExtensionSelector(
-					`Select step from plan v${artifact.revision}`,
-					this.getPlanStepSelectorOptions(artifact, "remaining"),
-				);
-				if (!selectedStep) return;
-				const selectedIndex = artifact.steps.findIndex((step, index) => `${index + 1}. ${step}` === selectedStep);
-				if (selectedIndex >= 0) {
-					await this.executePlanArtifact(artifact, selectedIndex);
-				}
-				return;
-			}
-			case "mark_step_complete": {
-				const selectedStep = await this.showExtensionSelector(
-					`Mark completed step from plan v${artifact.revision}`,
-					this.getPlanStepSelectorOptions(artifact, "remaining"),
-				);
-				if (!selectedStep) return;
-				const selectedIndex = artifact.steps.findIndex((step, index) => `${index + 1}. ${step}` === selectedStep);
-				if (selectedIndex >= 0) {
-					await this.markPlanStepComplete(artifact, selectedIndex);
-				}
-				return;
-			}
-			case "mark_executing_step_complete":
-				if (artifact.executionStepIndex === undefined) {
-					this.showWarning(`Plan v${artifact.revision} has no active executing step.`);
-					return;
-				}
-				await this.markPlanStepComplete(artifact, artifact.executionStepIndex);
-				return;
-			case "reopen_completed_step": {
-				const selectedStep = await this.showExtensionSelector(
-					`Reopen completed step from plan v${artifact.revision}`,
-					this.getPlanStepSelectorOptions(artifact, "completed"),
-				);
-				if (!selectedStep) return;
-				const selectedIndex = artifact.steps.findIndex((step, index) => `${index + 1}. ${step}` === selectedStep);
-				if (selectedIndex >= 0) {
-					await this.reopenPlanStep(artifact, selectedIndex);
-				}
-				return;
-			}
-			case "clear_revision":
-				await this.handlePlanCommand({ kind: "plan", action: "clear", revision: artifact.revision });
-				return;
-			case "reject_revision": {
-				const reason = await this.showExtensionInput(`Reject plan v${artifact.revision}`, "Reason (optional)");
-				await this.rejectPlanArtifact(artifact, reason ?? "");
-				return;
-			}
-			case "revise_plan": {
-				const feedback = await this.showExtensionEditor(
-					`Revise plan v${artifact.revision}`,
-					artifact.feedback ?? "",
-				);
-				if (!feedback?.trim()) return;
-				await this.revisePlanArtifact(artifact, feedback.trim());
-				return;
-			}
-			case "continue_planning":
-				await this.continuePlanInterview(artifact);
-				return;
-			case "continue_interview": {
-				await this.showPlanInterview(artifact);
-				return;
-			}
-		}
-	}
-
-	private formatPlanInterviewQuestionOption(artifact: InteractivePlanArtifact, index: number): string {
-		const answer = getClarificationAnswers(artifact)[index]?.trim();
-		const prefix = answer ? "[answered]" : "[open]";
-		return `${prefix} Q${index + 1}. ${artifact.openQuestions[index]}`;
-	}
-
-	private getNextOpenPlanInterviewQuestionIndex(artifact: InteractivePlanArtifact): number | undefined {
-		const answers = getClarificationAnswers(artifact);
-		for (let i = 0; i < artifact.openQuestions.length; i++) {
-			if (!answers[i]?.trim()) return i;
-		}
-		return undefined;
-	}
-
-	private splitPlanInterviewChoiceOptions(text: string): string[] {
-		const normalized = text.replace(/\?+\s*$/, "").trim();
-		if (!/[;,]|\bor\b/i.test(normalized)) {
-			const questionFragments = normalized
-				.split(/\?\s+/)
-				.map((fragment) => fragment.trim())
-				.filter(Boolean);
-			if (questionFragments.length >= 2) {
-				return questionFragments;
-			}
-		}
-		const options: string[] = [];
-		let current = "";
-		let parenDepth = 0;
-		for (let i = 0; i < normalized.length; i++) {
-			const char = normalized[i]!;
-			if (char === "(") {
-				parenDepth++;
-				current += char;
-				continue;
-			}
-			if (char === ")") {
-				parenDepth = Math.max(0, parenDepth - 1);
-				current += char;
-				continue;
-			}
-			if (parenDepth === 0 && char === ",") {
-				if (current.trim()) options.push(current.trim());
-				current = "";
-				continue;
-			}
-			const remaining = normalized.slice(i).toLowerCase();
-			if (parenDepth === 0 && (remaining.startsWith(" or ") || remaining.startsWith(", or "))) {
-				if (current.trim()) options.push(current.trim());
-				current = "";
-				i += remaining.startsWith(", or ") ? 4 : 3;
-				continue;
-			}
-			current += char;
-		}
-		if (current.trim()) options.push(current.trim());
-		return options.map((option) => option.replace(/^(?:or|and)\s+/i, "").trim()).filter(Boolean);
-	}
-
-	private getPlanInterviewChoiceOptions(question: string): string[] {
-		const delimiterIndex = question.indexOf(":");
-		const colonSource = delimiterIndex >= 0 ? question.slice(delimiterIndex + 1).trim() : "";
-		const parenMatch = question.match(/\(([^()]+)\)/);
-		const parenSource = parenMatch?.[1]?.trim() ?? "";
-		const source =
-			/[?,]|\bor\b/i.test(colonSource) && colonSource.length > 0
-				? colonSource
-				: /[?,]|\bor\b/i.test(parenSource)
-					? parenSource
-					: question.trim();
-		const options = this.splitPlanInterviewChoiceOptions(source);
-		return options
-			.map((option) => option.replace(/\betc\.?$/i, "").trim())
-			.filter((option) => option.length > 0 && option.toLowerCase() !== "etc")
-			.filter((option, index, array) => array.indexOf(option) === index)
-			.slice(0, 8);
-	}
-
-	private getPlanInterviewQuestionChoiceOptions(artifact: InteractivePlanArtifact, questionIndex: number): string[] {
-		const artifactOptions = artifact.clarificationOptionSets?.[questionIndex]?.filter((option) => option.trim().length > 0) ?? [];
-		if (artifactOptions.length >= 2) return artifactOptions;
-		const question = artifact.openQuestions[questionIndex]!;
-		return this.getPlanInterviewChoiceOptions(question);
-	}
-
-	private async promptForPlanInterviewAnswer(
-		artifact: InteractivePlanArtifact,
-		questionIndex: number,
-	): Promise<"cancel" | "overview" | "skip" | string> {
-		const question = artifact.openQuestions[questionIndex]!;
-		const existingAnswer = getClarificationAnswers(artifact)[questionIndex]?.trim();
-		const choiceOptions = this.getPlanInterviewQuestionChoiceOptions(artifact, questionIndex);
-		if (choiceOptions.length >= 2) {
-			const dialogOptions = [
-				...choiceOptions.map((option, index) => createPlanWorkflowOption(`choice:${index}`, option)),
-				createPlanWorkflowOption("custom_answer", "Custom answer", "c"),
-				createPlanWorkflowOption("show_interview_overview", "Show interview overview", "o"),
-				createPlanWorkflowOption("skip_interview", "Skip interview and plan immediately", "k"),
-			];
-			const selection = await this.showPlanWorkflowDialog(
-				`Plan interview • Q${questionIndex + 1}`,
-				[
-					question,
-					...(existingAnswer ? ["", `Current answer: ${existingAnswer}`] : []),
-					"",
-					"Pick the closest option, or choose Custom answer.",
-				],
-				dialogOptions,
-				{ accent: "warning" },
-			);
-			if (!selection) return "cancel";
-			if (selection === "show_interview_overview") return "overview";
-			if (selection === "skip_interview") return "skip";
-			if (selection.startsWith("choice:")) {
-				const choiceIndex = Number.parseInt(selection.slice("choice:".length), 10);
-				return choiceOptions[choiceIndex] ?? "cancel";
-			}
-		}
-
-		const answer = this.shouldUseMultilinePlanInterviewAnswer(question, existingAnswer)
-			? await this.showExtensionEditor(`Plan interview • Q${questionIndex + 1}\n${question}`, existingAnswer)
-			: await this.showExtensionInput(`Plan interview • Q${questionIndex + 1}\n${question}`, "Answer", {
-					initialValue: existingAnswer,
-				});
-		return answer?.trim() ? answer.trim() : "cancel";
-	}
-
-	private shouldUseMultilinePlanInterviewAnswer(question: string, existingAnswer?: string): boolean {
-		if (existingAnswer?.includes("\n")) return true;
-		if (question.length > 100) return true;
-		return /\b(requirements?|constraints?|edge cases?|trade-?offs?|architecture|data flow|verification|success criteria|acceptance criteria|notes?)\b/i.test(
-			question,
+		return handlePlanReviewAction(
+			{
+				handlePlanCommand: (command) => this.handlePlanCommand(command),
+				acceptPlanArtifact: (planArtifact, options) => this.acceptPlanArtifact(planArtifact, options),
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				handleCompactCommand: (customInstructions) => this.handleCompactCommand(customInstructions),
+				showStatus: (message) => this.showStatus(message),
+				showWarning: (message) => this.showWarning(message),
+				executePlanArtifact: (planArtifact, stepIndex) =>
+					stepIndex === undefined
+						? this.executePlanArtifact(planArtifact)
+						: this.executePlanArtifact(planArtifact, stepIndex),
+				showExtensionSelector: (title, options, opts) => this.showExtensionSelector(title, options, opts),
+				getPlanStepSelectorOptions: (planArtifact, mode) => this.getPlanStepSelectorOptions(planArtifact, mode),
+				markPlanStepComplete: (planArtifact, stepIndex) => this.markPlanStepComplete(planArtifact, stepIndex),
+				reopenPlanStep: (planArtifact, stepIndex) => this.reopenPlanStep(planArtifact, stepIndex),
+				showExtensionInput: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+				rejectPlanArtifact: (planArtifact, reason) => this.rejectPlanArtifact(planArtifact, reason),
+				showExtensionEditor: (title, prefill) => this.showExtensionEditor(title, prefill),
+				revisePlanArtifact: (planArtifact, feedback) => this.revisePlanArtifact(planArtifact, feedback),
+				continuePlanInterview: (planArtifact, options) => this.continuePlanInterview(planArtifact, options),
+				showPlanInterview: (planArtifact) => this.showPlanInterview(planArtifact),
+			},
+			artifact,
+			action,
 		);
 	}
 
-	private buildPlanInterviewAnswerBundle(artifact: InteractivePlanArtifact): string {
-		const answers = getClarificationAnswers(artifact);
-		return artifact.openQuestions
-			.map((question, index) => {
-				const answer = answers[index]?.trim();
-				return [`Q${index + 1}: ${question}`, `A${index + 1}: ${answer || "(unanswered)"}`].join("\n");
-			})
-			.join("\n\n");
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: invoked reflectively by tests via (InteractiveMode as any).prototype.splitPlanInterviewChoiceOptions
+	private splitPlanInterviewChoiceOptions(text: string): string[] {
+		return splitPlanInterviewChoiceOptions(text);
 	}
 
-	private async persistPlanInterviewAnswer(
-		artifact: InteractivePlanArtifact,
-		questionIndex: number,
-		answer: string,
-	): Promise<InteractivePlanArtifact> {
-		const updatedArtifact = setInteractivePlanClarificationAnswer(artifact, questionIndex, answer);
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, updatedArtifact);
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showStatus(`Interview: ${getAnsweredClarificationCount(updatedArtifact)}/${artifact.openQuestions.length} answered.`);
-		return updatedArtifact;
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: invoked reflectively by tests via (InteractiveMode as any).prototype.getPlanInterviewChoiceOptions
+	private getPlanInterviewChoiceOptions(question: string): string[] {
+		return getPlanInterviewChoiceOptions(question);
+	}
+
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: invoked reflectively by tests via (InteractiveMode as any).prototype.getPlanInterviewQuestionChoiceOptions
+	private getPlanInterviewQuestionChoiceOptions(artifact: InteractivePlanArtifact, questionIndex: number): string[] {
+		return getPlanInterviewQuestionChoiceOptions(artifact, questionIndex);
 	}
 
 	private async continuePlanInterview(
 		artifact: InteractivePlanArtifact,
 		options?: { skipRemaining?: boolean },
 	): Promise<void> {
-		const bundle = this.buildPlanInterviewAnswerBundle(artifact);
-		const answer = options?.skipRemaining
-			? [
-					"The user chose to stop the interview and continue planning now.",
-					"Use any answered questions below, and make cautious assumptions for anything still unanswered.",
-					"Call out those assumptions explicitly in the plan.",
-					"",
-					bundle,
-				].join("\n")
-			: bundle;
-		await this.answerClarifyingPlanArtifact(artifact, answer);
+		return this.planInterviewFlow.continuePlanInterview(artifact, options);
 	}
 
 	private async showPlanInterview(artifact: InteractivePlanArtifact): Promise<void> {
-		let currentArtifact = artifact;
-		for (;;) {
-			const nextOpenQuestionIndex = this.getNextOpenPlanInterviewQuestionIndex(currentArtifact);
-			if (nextOpenQuestionIndex !== undefined) {
-				const directAnswer = await this.promptForPlanInterviewAnswer(currentArtifact, nextOpenQuestionIndex);
-				if (directAnswer === "cancel") return;
-				if (directAnswer === "skip") {
-					await this.continuePlanInterview(currentArtifact, { skipRemaining: true });
-					return;
-				}
-				if (directAnswer !== "overview") {
-					currentArtifact = await this.persistPlanInterviewAnswer(currentArtifact, nextOpenQuestionIndex, directAnswer);
-					continue;
-				}
-			}
-
-			const answered = getAnsweredClarificationCount(currentArtifact);
-			const options = [
-				...currentArtifact.openQuestions.map((_, index) =>
-					createPlanWorkflowOption(
-						`question:${index}`,
-						this.formatPlanInterviewQuestionOption(currentArtifact, index),
-					),
-				),
-				...(answered > 0
-					? [createPlanWorkflowOption("continue_planning_with_current_answers", "Continue planning with current answers", "p")]
-					: []),
-				createPlanWorkflowOption("skip_interview", "Skip interview and plan immediately", "k"),
-				createPlanWorkflowOption("show_revision", "Show revision", "s"),
-				createPlanWorkflowOption("clear_revision", "Clear revision", "d"),
-			];
-			const selection = await this.showPlanWorkflowDialog(
-				`Plan interview v${currentArtifact.revision} • ${answered}/${currentArtifact.openQuestions.length} answered`,
-				buildInteractivePlanInterviewLines(currentArtifact),
-				options,
-				{ accent: "warning" },
-			);
-			if (!selection) return;
-			if (selection === "continue_planning_with_current_answers") {
-				await this.continuePlanInterview(currentArtifact);
-				return;
-			}
-			if (selection === "skip_interview") {
-				await this.continuePlanInterview(currentArtifact, { skipRemaining: true });
-				return;
-			}
-			if (selection === "show_revision") {
-				this.showPlanArtifactCard(currentArtifact, { expanded: true });
-				continue;
-			}
-			if (selection === "clear_revision") {
-				await this.handlePlanCommand({ kind: "plan", action: "clear", revision: currentArtifact.revision });
-				return;
-			}
-
-			const selectedIndex = selection.startsWith("question:")
-				? Number.parseInt(selection.slice("question:".length), 10)
-				: -1;
-			if (!Number.isInteger(selectedIndex) || selectedIndex < 0) continue;
-			const answer = await this.promptForPlanInterviewAnswer(currentArtifact, selectedIndex);
-			if (answer === "cancel" || answer === "overview") continue;
-			if (answer === "skip") {
-				await this.continuePlanInterview(currentArtifact, { skipRemaining: true });
-				return;
-			}
-			currentArtifact = await this.persistPlanInterviewAnswer(currentArtifact, selectedIndex, answer);
-		}
+		return this.planInterviewFlow.showPlanInterview(artifact);
 	}
 
 	private async revisePlanArtifact(artifact: InteractivePlanArtifact, feedback: string): Promise<void> {
-		this.setExecutionMode("planning");
-		await this.runPlanningPrompt(`Revise plan v${artifact.revision} for: ${artifact.goal}`, {
-			goal: artifact.goal,
-			previousArtifact: artifact,
+		return revisePlanArtifact(
+			{
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				runPlanningPrompt: (promptBody, options) => this.runPlanningPrompt(promptBody, options),
+			},
+			artifact,
 			feedback,
-			hiddenPromptAddendum: buildPlanRevisionPrompt(artifact, feedback),
-		});
+		);
 	}
 
 	private async rejectPlanArtifact(artifact: InteractivePlanArtifact, reason: string): Promise<void> {
-		const rejectedArtifact = updateInteractivePlanArtifactStatus(artifact, "rejected", undefined, {
-			rejectedReason: reason.trim() || undefined,
-		});
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, rejectedArtifact);
-		clearPlanSelectionForArtifactForReceiver(this, artifact);
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(rejectedArtifact);
-		this.showStatus(`Rejected plan v${artifact.revision}.`);
+		return rejectPlanArtifact(
+			{
+				sessionManager: this.sessionManager,
+				clearPlanSelectionForArtifact: (planArtifact) =>
+					clearPlanSelectionForArtifactForReceiver(this, planArtifact),
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+				showStatus: (message) => this.showStatus(message),
+			},
+			artifact,
+			reason,
+		);
 	}
 
 	private async answerClarifyingPlanArtifact(artifact: InteractivePlanArtifact, answer: string): Promise<void> {
-		this.setExecutionMode("planning");
-		await this.runPlanningPrompt(`Continue planning with the saved clarification answers for: ${artifact.goal}`, {
-			goal: artifact.goal,
-			previousArtifact: artifact,
-			hiddenPromptAddendum: buildPlanClarificationPrompt(artifact, answer),
-		});
+		return answerClarifyingPlanArtifact(
+			{
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				runPlanningPrompt: (promptBody, options) => this.runPlanningPrompt(promptBody, options),
+			},
+			artifact,
+			answer,
+		);
 	}
 
 	private async executePlanArtifact(artifact: InteractivePlanArtifact, stepIndex?: number): Promise<void> {
-		const activeStepIndex = stepIndex ?? getNextInteractivePlanStepIndex(artifact);
-		if (activeStepIndex === undefined || !artifact.steps[activeStepIndex]) {
-			this.showWarning(`Plan v${artifact.revision} has no remaining steps to execute.`);
-			return;
-		}
-		const executingArtifact = updateInteractivePlanArtifactStatus(artifact, "executing", undefined, {
-			completedStepIndexes: getCompletedStepIndexes(artifact),
-			executionStepIndex: activeStepIndex,
-			executionStep: activeStepIndex === undefined ? undefined : artifact.steps[activeStepIndex],
-		});
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, executingArtifact);
-		const latestSelection = getLatestPlanSelectionForReceiver(this);
-		appendPlanSelectionForReceiver(this, {
-			planning: undefined,
-			accepted: artifact.status === "accepted" ? createInteractivePlanArtifactRef(artifact) : latestSelection?.accepted,
-			executing: createInteractivePlanArtifactRef(executingArtifact),
-		});
-		this.setExecutionMode("interactive");
-		await this.ensurePreferredModeModel("execution");
-		this.pendingRuntimePromptAddendum = undefined;
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(executingArtifact);
-		await this.session.prompt(
-			this.buildInteractiveUserMessage(
-				stepIndex === undefined ? buildPlanExecutionPrompt(executingArtifact) : buildPlanStepExecutionPrompt(executingArtifact, stepIndex),
-			),
+		return executePlanArtifact(
+			{
+				sessionManager: this.sessionManager,
+				getLatestPlanSelection: () => getLatestPlanSelectionForReceiver(this),
+				appendPlanSelection: (updates) => appendPlanSelectionForReceiver(this, updates),
+				setExecutionMode: (mode) => this.setExecutionMode(mode),
+				ensurePreferredModeModel: (mode) => this.ensurePreferredModeModel(mode),
+				clearPendingRuntimePromptAddendum: () => {
+					this.pendingRuntimePromptAddendum = undefined;
+				},
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+				session: this.session,
+				buildInteractiveUserMessage: (userMessage) => this.buildInteractiveUserMessage(userMessage),
+				persistPlanExecutionReview: (reviewArtifact, step) => this.persistPlanExecutionReview(reviewArtifact, step),
+				showWarning: (message) => this.showWarning(message),
+			},
+			artifact,
+			stepIndex,
 		);
-		if (activeStepIndex !== undefined) {
-			this.persistPlanExecutionReview(executingArtifact, activeStepIndex);
-		}
 	}
 
 	private persistPlanExecutionReview(artifact: InteractivePlanArtifact, stepIndex: number): void {
-		const assistantText = this.session.getLastAssistantText()?.trim();
-		if (!assistantText) return;
-		const reviewedArtifact = recordInteractivePlanStepExecutionReview(artifact, stepIndex, assistantText);
-		if (reviewedArtifact === artifact) {
-			this.showWarning(
-				"Execution output did not include a valid structured review. Expected headings: Execution Status, Execution Summary, Files Touched, Verification, Remaining, Blockers.",
-			);
-			return;
-		}
-		const latestReview = getLatestInteractivePlanStepExecutionRecord(reviewedArtifact, stepIndex);
-		if (!latestReview) return;
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, reviewedArtifact);
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(reviewedArtifact);
-		this.showStatus(
-			`Recorded review for step ${stepIndex + 1} of plan v${artifact.revision}: ${latestReview.status}.`,
+		persistPlanExecutionReview(
+			{
+				session: this.session,
+				sessionManager: this.sessionManager,
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+				showStatus: (message) => this.showStatus(message),
+				showWarning: (message) => this.showWarning(message),
+			},
+			artifact,
+			stepIndex,
 		);
 	}
 
@@ -5973,96 +4868,60 @@ export class InteractiveMode {
 		artifact: InteractivePlanArtifact,
 		mode: "all" | "remaining" | "completed",
 	): string[] {
-		const completed = new Set(getCompletedStepIndexes(artifact));
-		return artifact.steps
-			.map((step, index) => ({ step, index }))
-			.filter(({ index }) => {
-				if (mode === "all") return true;
-				if (mode === "remaining") return !completed.has(index);
-				return completed.has(index);
-			})
-			.map(({ step, index }) => `${index + 1}. ${step}`);
+		return getPlanStepSelectorOptions(artifact, mode);
 	}
 
 	private async markPlanStepComplete(artifact: InteractivePlanArtifact, stepIndex: number): Promise<void> {
-		if (!artifact.steps[stepIndex]) {
-			this.showWarning(`Plan v${artifact.revision} has no step ${stepIndex + 1}.`);
-			return;
-		}
-		const updatedArtifact = markInteractivePlanStepComplete(artifact, stepIndex);
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, updatedArtifact);
-		appendPlanSelectionForReceiver(this, {
-			accepted: createInteractivePlanArtifactRef(updatedArtifact),
-			executing: undefined,
-		});
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(updatedArtifact);
-		this.showStatus(`Marked step ${stepIndex + 1} complete for plan v${artifact.revision}.`);
+		return markPlanStepComplete(this.planStepMutationDeps(), artifact, stepIndex);
 	}
 
 	private async reopenPlanStep(artifact: InteractivePlanArtifact, stepIndex: number): Promise<void> {
-		if (!artifact.steps[stepIndex]) {
-			this.showWarning(`Plan v${artifact.revision} has no step ${stepIndex + 1}.`);
-			return;
-		}
-		const updatedArtifact = reopenInteractivePlanStep(artifact, stepIndex);
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, updatedArtifact);
-		appendPlanSelectionForReceiver(this, {
-			accepted: createInteractivePlanArtifactRef(updatedArtifact),
-			executing: undefined,
-		});
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		this.showPlanArtifactCard(updatedArtifact);
-		this.showStatus(`Reopened step ${stepIndex + 1} for plan v${artifact.revision}.`);
+		return reopenPlanStep(this.planStepMutationDeps(), artifact, stepIndex);
+	}
+
+	private planStepMutationDeps(): PlanStepMutationDeps {
+		return {
+			sessionManager: this.sessionManager,
+			appendPlanSelection: (updates) => appendPlanSelectionForReceiver(this, updates),
+			updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+			updateModeDisplay: () => this.updateModeDisplay(),
+			showPlanArtifactCard: (cardArtifact, cardOptions) =>
+				cardOptions === undefined
+					? this.showPlanArtifactCard(cardArtifact)
+					: this.showPlanArtifactCard(cardArtifact, cardOptions),
+			showStatus: (message) => this.showStatus(message),
+			showWarning: (message) => this.showWarning(message),
+		};
 	}
 
 	private showPlanArtifactCard(artifact: InteractivePlanArtifact, options?: { expanded?: boolean }): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new PlanReviewCardComponent(artifact, options));
-		this.ui.requestRender();
+		showPlanArtifactCard({ chatContainer: this.chatContainer, ui: this.ui }, artifact, options);
 	}
 
 	private async showPlanReviewSelector(): Promise<void> {
-		const artifacts = this.getPlanArtifacts(10);
-		if (artifacts.length === 0) {
-			this.showWarning("No saved plan history yet. Enter planning mode and ask for a plan first.");
-			return;
-		}
-
-		const selectedRevision = await this.showExtensionSelector(
-			"Select plan revision",
-			artifacts.map((artifact) => this.formatPlanSelectorOption(artifact)),
-		);
-		if (!selectedRevision) return;
-
-		const artifact = artifacts.find((item) => this.formatPlanSelectorOption(item) === selectedRevision);
-		if (!artifact) return;
-
-		const action = await this.showPlanWorkflowDialog(
-			`Plan v${artifact.revision} • ${artifact.status}`,
-			buildInteractiveExpandedPlanCardLines(artifact),
-			this.getPlanReviewActions(artifact),
-			{ accent: artifact.status === "clarifying" ? "warning" : artifact.status === "accepted" ? "success" : "accent" },
-		);
-		if (!action) return;
-		await this.handlePlanReviewAction(artifact, action as PlanReviewActionId);
+		return showPlanReviewSelector({
+			getPlanArtifacts: (limit) => this.getPlanArtifacts(limit),
+			showWarning: (message) => this.showWarning(message),
+			formatPlanSelectorOption: (artifact) => this.formatPlanSelectorOption(artifact),
+			showExtensionSelector: (title, options, opts) => this.showExtensionSelector(title, options, opts),
+			showPlanWorkflowDialog: (title, lines, options, dialogOptions) =>
+				this.showPlanWorkflowDialog(title, lines, options, dialogOptions),
+			getPlanReviewActions: (artifact) => this.getPlanReviewActions(artifact),
+			handlePlanReviewAction: (artifact, action) => this.handlePlanReviewAction(artifact, action),
+		});
 	}
 
 	private async showImmediatePlanActionSelector(artifact: InteractivePlanArtifact): Promise<void> {
-		if (artifact.status === "clarifying") {
-			await this.showPlanInterview(artifact);
-			return;
-		}
-		const action = await this.showPlanWorkflowDialog(
-			`Approve plan v${artifact.revision}`,
-			buildInteractiveExpandedPlanCardLines(artifact),
-			this.getPlanReviewActions(artifact),
-			{ accent: "accent" },
+		return showImmediatePlanActionSelector(
+			{
+				showPlanInterview: (planArtifact) => this.showPlanInterview(planArtifact),
+				showPlanWorkflowDialog: (title, lines, options, dialogOptions) =>
+					this.showPlanWorkflowDialog(title, lines, options, dialogOptions),
+				getPlanReviewActions: (planArtifact) => this.getPlanReviewActions(planArtifact),
+				handlePlanReviewAction: (planArtifact, action) => this.handlePlanReviewAction(planArtifact, action),
+			},
+			artifact,
 		);
-		if (!action) return;
-		await this.handlePlanReviewAction(artifact, action as PlanReviewActionId);
 	}
 
 	private persistLatestPlanArtifact(options: {
@@ -6070,99 +4929,56 @@ export class InteractiveMode {
 		previousArtifact?: InteractivePlanArtifact;
 		feedback?: string;
 	}): InteractivePlanArtifact | undefined {
-		const assistantText = this.session.getLastAssistantText();
-		if (!assistantText) return undefined;
-		const artifact =
-			extractInteractivePlanArtifact({
-				goal: options.goal,
-				assistantText,
-				previous: options.previousArtifact,
-				feedback: options.feedback,
-			}) ??
-			buildFallbackInteractivePlanArtifact({
-			goal: options.goal,
-			previous: options.previousArtifact,
-			feedback: options.feedback,
-			rawPlan: assistantText,
-		});
-		if (!artifact) return undefined;
-		if (options.previousArtifact && ["draft", "clarifying"].includes(options.previousArtifact.status)) {
-			this.sessionManager.appendCustomEntry(
-				INTERACTIVE_PLAN_ARTIFACT_TYPE,
-				updateInteractivePlanArtifactStatus(options.previousArtifact, "superseded"),
-			);
-		}
-		this.sessionManager.appendCustomEntry(INTERACTIVE_PLAN_ARTIFACT_TYPE, artifact);
-		appendPlanSelectionForReceiver(this, {
-			planning: createInteractivePlanArtifactRef(artifact),
-		});
-		if (artifact.status !== "clarifying") {
-			this.showPlanArtifactCard(artifact, { expanded: true });
-		}
-		return artifact;
+		return persistLatestPlanArtifact(
+			{
+				getLastSubmitPlanPayload: () => this.lastSubmitPlanPayload,
+				setLastSubmitPlanPayload: (value) => {
+					this.lastSubmitPlanPayload = value;
+				},
+				session: this.session,
+				sessionManager: this.sessionManager,
+				appendPlanSelection: (updates) => appendPlanSelectionForReceiver(this, updates),
+				showPlanArtifactCard: (cardArtifact, cardOptions) =>
+					cardOptions === undefined
+						? this.showPlanArtifactCard(cardArtifact)
+						: this.showPlanArtifactCard(cardArtifact, cardOptions),
+			},
+			options,
+		);
 	}
 
-	private async runPlanningPrompt(
-		promptBody: string,
-		options?: {
-			goal?: string;
-			previousArtifact?: InteractivePlanArtifact;
-			feedback?: string;
-			images?: ImageContent[];
-			hiddenPromptAddendum?: string;
-		},
-	): Promise<void> {
-		const planningProfileProvider = this as unknown as {
-			getPlanningStabilizationProfile?: () => RuntimeStabilizationProfile;
-		};
-		const stabilizationProfile =
-			typeof planningProfileProvider.getPlanningStabilizationProfile === "function"
-				? planningProfileProvider.getPlanningStabilizationProfile()
-				: {
-						level: "none" as const,
-						reasons: [],
-						forceBehavioralPrompt: false,
-						forceNudges: false,
-					};
-		await this.ensurePreferredModeModel("planning");
-		this.pendingRuntimePromptAddendum = undefined;
-		this.planningReadOnlyToolsAllowed = this.shouldAllowPlanningInspection(promptBody, options);
-		this.applySafetyPolicy();
-		this.suppressPlanningAssistantTranscript = true;
-		try {
-			const planningGuidance = buildPlanningGuidanceMessage(stabilizationProfile);
-			const systemPromptAddendum = options?.hiddenPromptAddendum
-				? `${planningGuidance}\n\nHidden planning context:\n${options.hiddenPromptAddendum}`
-				: planningGuidance;
-			await this.session.prompt(this.buildPlanningUserMessage(promptBody), {
-				images: options?.images,
-				systemPromptAddendum,
-			});
-		} finally {
-			this.suppressPlanningAssistantTranscript = false;
-			this.planningReadOnlyToolsAllowed = true;
-			this.applySafetyPolicy();
-		}
-		const artifact = this.persistLatestPlanArtifact({
-			goal: options?.goal ?? promptBody,
-			previousArtifact: options?.previousArtifact,
-			feedback: options?.feedback,
-		});
-		this.updatePendingMessagesDisplay();
-		this.updateModeDisplay();
-		if (artifact) {
-			if (artifact.status === "clarifying") {
-				this.showStatus(`Planning is awaiting clarification for v${artifact.revision}. Interview opened.`);
-			} else {
-				this.showStatus(`Saved plan v${artifact.revision} (${artifact.steps.length} steps). Review opened.`);
-			}
-			await this.showImmediatePlanActionSelector(artifact);
-		} else {
-			appendPlanSelectionForReceiver(this, { planning: undefined });
-			this.updatePendingMessagesDisplay();
-			this.updateModeDisplay();
-			this.showStatus("Planning response captured. No structured plan artifact was detected yet.");
-		}
+	private async runPlanningPrompt(promptBody: string, options?: RunPlanningPromptOptions): Promise<void> {
+		return runPlanningPrompt(
+			{
+				receiver: this,
+				ensurePreferredModeModel: (mode) => this.ensurePreferredModeModel(mode),
+				clearPendingRuntimePromptAddendum: () => {
+					this.pendingRuntimePromptAddendum = undefined;
+				},
+				setLastSubmitPlanPayload: (value) => {
+					this.lastSubmitPlanPayload = value;
+				},
+				setPlanningReadOnlyToolsAllowed: (allowed) => {
+					this.planningReadOnlyToolsAllowed = allowed;
+				},
+				shouldAllowPlanningInspection: (body, inspectionOptions) =>
+					this.shouldAllowPlanningInspection(body, inspectionOptions),
+				applySafetyPolicy: () => this.applySafetyPolicy(),
+				setSuppressPlanningAssistantTranscript: (value) => {
+					this.suppressPlanningAssistantTranscript = value;
+				},
+				session: this.session,
+				buildPlanningUserMessage: (userMessage) => this.buildPlanningUserMessage(userMessage),
+				persistLatestPlanArtifact: (persistOptions) => this.persistLatestPlanArtifact(persistOptions),
+				updatePendingMessagesDisplay: () => this.updatePendingMessagesDisplay(),
+				updateModeDisplay: () => this.updateModeDisplay(),
+				showStatus: (message) => this.showStatus(message),
+				showImmediatePlanActionSelector: (artifact) => this.showImmediatePlanActionSelector(artifact),
+				appendPlanSelection: (updates) => appendPlanSelectionForReceiver(this, updates),
+			},
+			promptBody,
+			options,
+		);
 	}
 
 	private persistRuntimeHealthSnapshot(): void {
@@ -6215,22 +5031,6 @@ export class InteractiveMode {
 		return buildAutonomousCheckpointStatus(snapshot);
 	}
 
-	private formatVisualActionRecipeSummary(
-		steps:
-			| Array<{
-					type: "click" | "fill" | "wait" | "navigate";
-					selector?: string;
-					targetHint?: string;
-					valueHint?: string;
-					ms?: number;
-					url?: string;
-					urlHint?: string;
-			  }>
-			| undefined,
-	): string | undefined {
-		return buildVisualActionRecipeSummary(steps);
-	}
-
 	private formatXmlFallbackWarning(event: XmlFallbackEvent): string | undefined {
 		return buildXmlFallbackWarning(event);
 	}
@@ -6239,10 +5039,7 @@ export class InteractiveMode {
 		return buildDegradedTurnWarning(event);
 	}
 
-	private formatRequestFailureWarning(message: {
-		provider?: string;
-		errorMessage?: string;
-	}): string | undefined {
+	private formatRequestFailureWarning(message: { provider?: string; errorMessage?: string }): string | undefined {
 		return buildRequestFailureWarning(message);
 	}
 
@@ -6252,12 +5049,10 @@ export class InteractiveMode {
 		this.lastAutonomousLiveStatus = status;
 
 		if (this.loadingAnimation) {
-			this.managedWorkingMessageEnabled = false;
 			this.stopWorkingVerbAnimation?.();
 			this.loadingAnimation.setMessage(status);
 			this.ui.requestRender();
 		} else {
-			this.managedWorkingMessageEnabled = false;
 			this.stopWorkingVerbAnimation?.();
 			this.pendingWorkingMessage = status;
 		}
@@ -6312,7 +5107,9 @@ export class InteractiveMode {
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(result.dim ? theme.fg("dim", result.output ?? "") : (result.output ?? ""), 1, 0));
+		this.chatContainer.addChild(
+			new Text(result.dim ? theme.fg("dim", result.output ?? "") : (result.output ?? ""), 1, 0),
+		);
 		this.ui.requestRender();
 	}
 
@@ -6356,6 +5153,61 @@ export class InteractiveMode {
 				this.ui.requestRender();
 			},
 		});
+	}
+
+	private getTodoSnapshot(): TodoListSnapshot | null {
+		if (this.todoSnapshot === undefined) {
+			this.todoSnapshot = readLatestTodoSnapshot(this.sessionManager.getEntries());
+		}
+		return this.todoSnapshot;
+	}
+
+	private applyTodoToolResult(result: unknown): void {
+		const details = asRecord(asRecord(result)?.details);
+		if (!details) return;
+		if (details.cleared === true) {
+			this.todoSnapshot = clearTodoList();
+		} else if (Array.isArray(details.todos)) {
+			this.todoSnapshot = replaceTodoList(this.getTodoSnapshot(), details.todos as TodoItem[]);
+		} else {
+			// Query call — no state change
+			return;
+		}
+		this.toolCallsSinceTodoUpdate = 0;
+		appendTodoSnapshot(this.sessionManager, this.todoSnapshot);
+	}
+
+	/**
+	 * Keep the current todo list in the model's context every turn while open
+	 * items exist. Content is stable between todo writes, so prompt-prefix
+	 * caching is unaffected; it also survives compaction without special casing.
+	 */
+	private buildTodoPromptAddendum(): string | undefined {
+		const snapshot = this.getTodoSnapshot();
+		if (!snapshot) return undefined;
+		if (!snapshot.items.some((item) => item.status !== "completed")) return undefined;
+		const lines = snapshot.items.slice(0, 20).map((item) => `- [${item.status}] ${item.title}`);
+		return `Current todo list (keep it updated with the todo tool as you make progress):\n${lines.join("\n")}`;
+	}
+
+	private handleTodoCommand(): void {
+		const snapshot = this.getTodoSnapshot();
+		if (!snapshot || snapshot.items.length === 0) {
+			this.showStatus("No todos yet. The model tracks multi-step work with the todo tool.");
+			return;
+		}
+		const summary = summarizeTodos(snapshot);
+		const lines = [
+			`todos · ${summary.completed}/${summary.total} done`,
+			...snapshot.items.map((item) => {
+				if (item.status === "completed") return theme.fg("success", `✓ ${item.title}`);
+				if (item.status === "in_progress") return theme.fg("accent", `◐ ${item.title}`);
+				return theme.fg("muted", `○ ${item.title}`);
+			}),
+		];
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 1));
+		this.ui.requestRender();
 	}
 
 	private handleDebugCommand(): void {
@@ -6557,61 +5409,15 @@ export class InteractiveMode {
 		options?: Parameters<AgentSession["prompt"]>[1],
 	): Promise<void> {
 		const addenda = [
-			buildPromptIntentAddendum(text),
+			isPromptSteeringEnabled() ? buildPromptIntentAddendum(text) : undefined,
 			this.consumeRuntimePromptAddendum(options?.systemPromptAddendum),
+			this.buildTodoPromptAddendum(),
 		].filter((part): part is string => typeof part === "string" && part.trim().length > 0);
 		const systemPromptAddendum = addenda.length > 0 ? addenda.join("\n\n") : undefined;
 		await this.session.prompt(text, {
 			...options,
 			systemPromptAddendum,
 		});
-	}
-
-	private extractFileFromToolArgs(
-		toolName: string,
-		args: Record<string, unknown> | undefined,
-		result: { content: Array<{ type: string; text?: string }> },
-	): string | undefined {
-		return extractTrackedFileFromToolResult(toolName, args, result, this.sessionManager.getCwd());
-	}
-
-	private extractToolDetail(toolName: string, args: Record<string, unknown> | undefined): string | undefined {
-		if (!args) return undefined;
-		if ((toolName === "bash" || toolName === "verify") && typeof args.command === "string") {
-			return args.command;
-		}
-		if (toolName === "websearch" && typeof args.query === "string") return args.query;
-		if (toolName === "webfetch" && typeof args.url === "string") return args.url;
-		if (toolName === "read") {
-			const path = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
-			if (!path) return undefined;
-			const suffix: string[] = [];
-			if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);
-			if (typeof args.limit === "number") suffix.push(`limit=${args.limit}`);
-			return suffix.length > 0 ? `${path} (${suffix.join(", ")})` : path;
-		}
-		if (typeof args.filePath === "string") return args.filePath;
-		if (typeof args.path === "string") return args.path;
-		return undefined;
-	}
-
-	private extractToolMetadata(result: unknown): Record<string, unknown> | undefined {
-		if (!result || typeof result !== "object") return undefined;
-		if (!("details" in result)) return undefined;
-		const details = (result as { details?: unknown }).details;
-		return details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
-	}
-
-	private estimateToolResultTokens(result: unknown): number | undefined {
-		if (!result || typeof result !== "object" || !("content" in result)) return undefined;
-		const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
-		if (!Array.isArray(content)) return undefined;
-		const text = content
-			.filter((item) => item && item.type === "text" && typeof item.text === "string")
-			.map((item) => item.text ?? "")
-			.join("\n");
-		if (text.length === 0) return undefined;
-		return Math.ceil(text.length / 4);
 	}
 
 	/**
@@ -6627,6 +5433,8 @@ export class InteractiveMode {
 			toolCallHistory: this.nudgeToolCallHistory,
 			fileAccessHistory: this.nudgeFileAccessHistory,
 			lastOutputTokens: this.lastNudgeOutputTokens,
+			todoStale: isTodoListStale(this.getTodoSnapshot(), this.toolCallsSinceTodoUpdate),
+			visualToolsActive: this.session.getActiveToolNames().includes("verify_ui"),
 		};
 
 		// Evaluate nudges
@@ -6683,7 +5491,7 @@ export class InteractiveMode {
 			this.showWarning(scopeGuardReason);
 			return;
 		}
-		let isolatedWorkspace: ActivatedAutonomousWorkspace | undefined = undefined;
+		let isolatedWorkspace: ActivatedAutonomousWorkspace | undefined;
 		const resumeSnapshot = this.getAutonomousResumeSnapshot(userMessage);
 
 		try {
@@ -6701,7 +5509,9 @@ export class InteractiveMode {
 			if (resumeSnapshot) {
 				this.showStatus(
 					`Resuming autonomous run from ${resumeSnapshot.savedAt}: ${
-						resumeSnapshot.ledger.resume?.resumeInstruction ?? resumeSnapshot.ledger.taskJournal.plannedNextStep ?? resumeSnapshot.ledger.goal
+						resumeSnapshot.ledger.resume?.resumeInstruction ??
+						resumeSnapshot.ledger.taskJournal.plannedNextStep ??
+						resumeSnapshot.ledger.goal
 					}`,
 				);
 			}
@@ -6713,9 +5523,7 @@ export class InteractiveMode {
 			this.lastAutonomousWorkspace = isolatedWorkspace;
 			await this.handleRuntimeSessionChange();
 			this.renderCurrentSessionState();
-			this.showStatus(
-				`Autonomous workspace ready (${isolatedWorkspace.strategy}): ${isolatedWorkspace.activeCwd}`,
-			);
+			this.showStatus(`Autonomous workspace ready (${isolatedWorkspace.strategy}): ${isolatedWorkspace.activeCwd}`);
 
 			this.lastAutonomousRunResult = await runAutonomousSession({
 				runtimeHost: this.runtimeHost,
@@ -6753,35 +5561,15 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private getBuiltInGreeterContent(): {
-		label: string;
-		leftTitle: string;
-		leftLines: string[];
-		rightTitle: string;
-		rightLines: string[];
-	} {
-		const title = theme.bold(theme.fg("accent", `${APP_NAME} v${this.version}`));
+	private getBuiltInGreeterContent(): Ag1GreeterOptions {
+		const model = this.session.model;
 		return {
-			label: title,
-			leftTitle: theme.bold(theme.fg("accent", "Directory")),
-			leftLines: [
-				theme.fg("text", this.sessionManager.getCwd()),
-				theme.bold(theme.fg("accent", "Modes")),
-				theme.fg("text", "interactive · planning · autonomous"),
-			],
-			rightTitle: theme.bold(theme.fg("accent", "Quick Start")),
-			rightLines: [
-				theme.fg("text", "enter prompt or ! shell"),
-				theme.fg("text", "ctrl+l models · alt+m autonomy"),
-				theme.fg("text", "alt+r plan · alt+n next step"),
-				theme.fg("text", "/research saved sources"),
-				theme.fg("text", "/workspace sandbox review"),
-			],
+			version: GREETER_DISPLAY_VERSION,
+			cwd: this.sessionManager.getCwd(),
+			modeLine: "interactive · planning · autonomous",
+			providerLabel: model?.provider ?? "local",
+			modelLabel: model?.id ?? "model pending",
 		};
-	}
-
-	private summarizeAutonomousLiveStatus(): string | undefined {
-		return summarizeAutonomousLiveStatus(this.lastAutonomousLiveStatus);
 	}
 
 	private getPersistentModeLine(): string {

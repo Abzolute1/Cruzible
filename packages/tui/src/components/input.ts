@@ -422,9 +422,15 @@ export class Input implements Component, Focusable {
 		// Clean the pasted text - remove newlines and carriage returns
 		const cleanText = pastedText.replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, "").replace(/\t/g, "    ");
 
+		// Filter out non-printable characters (single-line: no newline exception)
+		const filteredText = cleanText
+			.split("")
+			.filter((char) => char.charCodeAt(0) >= 32)
+			.join("");
+
 		// Insert at cursor position
-		this.value = this.value.slice(0, this.cursor) + cleanText + this.value.slice(this.cursor);
-		this.cursor += cleanText.length;
+		this.value = this.value.slice(0, this.cursor) + filteredText + this.value.slice(this.cursor);
+		this.cursor += filteredText.length;
 	}
 
 	invalidate(): void {

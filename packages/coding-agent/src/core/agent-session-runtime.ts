@@ -151,6 +151,10 @@ export class AgentSessionRuntime {
 			return beforeResult;
 		}
 
+		// Drain queued message_end appends before re-reading session files from
+		// disk, so no tail messages are lost (S5).
+		await this.session.waitForEventLoop();
+
 		const previousSessionFile = this.session.sessionFile;
 		const sessionManager = SessionManager.open(sessionPath, undefined, cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
@@ -178,10 +182,13 @@ export class AgentSessionRuntime {
 		const currentModel = this.session.model;
 		const currentThinkingLevel = this.session.thinkingLevel;
 		const sessionDir = this.session.sessionManager.getSessionDir();
-		const sessionManager = SessionManager.create(this.cwd, sessionDir);
-		if (options?.parentSession) {
-			sessionManager.newSession({ parentSession: options.parentSession });
-		}
+		// Pass parentSession through the initial creation: creating first and calling
+		// newSession() again afterwards would leave an orphan empty session file.
+		const sessionManager = SessionManager.create(
+			this.cwd,
+			sessionDir,
+			options?.parentSession ? { parentSession: options.parentSession } : undefined,
+		);
 
 		await this.replaceCurrentWith(() =>
 			this.createRuntime({
@@ -218,14 +225,18 @@ export class AgentSessionRuntime {
 		const previousSessionFile = this.session.sessionFile;
 		const selectedText = extractUserMessageText(selectedEntry.message.content);
 		if (this.session.sessionManager.isPersisted()) {
+			// Drain queued message_end appends before re-reading this session's
+			// file from disk, otherwise the forked session silently drops the
+			// last message(s) (S5).
+			await this.session.waitForEventLoop();
+
 			const currentSessionFile = this.session.sessionFile;
 			if (!currentSessionFile) {
 				throw new Error("Persisted session is missing a session file");
 			}
 			const sessionDir = this.session.sessionManager.getSessionDir();
 			if (!selectedEntry.parentId) {
-				const sessionManager = SessionManager.create(this.cwd, sessionDir);
-				sessionManager.newSession({ parentSession: currentSessionFile });
+				const sessionManager = SessionManager.create(this.cwd, sessionDir, { parentSession: currentSessionFile });
 				await this.replaceCurrentWith(() =>
 					this.createRuntime({
 						cwd: this.cwd,

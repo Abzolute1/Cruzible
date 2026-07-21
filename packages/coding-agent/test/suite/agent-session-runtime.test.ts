@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@ag1/ai";
+import { type AssistantMessage, fauxAssistantMessage, registerFauxProvider } from "@ag1/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -12,7 +12,6 @@ import {
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import { SessionManager } from "../../src/core/session-manager.js";
 import type {
-	AssistantMessage,
 	ExtensionAPI,
 	ExtensionFactory,
 	SessionBeforeForkEvent,
@@ -117,7 +116,9 @@ describe("AgentSessionRuntime characterization", () => {
 		return { runtime, faux, tempDir };
 	}
 
-	function createRetryableErrorMessage(session: { model: { api: string; provider: string; id: string } }): AssistantMessage {
+	function createRetryableErrorMessage(session: {
+		model: { api: string; provider: string; id: string };
+	}): AssistantMessage {
 		return {
 			role: "assistant",
 			content: [],
@@ -305,6 +306,10 @@ describe("AgentSessionRuntime characterization", () => {
 					services,
 					sessionManager,
 					sessionStartEvent,
+					// Pin the faux model: without this the session resolves a model
+					// from the host environment (e.g. a real local/lm-studio), and the
+					// prompt below would hit that server instead of the faux provider.
+					model: faux.getModel(),
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -447,7 +452,10 @@ describe("AgentSessionRuntime characterization", () => {
 				services,
 				sessionManager,
 				sessionStartEvent,
-				model: existingSession.messages.length === 0 && existingSession.model === undefined ? preferredRuntimeModel : undefined,
+				model:
+					existingSession.messages.length === 0 && existingSession.model === undefined
+						? preferredRuntimeModel
+						: undefined,
 			});
 			preferredRuntimeModel = result.session.model;
 			return {
@@ -493,8 +501,9 @@ describe("AgentSessionRuntime characterization", () => {
 		const disposeSpy = vi.spyOn(originalSession, "dispose");
 
 		let failNext = false;
-		const createRuntime = runtime["createRuntime"] as CreateAgentSessionRuntimeFactory;
-		runtime["createRuntime"] = (async (options) => {
+		const runtimePatcher = runtime as unknown as { createRuntime: CreateAgentSessionRuntimeFactory };
+		const createRuntime = runtimePatcher.createRuntime;
+		runtimePatcher.createRuntime = (async (options) => {
 			if (failNext && options.sessionStartEvent?.reason === "new") {
 				throw new Error("prepare replacement failed");
 			}
@@ -516,8 +525,9 @@ describe("AgentSessionRuntime characterization", () => {
 		const originalSessionFile = runtime.session.sessionFile;
 
 		let preparedSessionDisposeSpy: ReturnType<typeof vi.spyOn> | undefined;
-		const createRuntime = runtime["createRuntime"] as CreateAgentSessionRuntimeFactory;
-		runtime["createRuntime"] = (async (options) => {
+		const runtimePatcher = runtime as unknown as { createRuntime: CreateAgentSessionRuntimeFactory };
+		const createRuntime = runtimePatcher.createRuntime;
+		runtimePatcher.createRuntime = (async (options) => {
 			const result = await createRuntime(options);
 			if (options.sessionStartEvent?.reason === "new") {
 				preparedSessionDisposeSpy = vi.spyOn(result.session, "dispose");

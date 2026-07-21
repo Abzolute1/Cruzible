@@ -5,7 +5,7 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage } from "@ag1/agent-core";
+import type { AgentMessage, AgentTool } from "@ag1/agent-core";
 import type { AssistantMessage, Model, Usage } from "@ag1/ai";
 import { completeSimple } from "@ag1/ai";
 import {
@@ -14,7 +14,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
-import { buildTaggedPromptBundle, buildTaggedPromptSection } from "../prompt-sections.js";
+import { buildTaggedPromptBundle } from "../prompt-sections.js";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
 import { createContextHygieneCopy } from "./micro-compact.js";
 import { MAX_PTL_RETRIES, truncateHeadForPTLRetry } from "./ptl-retry.js";
@@ -27,6 +27,13 @@ import {
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.js";
+import {
+	extractWorkingMemory,
+	formatWorkingMemoryForSummary,
+	formatWorkingMemoryPrimaryState,
+	getPreviousWorkingMemory,
+	type WorkingMemoryLedger,
+} from "./working-memory.js";
 
 // ============================================================================
 // File Operation Tracking
@@ -36,6 +43,7 @@ import {
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	workingMemory?: WorkingMemoryLedger;
 }
 
 /**
@@ -174,6 +182,16 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
+export interface ContextTokenAttributionEstimate {
+	systemPrompt: number;
+	toolSchemas: number;
+	retainedTranscript: number;
+	summaries: number;
+	toolOutputs: number;
+	estimatedTotal: number;
+	overhead: number;
+}
+
 function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; index: number } | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const usage = getAssistantUsage(messages[i]);
@@ -214,6 +232,42 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		usageTokens,
 		trailingTokens,
 		lastUsageIndex: usageInfo.index,
+	};
+}
+
+export function estimateContextTokenAttribution(options: {
+	messages: AgentMessage[];
+	systemPrompt?: string;
+	tools?: AgentTool<any>[];
+	totalTokens?: number | null;
+}): ContextTokenAttributionEstimate {
+	const contextReadyMessages = createContextHygieneCopy(options.messages);
+	const systemPrompt = estimateTextTokens(options.systemPrompt ?? "");
+	const toolSchemas = estimateToolSchemaTokens(options.tools ?? []);
+	let retainedTranscript = 0;
+	let summaries = 0;
+	let toolOutputs = 0;
+
+	for (const message of contextReadyMessages) {
+		if (message.role === "branchSummary" || message.role === "compactionSummary") {
+			summaries += estimateTokens(message);
+		} else if (message.role === "toolResult" || message.role === "bashExecution") {
+			toolOutputs += estimateTokens(message);
+		} else {
+			retainedTranscript += estimateTokens(message);
+		}
+	}
+
+	const estimatedTotal = systemPrompt + toolSchemas + retainedTranscript + summaries + toolOutputs;
+	const overhead = typeof options.totalTokens === "number" ? Math.max(0, options.totalTokens - estimatedTotal) : 0;
+	return {
+		systemPrompt,
+		toolSchemas,
+		retainedTranscript,
+		summaries,
+		toolOutputs,
+		estimatedTotal,
+		overhead,
 	};
 }
 
@@ -291,6 +345,23 @@ export function estimateTokens(message: AgentMessage): number {
 	}
 
 	return 0;
+}
+
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+function estimateToolSchemaTokens(tools: AgentTool<any>[]): number {
+	let total = 0;
+	for (const tool of tools) {
+		const schemaText = JSON.stringify({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+		});
+		total += estimateTextTokens(schemaText);
+	}
+	return total;
 }
 
 /**
@@ -457,6 +528,7 @@ export function findCutPoint(
 
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a dense context checkpoint summary that another LLM will use to continue the work.
 
+If <working-memory> is present, treat it as deterministic primary state. Use it as the authority for goals, constraints, touched files, verification, open questions, and next steps unless the visible conversation clearly proves it stale.
 If <additional-focus> is present, prioritize it while preserving the required format.
 Prefer compact bullets and fragments over narrative prose. Preserve only information that changes what the next agent should do.
 Assume older tool results and private reasoning may already be trimmed. Reconstruct state from visible actions, evidence, file operations, and retained assistant/user text.
@@ -516,6 +588,7 @@ Update the existing structured summary with new information. RULES:
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
+- If <working-memory> is present, treat it as deterministic primary state and preserve/correct it before relying on prose from <previous-summary>
 - If <additional-focus> is present, prioritize it while preserving the required format
 - If something is no longer relevant, you may remove it
 - Prefer dense bullets/fragments over narrative prose
@@ -570,8 +643,13 @@ function buildSummarizationPrompt(options: {
 	basePrompt: string;
 	previousSummary?: string;
 	additionalFocus?: string;
+	workingMemory?: WorkingMemoryLedger;
 }): string {
 	const promptSections = buildTaggedPromptBundle([
+		{
+			tag: "working-memory",
+			content: options.workingMemory ? formatWorkingMemoryForSummary(options.workingMemory).trim() : undefined,
+		},
 		{ tag: "conversation", content: options.conversationText },
 		{ tag: "previous-summary", content: options.previousSummary },
 		{ tag: "additional-focus", content: options.additionalFocus },
@@ -592,6 +670,7 @@ export async function generateSummary(
 	signal?: AbortSignal,
 	customInstructions?: string,
 	previousSummary?: string,
+	workingMemory?: WorkingMemoryLedger,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.8 * reserveTokens);
 
@@ -608,6 +687,7 @@ export async function generateSummary(
 		basePrompt,
 		previousSummary,
 		additionalFocus: customInstructions,
+		workingMemory,
 	});
 
 	const summarizationMessages = [
@@ -700,6 +780,8 @@ export interface CompactionPreparation {
 	previousSummary?: string;
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
+	/** Deterministic state extracted from summarized history and previous compaction details */
+	workingMemory: WorkingMemoryLedger;
 	/** Compaction settions from settings.jsonl	*/
 	settings: CompactionSettings;
 }
@@ -769,6 +851,12 @@ export function prepareCompaction(
 		}
 	}
 
+	const workingMemory = extractWorkingMemory({
+		messages: [...messagesToSummarize, ...turnPrefixMessages],
+		previous: getPreviousWorkingMemory(pathEntries, prevCompactionIndex),
+		fileOps,
+	});
+
 	return {
 		firstKeptEntryId,
 		messagesToSummarize,
@@ -777,6 +865,7 @@ export function prepareCompaction(
 		tokensBefore,
 		previousSummary,
 		fileOps,
+		workingMemory,
 		settings,
 	};
 }
@@ -834,6 +923,7 @@ export async function compact(
 		tokensBefore,
 		previousSummary,
 		fileOps,
+		workingMemory,
 		settings,
 	} = preparation;
 
@@ -853,6 +943,7 @@ export async function compact(
 						signal,
 						customInstructions,
 						previousSummary,
+						workingMemory,
 					)
 				: Promise.resolve("No prior history."),
 			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, headers, signal),
@@ -870,11 +961,16 @@ export async function compact(
 			signal,
 			customInstructions,
 			previousSummary,
+			workingMemory,
 		);
 	}
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	const primaryWorkingMemory = formatWorkingMemoryPrimaryState(workingMemory);
+	if (primaryWorkingMemory) {
+		summary = `${primaryWorkingMemory}\n\n---\n\n${summary}`;
+	}
 	summary += formatFileOperations(readFiles, modifiedFiles);
 
 	if (!firstKeptEntryId) {
@@ -885,7 +981,7 @@ export async function compact(
 		summary,
 		firstKeptEntryId,
 		tokensBefore,
-		details: { readFiles, modifiedFiles } as CompactionDetails,
+		details: { readFiles, modifiedFiles, workingMemory } as CompactionDetails,
 	};
 }
 

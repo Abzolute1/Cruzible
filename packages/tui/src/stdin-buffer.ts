@@ -24,6 +24,12 @@ const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
 /**
+ * Defensive cap on buffered paste content. An unterminated paste (truncated by
+ * SSH packet loss or a buggy terminal) must not grow without bound.
+ */
+const MAX_PASTE_BUFFER_LENGTH = 10 * 1024 * 1024;
+
+/**
  * Check if a string is a complete escape sequence or needs more data
  */
 function isCompleteSequence(data: string): "complete" | "incomplete" | "not-escape" {
@@ -214,7 +220,22 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 				return { sequences, remainder: remaining };
 			}
 		} else {
-			// Not an escape sequence - take a single character
+			// Not an escape sequence - take a single character, but keep surrogate
+			// pairs together so astral characters are never split across two data
+			// events. A trailing high surrogate waits in the remainder for its low
+			// surrogate to arrive in the next chunk.
+			const code = remaining.charCodeAt(0);
+			if (code >= 0xd800 && code <= 0xdbff) {
+				if (remaining.length === 1) {
+					return { sequences, remainder: remaining };
+				}
+				const next = remaining.charCodeAt(1);
+				if (next >= 0xdc00 && next <= 0xdfff) {
+					sequences.push(remaining.slice(0, 2));
+					pos += 2;
+					continue;
+				}
+			}
 			sequences.push(remaining[0]!);
 			pos++;
 		}
@@ -259,19 +280,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.timeout = null;
 		}
 
-		// Handle high-byte conversion (for compatibility with parseKeypress)
-		// If buffer has single byte > 127, convert to ESC + (byte - 128)
-		let str: string;
-		if (Buffer.isBuffer(data)) {
-			if (data.length === 1 && data[0]! > 127) {
-				const byte = data[0]! - 128;
-				str = `\x1b${String.fromCharCode(byte)}`;
-			} else {
-				str = data.toString();
-			}
-		} else {
-			str = data;
-		}
+		// stdin delivers strings in production (setEncoding("utf8")); Buffer input
+		// is only accepted for API compatibility and decoded as UTF-8.
+		const str = Buffer.isBuffer(data) ? data.toString() : data;
 
 		if (str.length === 0 && this.buffer.length === 0) {
 			this.emit("data", "");
@@ -283,21 +294,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		if (this.pasteMode) {
 			this.pasteBuffer += this.buffer;
 			this.buffer = "";
-
-			const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
-			if (endIndex !== -1) {
-				const pastedContent = this.pasteBuffer.slice(0, endIndex);
-				const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-
-				this.pasteMode = false;
-				this.pasteBuffer = "";
-
-				this.emit("paste", pastedContent);
-
-				if (remaining.length > 0) {
-					this.process(remaining);
-				}
-			}
+			this.handlePasteBuffer();
 			return;
 		}
 
@@ -315,21 +312,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.pasteMode = true;
 			this.pasteBuffer = this.buffer;
 			this.buffer = "";
-
-			const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
-			if (endIndex !== -1) {
-				const pastedContent = this.pasteBuffer.slice(0, endIndex);
-				const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-
-				this.pasteMode = false;
-				this.pasteBuffer = "";
-
-				this.emit("paste", pastedContent);
-
-				if (remaining.length > 0) {
-					this.process(remaining);
-				}
-			}
+			this.handlePasteBuffer();
 			return;
 		}
 
@@ -349,6 +332,51 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				}
 			}, this.timeoutMs);
 		}
+	}
+
+	/**
+	 * Handle the accumulated paste buffer after new data arrived in paste mode.
+	 * Emits a complete paste when the end marker arrives; otherwise arms the
+	 * sequence timeout so a truncated paste (missing \x1b[201~) cannot deadlock
+	 * the editor in paste mode forever, and enforces a defensive size cap.
+	 */
+	private handlePasteBuffer(): void {
+		const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
+		if (endIndex !== -1) {
+			const pastedContent = this.pasteBuffer.slice(0, endIndex);
+			const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
+
+			this.pasteMode = false;
+			this.pasteBuffer = "";
+
+			this.emit("paste", pastedContent);
+
+			if (remaining.length > 0) {
+				this.process(remaining);
+			}
+			return;
+		}
+
+		if (this.pasteBuffer.length >= MAX_PASTE_BUFFER_LENGTH) {
+			// Oversized paste: terminate and flush what arrived
+			this.flushPaste();
+			return;
+		}
+
+		// Re-arm the sequence timeout; on expiry the partial paste is emitted
+		this.timeout = setTimeout(() => {
+			this.flushPaste();
+		}, this.timeoutMs);
+	}
+
+	/**
+	 * Terminate paste mode, emitting whatever paste content has arrived so far.
+	 */
+	private flushPaste(): void {
+		const pastedContent = this.pasteBuffer;
+		this.pasteMode = false;
+		this.pasteBuffer = "";
+		this.emit("paste", pastedContent);
 	}
 
 	flush(): string[] {

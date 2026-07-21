@@ -1,31 +1,30 @@
-import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AgentTool } from "@ag1/agent-core";
 import { Container, Text, truncateToWidth } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { spawn } from "child_process";
+import stripAnsi from "strip-ansi";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.js";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { waitForChildProcess } from "../../utils/child-process.js";
-import { getShellConfig, getShellEnv, killProcessTree } from "../../utils/shell.js";
+import { getShellConfig, getShellEnv, killProcessTree, sanitizeBinaryOutput } from "../../utils/shell.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
+import {
+	isBubblewrapAvailable,
+	parseSandboxMode,
+	SANDBOX_UNAVAILABLE_NOTE,
+	type SandboxSetting,
+	wrapInSandbox,
+} from "../sandbox.js";
+import { getBashFullOutputTempPath, shouldRetainBashFullOutput } from "./bash-output-retention.js";
+import { createSandboxedBashOperations } from "./bash-sandbox.js";
 import { getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
 
 /** Default timeout for bash commands in seconds (5 minutes). */
 const DEFAULT_BASH_TIMEOUT = 300;
-
-/**
- * Generate a unique temp file path for bash output.
- */
-function getTempFilePath(): string {
-	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `ag1-bash-${id}.log`);
-}
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -130,6 +129,10 @@ export function createLocalBashOperations(): BashOperations {
 	};
 }
 
+export function createDefaultBashOperations(): BashOperations {
+	return createSandboxedBashOperations(createLocalBashOperations());
+}
+
 export interface BashSpawnContext {
 	command: string;
 	cwd: string;
@@ -150,6 +153,13 @@ export interface BashToolOptions {
 	commandPrefix?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/**
+	 * OS-level sandboxing of spawned commands via bubblewrap (see core/sandbox.ts).
+	 * Resolution: this option > AG1_BASH_SANDBOX env > "off". When active but
+	 * bwrap is unavailable, commands run unsandboxed with a warning note
+	 * prefixed to their output. "strict" additionally drops network access.
+	 */
+	sandbox?: SandboxSetting;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -191,20 +201,6 @@ function isInspectionBashCommand(command: string): boolean {
 	return /(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|pwd\b|git\s+status(\s|$)|git\s+branch(\s|$)|which\b)/.test(
 		normalized,
 	);
-}
-
-function formatInspectionBashHint(command: string): string | undefined {
-	const normalized = command.replace(/\s+/g, " ").trim();
-	if (/(^|[;&|]\s*)pwd(\s|$)/.test(normalized)) {
-		return "[location confirmed; switch to find, grep, ls, or read next instead of repeating pwd]";
-	}
-	if (/(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|which\b)/.test(normalized)) {
-		return "[discovery output only; if the target path is visible here, inspect it directly instead of repeating shell discovery]";
-	}
-	if (/(^|[;&|]\s*)git\s+status(\s|$)/.test(normalized) || /(^|[;&|]\s*)git\s+branch(\s|$)/.test(normalized)) {
-		return "[git state confirmed; proceed with the targeted read/edit/bash step instead of repeating status]";
-	}
-	return "[inspection output only; reuse this evidence before running another discovery command]";
 }
 
 function compactInspectionBashOutput(output: string): string {
@@ -312,13 +308,13 @@ export function createBashToolDefinition(
 	cwd: string,
 	options?: BashToolOptions,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
-	const ops = options?.operations ?? createLocalBashOperations();
+	const ops = options?.operations ?? createDefaultBashOperations();
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_BASH_TIMEOUT}s.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Full output is retained only when AG1_RETAIN_BASH_FULL_OUTPUT=1. Default timeout: ${DEFAULT_BASH_TIMEOUT}s.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		promptGuidelines: [
 			"Prefer read, grep, find, and ls for routine inspection when those dedicated tools are sufficient.",
@@ -326,31 +322,70 @@ export function createBashToolDefinition(
 			"After an inspection-style bash command surfaces the needed path or status, switch to a targeted read/grep/find step instead of repeating shell discovery.",
 		],
 		parameters: bashSchema,
-			async execute(
-				_toolCallId,
-				{ command, timeout }: { command: string; timeout?: number },
+		async execute(
+			_toolCallId,
+			{ command, timeout }: { command: string; timeout?: number },
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+			// OS-level containment: explicit option > AG1_BASH_SANDBOX env > off.
+			const sandboxMode = options?.sandbox ?? parseSandboxMode(process.env.AG1_BASH_SANDBOX) ?? "off";
+			let execCommand = spawnContext.command;
+			let sandboxUnavailable = false;
+			if (sandboxMode !== "off") {
+				if (isBubblewrapAvailable()) {
+					execCommand = wrapInSandbox(execCommand, { cwd: spawnContext.cwd, mode: sandboxMode });
+				} else {
+					sandboxUnavailable = true;
+				}
+			}
+			const retainFullOutput = shouldRetainBashFullOutput();
 			if (onUpdate) {
 				onUpdate({ content: [], details: undefined });
 			}
 			return new Promise((resolve, reject) => {
 				let tempFilePath: string | undefined;
 				let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
+				let tempFileFailed = false;
 				let totalBytes = 0;
 				const chunks: Buffer[] = [];
 				let chunksBytes = 0;
 				const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
 
+				// Sanitize raw process output the same way the interactive `!` path
+				// does: strip ANSI escape sequences and control characters so model-
+				// invoked commands cannot inject terminal escapes into the TUI or
+				// control chars into the session transcript. Newlines/tabs survive.
+				const decodeOutput = (buffer: Buffer): string =>
+					sanitizeBinaryOutput(stripAnsi(buffer.toString("utf-8"))).replace(/\r/g, "");
+
 				const ensureTempFile = () => {
+					if (!retainFullOutput || tempFileFailed) return;
 					if (tempFilePath) return;
-					tempFilePath = getTempFilePath();
-					tempFileStream = createWriteStream(tempFilePath);
+					tempFilePath = getBashFullOutputTempPath();
+					tempFileStream = createWriteStream(tempFilePath, { mode: 0o600 });
+					tempFileStream.on("error", () => {
+						// Degrade gracefully (ENOSPC/EACCES in tmpdir): stop retaining
+						// full output instead of crashing on an unhandled stream error.
+						tempFileFailed = true;
+						tempFileStream = undefined;
+						tempFilePath = undefined;
+					});
 					for (const chunk of chunks) tempFileStream.write(chunk);
+				};
+
+				// Close the temp stream and wait for the flush so fullOutputPath is
+				// complete on disk before it is advertised to the model.
+				const closeTempFileStream = (): Promise<void> => {
+					const stream = tempFileStream;
+					if (!stream) return Promise.resolve();
+					return new Promise((resolveClose) => {
+						stream.once("error", () => resolveClose());
+						stream.end(() => resolveClose());
+					});
 				};
 
 				const handleData = (data: Buffer) => {
@@ -372,7 +407,7 @@ export function createBashToolDefinition(
 					// Stream partial output using the rolling tail buffer.
 					if (onUpdate) {
 						const fullBuffer = Buffer.concat(chunks);
-						const fullText = fullBuffer.toString("utf-8");
+						const fullText = decodeOutput(fullBuffer);
 						const truncation = truncateTail(fullText);
 						if (truncation.truncated) {
 							ensureTempFile();
@@ -387,64 +422,73 @@ export function createBashToolDefinition(
 					}
 				};
 
-				ops.exec(spawnContext.command, spawnContext.cwd, {
+				if (sandboxUnavailable) {
+					// Degraded mode: requested sandboxing is missing, so say so on the
+					// (merged) stderr stream before any real command output.
+					handleData(Buffer.from(`${SANDBOX_UNAVAILABLE_NOTE}\n`, "utf-8"));
+				}
+				ops.exec(execCommand, spawnContext.cwd, {
 					onData: handleData,
 					signal,
 					timeout: timeout ?? DEFAULT_BASH_TIMEOUT,
 					env: spawnContext.env,
 				})
-						.then(({ exitCode }) => {
-							// Combine the rolling buffer chunks.
-							const fullBuffer = Buffer.concat(chunks);
-							const fullOutput = fullBuffer.toString("utf-8");
-							const transcriptOutput =
-								exitCode === 0 && isInspectionBashCommand(command) ? compactInspectionBashOutput(fullOutput) : fullOutput;
-							// Apply tail truncation for the final display payload.
-							const truncation = truncateTail(transcriptOutput);
-							if (truncation.truncated) {
-								ensureTempFile();
-							}
-						// Close temp file stream before building the final result.
-						if (tempFileStream) tempFileStream.end();
+					.then(async ({ exitCode }) => {
+						// Combine the rolling buffer chunks.
+						const fullBuffer = Buffer.concat(chunks);
+						const fullOutput = decodeOutput(fullBuffer);
+						const transcriptOutput =
+							exitCode === 0 && isInspectionBashCommand(command)
+								? compactInspectionBashOutput(fullOutput)
+								: fullOutput;
+						// Apply tail truncation for the final display payload.
+						const truncation = truncateTail(transcriptOutput);
+						if (truncation.truncated) {
+							ensureTempFile();
+						}
+						// Close temp file stream and flush it before building the final result.
+						await closeTempFileStream();
 						let outputText = truncation.content || "(no output)";
 						let details: BashToolDetails | undefined;
-							if (truncation.truncated) {
-								// Build truncation details and an actionable notice.
-								details = { truncation, fullOutputPath: tempFilePath };
-								const startLine = truncation.totalLines - truncation.outputLines + 1;
-								const endLine = truncation.totalLines;
-								if (truncation.lastLinePartial) {
-									// Edge case: the last line alone is larger than the byte limit.
-									const lastLineSize = formatSize(Buffer.byteLength(transcriptOutput.split("\n").pop() || "", "utf-8"));
-									outputText += `\n\n[last ${formatSize(truncation.outputBytes)} of line ${endLine}; line size ${lastLineSize}]${
-										tempFilePath ? ` [full output: ${tempFilePath}]` : ""
-									}`;
-								} else {
-									outputText += `\n\n${formatBashContinuationNotice({
-										startLine,
-										endLine,
-										totalLines: truncation.totalLines,
-										truncatedBy: truncation.truncatedBy === "lines" ? "lines" : "bytes",
-										fullOutputPath: tempFilePath,
-									})}`;
-								}
+						if (truncation.truncated) {
+							// Build truncation details and an actionable notice.
+							details = { truncation, fullOutputPath: tempFilePath };
+							const startLine = truncation.totalLines - truncation.outputLines + 1;
+							const endLine = truncation.totalLines;
+							if (truncation.lastLinePartial) {
+								// Edge case: the last line alone is larger than the byte limit.
+								const lastLineSize = formatSize(
+									Buffer.byteLength(transcriptOutput.split("\n").pop() || "", "utf-8"),
+								);
+								outputText += `\n\n[last ${formatSize(truncation.outputBytes)} of line ${endLine}; line size ${lastLineSize}]${
+									tempFilePath ? ` [full output: ${tempFilePath}]` : ""
+								}`;
+							} else {
+								outputText += `\n\n${formatBashContinuationNotice({
+									startLine,
+									endLine,
+									totalLines: truncation.totalLines,
+									truncatedBy: truncation.truncatedBy === "lines" ? "lines" : "bytes",
+									fullOutputPath: tempFilePath,
+								})}`;
 							}
-						if (exitCode === 0 && isInspectionBashCommand(command)) {
-							const hint = formatInspectionBashHint(command);
-							if (hint) outputText += `\n\n${hint}`;
 						}
-						if (exitCode !== 0 && exitCode !== null) {
+						if (exitCode === null) {
+							// Killed by a signal (e.g. OOM killer) — not a successful exit.
+							outputText += "\n\nCommand was killed by a signal";
+							reject(new Error(outputText));
+						} else if (exitCode !== 0) {
 							outputText += `\n\nCommand exited with code ${exitCode}`;
 							reject(new Error(outputText));
 						} else {
 							resolve({ content: [{ type: "text", text: outputText }], details });
 						}
 					})
-					.catch((err: Error) => {
-						// Close temp file stream and include buffered output in the error message.
-						if (tempFileStream) tempFileStream.end();
+					.catch(async (err: Error) => {
+						// Close temp file stream (flushed) and include buffered output in the error message.
+						await closeTempFileStream();
 						const fullBuffer = Buffer.concat(chunks);
-						let output = fullBuffer.toString("utf-8");
+						let output = decodeOutput(fullBuffer);
 						if (err.message === "aborted") {
 							if (output) output += "\n\n";
 							output += "Command aborted";

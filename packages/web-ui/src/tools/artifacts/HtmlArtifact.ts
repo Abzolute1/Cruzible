@@ -24,8 +24,24 @@ export class HtmlArtifact extends ArtifactElement {
 	@property({ attribute: false }) runtimeProviders: SandboxRuntimeProvider[] = [];
 	@property({ attribute: false }) sandboxUrlProvider?: () => string;
 
+	private static readonly MAX_LOGS = 1000;
+
 	private _content = "";
 	private logs: Array<{ type: "log" | "error"; text: string }> = [];
+	private _sandboxId?: string;
+	private logFlushRaf?: number;
+	private _executionWaiters = new Set<() => void>();
+
+	/**
+	 * Unguessable per-instance sandbox ID. Messages are routed by sandboxId, so a
+	 * predictable ID would let one sandboxed artifact impersonate another.
+	 */
+	private get sandboxId(): string {
+		if (!this._sandboxId) {
+			this._sandboxId = `artifact-${this.filename}-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+		}
+		return this._sandboxId;
+	}
 
 	// Refs for DOM elements
 	public sandboxIframeRef: Ref<SandboxIframe> = createRef();
@@ -51,7 +67,7 @@ export class HtmlArtifact extends ArtifactElement {
 
 		// Generate standalone HTML with all runtime code injected for download
 		const sandbox = this.sandboxIframeRef.value;
-		const sandboxId = `artifact-${this.filename}`;
+		const sandboxId = this.sandboxId;
 		const downloadContent =
 			sandbox?.prepareHtmlDocument(sandboxId, this._content, this.runtimeProviders || [], {
 				isHtmlArtifact: true,
@@ -100,21 +116,26 @@ export class HtmlArtifact extends ArtifactElement {
 			sandbox.sandboxUrlProvider = this.sandboxUrlProvider;
 		}
 
-		const sandboxId = `artifact-${this.filename}`;
+		const sandboxId = this.sandboxId;
 
 		// Create consumer for console messages
 		const consumer: MessageConsumer = {
 			handleMessage: async (message: any): Promise<void> => {
 				if (message.type === "console") {
-					// Create new array reference for Lit reactivity
-					this.logs = [
-						...this.logs,
-						{
-							type: message.method === "error" ? "error" : "log",
-							text: message.text,
-						},
-					];
-					this.requestUpdate(); // Re-render to show console
+					this.logs.push({
+						type: message.method === "error" ? "error" : "log",
+						text: message.text,
+					});
+					// Cap retained logs - spammy artifacts would otherwise grow this unbounded
+					if (this.logs.length > HtmlArtifact.MAX_LOGS) {
+						this.logs.splice(0, this.logs.length - HtmlArtifact.MAX_LOGS);
+					}
+					this.scheduleLogFlush();
+				} else if (message.type === "execution-complete" || message.type === "execution-error") {
+					this._executionWaiters.forEach((resolve) => {
+						resolve();
+					});
+					this._executionWaiters.clear();
 				}
 			},
 		};
@@ -136,14 +157,49 @@ export class HtmlArtifact extends ArtifactElement {
 		sandbox.loadContent(sandboxId, modifiedHtml, this.runtimeProviders, [consumer]);
 	}
 
+	/**
+	 * Wait for the sandbox to signal execution-complete (or execution-error).
+	 * The timeout is only a fallback, e.g. when execution never starts because
+	 * the iframe isn't mounted yet during reconstruction.
+	 */
+	public waitForExecution(timeoutMs = 1500): Promise<void> {
+		return new Promise((resolve) => {
+			const waiter = () => {
+				clearTimeout(timer);
+				resolve();
+			};
+			const timer = setTimeout(() => {
+				this._executionWaiters.delete(waiter);
+				resolve();
+			}, timeoutMs);
+			this._executionWaiters.add(waiter);
+		});
+	}
+
+	// Batch console-log re-renders to one per frame - spammy artifacts would
+	// otherwise trigger a full re-render per message and freeze the tab.
+	private scheduleLogFlush() {
+		if (this.logFlushRaf !== undefined) return;
+		this.logFlushRaf = requestAnimationFrame(() => {
+			this.logFlushRaf = undefined;
+			// Create new array reference for Lit reactivity
+			this.logs = [...this.logs];
+			this.requestUpdate(); // Re-render to show console
+		});
+	}
+
 	override get content(): string {
 		return this._content;
 	}
 
 	override disconnectedCallback() {
 		super.disconnectedCallback();
+		if (this.logFlushRaf !== undefined) {
+			cancelAnimationFrame(this.logFlushRaf);
+			this.logFlushRaf = undefined;
+		}
 		// Unregister sandbox when element is removed from DOM
-		const sandboxId = `artifact-${this.filename}`;
+		const sandboxId = this.sandboxId;
 		RUNTIME_MESSAGE_ROUTER.unregisterSandbox(sandboxId);
 	}
 

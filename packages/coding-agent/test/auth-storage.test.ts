@@ -504,6 +504,43 @@ describe("AuthStorage", () => {
 			expect(apiKey).toBe("file-nvidia-key");
 		});
 
+		test("nvidia-nim falls back to saved nvidia auth.json credentials", async () => {
+			writeAuthJson({
+				nvidia: { type: "api_key", key: "stored-nvidia-key" },
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+			expect(await authStorage.getApiKey("nvidia-nim")).toBe("stored-nvidia-key");
+		});
+
+		test("nvidia-nim resolves NVIDIA_NIM_API_KEY and falls back to NVIDIA_API_KEY", async () => {
+			const originalNimKey = process.env.NVIDIA_NIM_API_KEY;
+			const originalNvidiaKey = process.env.NVIDIA_API_KEY;
+
+			try {
+				process.env.NVIDIA_NIM_API_KEY = "nim-env-key";
+				process.env.NVIDIA_API_KEY = "nvidia-env-key";
+				authStorage = AuthStorage.create(authJsonPath);
+				expect(await authStorage.getApiKey("nvidia-nim")).toBe("nim-env-key");
+
+				delete process.env.NVIDIA_NIM_API_KEY;
+				authStorage = AuthStorage.create(authJsonPath);
+				expect(await authStorage.getApiKey("nvidia-nim")).toBe("nvidia-env-key");
+			} finally {
+				if (originalNimKey === undefined) {
+					delete process.env.NVIDIA_NIM_API_KEY;
+				} else {
+					process.env.NVIDIA_NIM_API_KEY = originalNimKey;
+				}
+
+				if (originalNvidiaKey === undefined) {
+					delete process.env.NVIDIA_API_KEY;
+				} else {
+					process.env.NVIDIA_API_KEY = originalNvidiaKey;
+				}
+			}
+		});
+
 		test("removing runtime override falls back to auth.json", async () => {
 			writeAuthJson({
 				anthropic: { type: "api_key", key: "!echo stored-key" },

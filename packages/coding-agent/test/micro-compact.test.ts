@@ -1,11 +1,15 @@
 import type { AgentMessage } from "@ag1/agent-core";
 import { describe, expect, it } from "vitest";
-import { createContextHygieneCopy, createLiveProviderContext, microCompact } from "../src/core/compaction/micro-compact.js";
+import {
+	createContextHygieneCopy,
+	createLiveProviderContext,
+	microCompact,
+} from "../src/core/compaction/micro-compact.js";
 
 function createTurnWithToolResult(
 	userText: string,
 	toolName: string,
-	toolResultContent: AgentMessage["content"],
+	toolResultContent: Extract<AgentMessage, { role: "toolResult" }>["content"],
 ): AgentMessage[] {
 	return [
 		{
@@ -54,9 +58,30 @@ describe("createContextHygieneCopy", () => {
 
 		expect(result).not.toBe(messages);
 		expect(Array.isArray(oldResult.content)).toBe(true);
-		expect((oldResult.content as Array<{ type: "text"; text: string }>)[0].text).toContain("[truncated] bash result:");
+		expect((oldResult.content as Array<{ type: "text"; text: string }>)[0].text).toContain(
+			"[truncated] bash result:",
+		);
 		expect((recentResult.content as Array<{ type: "text"; text: string }>)[0].text).toBe("short recent output");
 		expect((originalOldResult.content as Array<{ type: "text"; text: string }>)[0].text).toBe(oldLongText);
+	});
+
+	it("accepts stricter live-context hygiene options for smaller models", () => {
+		const oldMediumText = "B".repeat(180);
+		const messages: AgentMessage[] = [
+			...createTurnWithToolResult("old", "read", [{ type: "text", text: oldMediumText }]),
+			...createTurnWithToolResult("recent", "read", [{ type: "text", text: "recent output" }]),
+		];
+
+		const result = createContextHygieneCopy(messages, {
+			keepTurns: 1,
+			maxToolResultChars: 120,
+			maxHiddenCustomChars: 100,
+		});
+		const oldResult = result[2] as Extract<AgentMessage, { role: "toolResult" }>;
+
+		expect((oldResult.content as Array<{ type: "text"; text: string }>)[0].text).toContain(
+			"[truncated] read result:",
+		);
 	});
 
 	it("replaces old image tool results with compact text placeholders while preserving text context", () => {
@@ -251,11 +276,9 @@ describe("createContextHygieneCopy", () => {
 
 describe("createLiveProviderContext", () => {
 	it("appends a hidden continuation-compression hint for bulky trailing tool output", () => {
-		const messages: AgentMessage[] = createTurnWithToolResult(
-			"inspect the changelog",
-			"read",
-			[{ type: "text", text: "A".repeat(900) }],
-		);
+		const messages: AgentMessage[] = createTurnWithToolResult("inspect the changelog", "read", [
+			{ type: "text", text: "A".repeat(900) },
+		]);
 
 		const result = createLiveProviderContext(messages);
 		const last = result[result.length - 1] as Extract<AgentMessage, { role: "custom" }>;
@@ -271,11 +294,9 @@ describe("createLiveProviderContext", () => {
 	});
 
 	it("does not append continuation compression for small trailing tool output", () => {
-		const messages: AgentMessage[] = createTurnWithToolResult(
-			"inspect the file",
-			"read",
-			[{ type: "text", text: "small output" }],
-		);
+		const messages: AgentMessage[] = createTurnWithToolResult("inspect the file", "read", [
+			{ type: "text", text: "small output" },
+		]);
 
 		const result = createLiveProviderContext(messages);
 		expect(result).toBe(messages);

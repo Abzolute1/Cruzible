@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
-import { handleInteractiveEditorSubmitAfterBuiltin, type InteractiveEditorSubmitActions, type InteractiveEditorSubmitState } from "../src/modes/interactive/interactive-editor-submit.js";
+import {
+	handleInteractiveEditorSubmitAfterBuiltin,
+	type InteractiveEditorSubmitActions,
+	type InteractiveEditorSubmitState,
+} from "../src/modes/interactive/interactive-editor-submit.js";
 
 function createState(overrides: Partial<InteractiveEditorSubmitState> = {}): InteractiveEditorSubmitState {
 	return {
@@ -33,7 +37,11 @@ describe("interactive-editor-submit", () => {
 	test("warns and restores text when bash is already running", async () => {
 		const actions = createActions();
 
-		const handled = await handleInteractiveEditorSubmitAfterBuiltin("!ls", createState({ isBashRunning: true }), actions);
+		const handled = await handleInteractiveEditorSubmitAfterBuiltin(
+			"!ls",
+			createState({ isBashRunning: true }),
+			actions,
+		);
 
 		expect(handled).toBe(true);
 		expect(actions.showWarning).toHaveBeenCalledOnce();
@@ -44,7 +52,11 @@ describe("interactive-editor-submit", () => {
 	test("blocks bash shortcuts in planning mode", async () => {
 		const actions = createActions();
 
-		const handled = await handleInteractiveEditorSubmitAfterBuiltin("!ls", createState({ isPlanningMode: true }), actions);
+		const handled = await handleInteractiveEditorSubmitAfterBuiltin(
+			"!ls",
+			createState({ isPlanningMode: true }),
+			actions,
+		);
 
 		expect(handled).toBe(true);
 		expect(actions.showWarning).toHaveBeenCalledWith(expect.stringContaining("planning mode"));
@@ -55,7 +67,11 @@ describe("interactive-editor-submit", () => {
 	test("queues compaction prompts unless they are extension commands", async () => {
 		const actions = createActions();
 
-		const handled = await handleInteractiveEditorSubmitAfterBuiltin("hello", createState({ isCompacting: true }), actions);
+		const handled = await handleInteractiveEditorSubmitAfterBuiltin(
+			"hello",
+			createState({ isCompacting: true }),
+			actions,
+		);
 
 		expect(handled).toBe(true);
 		expect(actions.queueCompactionMessage).toHaveBeenCalledWith("hello", "steer");
@@ -80,7 +96,11 @@ describe("interactive-editor-submit", () => {
 	test("uses steer prompting while streaming", async () => {
 		const actions = createActions();
 
-		const handled = await handleInteractiveEditorSubmitAfterBuiltin("follow up", createState({ isStreaming: true }), actions);
+		const handled = await handleInteractiveEditorSubmitAfterBuiltin(
+			"follow up",
+			createState({ isStreaming: true }),
+			actions,
+		);
 
 		expect(handled).toBe(true);
 		expect(actions.prompt).toHaveBeenCalledWith("follow up", { streamingBehavior: "steer" });

@@ -214,3 +214,13 @@ export function safeJsonPreview(text: string, maxLength: number = 200): string {
 	const truncated = text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 	return truncated;
 }
+
+/**
+ * Sanitize one path segment of a debug directory name (letters, digits, `_`,
+ * `-` survive; anything else is stripped). Shared by the session debug logger
+ * (subagent dir naming via AG1_DEBUG_SESSION_NAME) and the subagent recorder.
+ */
+export function sanitizeNamePart(value: string): string {
+	const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, "");
+	return sanitized.length > 0 ? sanitized : "unknown";
+}

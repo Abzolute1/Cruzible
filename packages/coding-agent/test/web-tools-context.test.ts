@@ -1,10 +1,10 @@
 import { createServer, type Server } from "node:http";
+import type { AgentToolResult } from "@ag1/agent-core";
 import type { TUI } from "@ag1/tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { webFetchToolDefinition as autonWebFetchToolDefinition } from "../src/core/auton/tools/webfetch.js";
 import { createWebSearchTool, webFetchToolDefinition, webSearchToolDefinition } from "../src/core/tools/index.js";
-import { parseDuckDuckGoResultsForTests } from "../src/core/tools/websearch.js";
 import {
 	detectResearchQueryIntent,
 	getEffectiveFetchCompressionProfile,
@@ -23,6 +23,7 @@ import {
 	formatFetchTranscriptContent,
 	formatSearchTranscriptContent,
 } from "../src/core/tools/research-output.js";
+import { parseDuckDuckGoResultsForTests } from "../src/core/tools/websearch.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -30,6 +31,11 @@ function createFakeTui(): TUI {
 	return {
 		requestRender: () => {},
 	} as unknown as TUI;
+}
+
+function firstBlockText(result: AgentToolResult<unknown>): string {
+	const block = result.content[0];
+	return block?.type === "text" ? block.text : "";
 }
 
 describe("web research tool context efficiency", () => {
@@ -262,7 +268,7 @@ describe("web research tool context efficiency", () => {
 	});
 
 	test("uses DuckDuckGo as the free default search provider", async () => {
-		const fetchMock = vi.fn(async () => ({
+		const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 			ok: true,
 			text: async () =>
 				[
@@ -292,7 +298,7 @@ describe("web research tool context efficiency", () => {
 
 	test("uses Brave first in auto mode when a Brave key is configured", async () => {
 		vi.stubEnv("AG1_BRAVE_SEARCH_API_KEY", "brave-test-key");
-		const fetchMock = vi.fn(async () => ({
+		const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 			ok: true,
 			json: async () => ({
 				web: {
@@ -394,7 +400,7 @@ describe("web research tool context efficiency", () => {
 				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
 			} as any,
 		);
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 		const details = result.details as Record<string, unknown>;
 
 		expect(text).toContain("1. write.ts");
@@ -507,7 +513,8 @@ describe("web research tool context efficiency", () => {
 		expect(results[0]?.fetchRisk).toBe("low");
 	});
 
-	test("webFetch strips curl metadata footer and preserves content type", async () => {
+	test("webFetch preserves content type for explicitly allowed local fetches", async () => {
+		vi.stubEnv("AG1_ALLOW_PRIVATE_WEBFETCH", "1");
 		let server: Server | undefined;
 		const url = await new Promise<string>((resolve) => {
 			server = createServer((_request, response) => {
@@ -529,7 +536,7 @@ describe("web research tool context efficiency", () => {
 				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
 			} as any);
 			const details = result.details as Record<string, unknown>;
-			const text = result.content[0]?.text ?? "";
+			const text = firstBlockText(result);
 
 			expect(details.contentType).toBe("text/html; charset=utf-8");
 			expect(text).toContain("Useful local fetch content");
@@ -538,6 +545,52 @@ describe("web research tool context efficiency", () => {
 		} finally {
 			await new Promise<void>((resolve) => server?.close(() => resolve()));
 		}
+	});
+
+	test("webFetch rejects local and non-http URLs before fetching", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const localResult = await webFetchToolDefinition.execute(
+			"tool-web-fetch-local",
+			{ url: "http://127.0.0.1:1234/private" },
+			undefined,
+			undefined,
+			{} as any,
+		);
+		const fileResult = await webFetchToolDefinition.execute(
+			"tool-web-fetch-file",
+			{ url: "file:///etc/passwd" },
+			undefined,
+			undefined,
+			{} as any,
+		);
+
+		expect(firstBlockText(localResult)).toContain("private/internal addresses");
+		expect(firstBlockText(fileResult)).toContain("Only http:// and https:// URLs are allowed");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	test("webFetch validates redirect targets before following them", async () => {
+		const fetchMock = vi.fn(
+			async () =>
+				new Response("", {
+					status: 302,
+					headers: { location: "http://127.0.0.1:1234/private" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await webFetchToolDefinition.execute(
+			"tool-web-fetch-redirect",
+			{ url: "https://93.184.216.34/start" },
+			undefined,
+			undefined,
+			{} as any,
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(firstBlockText(result)).toContain("private/internal addresses");
 	});
 
 	test("normalizes OpenAI pricing docs queries toward official-site phrasing", async () => {
@@ -562,7 +615,7 @@ describe("web research tool context efficiency", () => {
 	});
 
 	test("plans official docs lookups without dropping exact provider and model identifiers", async () => {
-		const fetchMock = vi.fn(async () => ({
+		const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 			ok: true,
 			text: async () =>
 				[
@@ -587,11 +640,7 @@ describe("web research tool context efficiency", () => {
 		expect(details.intent).toBe("docs_reference");
 		expect(details.effectiveQuery).toContain("llama-3.1-nemotron-ultra-253b-v1");
 		expect(details.effectiveQuery).toContain("official docs");
-		expect(details.preferredDomains).toEqual([
-			"build.nvidia.com",
-			"docs.api.nvidia.com",
-			"developer.nvidia.com",
-		]);
+		expect(details.preferredDomains).toEqual(["build.nvidia.com", "docs.api.nvidia.com", "developer.nvidia.com"]);
 		expect(fetchMock.mock.calls[0]?.[0]).toContain("llama-3.1-nemotron-ultra-253b-v1");
 	});
 
@@ -618,11 +667,11 @@ describe("web research tool context efficiency", () => {
 		expect(details.searchProvider).toBe("official-fallback");
 		expect(details.fallbackUsed).toBe(true);
 		expect((details.sourceUrls as string[])[0]).toBe("https://lmstudio.ai/docs");
-		expect(result.content[0]?.text ?? "").toContain("LM Studio Docs [authoritative]");
+		expect(firstBlockText(result)).toContain("LM Studio Docs [authoritative]");
 	});
 
 	test("preserves exact error messages in planner queries", async () => {
-		const fetchMock = vi.fn(async () => ({
+		const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 			ok: true,
 			text: async () =>
 				[
@@ -646,7 +695,9 @@ describe("web research tool context efficiency", () => {
 
 		expect(details.effectiveQuery).toContain('"TypeError: crypto.hash is not a function on Node 20"');
 		expect(details.searchStrategy).toContain("exact error string");
-		expect(fetchMock.mock.calls[0]?.[0]).toContain("%22TypeError%3A%20crypto.hash%20is%20not%20a%20function%20on%20Node%2020%22");
+		expect(fetchMock.mock.calls[0]?.[0]).toContain(
+			"%22TypeError%3A%20crypto.hash%20is%20not%20a%20function%20on%20Node%2020%22",
+		);
 	});
 
 	test("ranks news-like sources above docs for current-events queries", async () => {
@@ -778,7 +829,7 @@ describe("web research tool context efficiency", () => {
 
 		expect(details.query).toBe("Claude Code leak 2024 2025 data breach");
 		expect(details.effectiveQuery).toBe("Claude Code source map npm leak March 2026 Anthropic");
-		expect(result.content[0]?.text ?? "").toContain("Web search: Claude Code source map npm leak March 2026 Anthropic");
+		expect(firstBlockText(result)).toContain("Web search: Claude Code source map npm leak March 2026 Anthropic");
 	});
 
 	test("prefers analysis-style sources over generic news when the query asks for strongest sources", async () => {
@@ -816,8 +867,8 @@ describe("web research tool context efficiency", () => {
 			"https://tech-insider.org/anthropic-claude-code-source-code-leak-npm-2026/",
 		);
 		expect(sourceUrls.slice(1, 3).some((url) => url.includes("techspot.com"))).toBe(true);
-		expect(result.content[0]?.text ?? "").toContain("Fetch the strongest source first.");
-		expect(result.content[0]?.text ?? "").toContain(
+		expect(firstBlockText(result)).toContain("Fetch the strongest source first.");
+		expect(firstBlockText(result)).toContain(
 			"if the first fetched source is rich and specific, answer from it directly",
 		);
 	});
@@ -917,7 +968,7 @@ describe("web research tool context efficiency", () => {
 		);
 		const details = result.details as Record<string, unknown>;
 		const sourceUrls = details.sourceUrls as string[];
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 
 		expect(sourceUrls[0]).toBe("https://www.infoq.com/news/2026/04/claude-code-source-leak/");
 		expect(sourceUrls[1]).toContain("fortune.com");
@@ -1016,7 +1067,7 @@ describe("web research tool context efficiency", () => {
 		);
 		const details = result.details as Record<string, unknown>;
 		const sourceUrls = details.sourceUrls as string[];
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 
 		expect(details.intent).toBe("docs_reference");
 		expect(sourceUrls[0]).toBe("https://react.dev/reference/react/useActionState");
@@ -1106,7 +1157,7 @@ describe("web research tool context efficiency", () => {
 		expect(text).toContain("Build user interfaces from components.");
 		expect(text).not.toContain("Additional detail that should not survive ultra compression.");
 		expect(text).toContain("This source summary is likely sufficient to answer or cite without refetching.");
-		expect(text).toContain("Reuse this URL as the source reference");
+		expect(text).not.toContain("Reuse this URL as the source reference");
 	});
 
 	test("marks non-authoritative current-events fetches as fallback evidence instead of fully sufficient", () => {
@@ -1347,7 +1398,7 @@ describe("web research tool context efficiency", () => {
 		const result = await tool.execute("tool-web-search", { query: "latest React docs" }, undefined, undefined, {
 			getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
 		} as any);
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 
 		expect(text).toContain("1. React Docs [authoritative] — https://react.dev/");
 		expect(text).toContain("2. React Blog");
@@ -1361,7 +1412,7 @@ describe("web research tool context efficiency", () => {
 	});
 
 	test("rewrites conversational current-events searches into targeted search plans", async () => {
-		const fetchMock = vi.fn(async () => ({
+		const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
 			ok: true,
 			text: async () =>
 				[
@@ -1383,16 +1434,13 @@ describe("web research tool context efficiency", () => {
 				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
 			} as any,
 		);
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 		const details = result.details as Record<string, unknown>;
 
 		expect(details.effectiveQuery).toBe("Claude Code source map npm leak March 2026 Anthropic");
 		expect(details.searchStrategy).toContain("leak vector");
 		expect(details.followUpQueries).toEqual(
-			expect.arrayContaining([
-				expect.stringContaining("Chaofan Shou"),
-				expect.stringContaining("source maps"),
-			]),
+			expect.arrayContaining([expect.stringContaining("Chaofan Shou"), expect.stringContaining("source maps")]),
 		);
 		expect(details.sourceUrls).toEqual([
 			"https://thehackernews.com/2026/04/claude-code-leaked-via-npm-packaging.html",
@@ -1420,7 +1468,7 @@ describe("web research tool context efficiency", () => {
 				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
 			} as any,
 		);
-		const text = result.content[0]?.text ?? "";
+		const text = firstBlockText(result);
 
 		expect(text).toContain("Web search: ag1webzero qxzv incident 2026");
 		expect(text).toContain("Rewritten from: Can you research the ag1webzero qxzv incident");
@@ -1446,9 +1494,15 @@ describe("web research tool context efficiency", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const tool = createWebSearchTool({ cwd: "/tmp" });
-		const result = await tool.execute("tool-web-search", { query: "React API reference fallback probe" }, undefined, undefined, {
-			getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
-		} as any);
+		const result = await tool.execute(
+			"tool-web-search",
+			{ query: "React API reference fallback probe" },
+			undefined,
+			undefined,
+			{
+				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
+			} as any,
+		);
 		const details = result.details as Record<string, unknown>;
 		const attempts = details.searchAttempts as Array<Record<string, unknown>>;
 
@@ -1457,7 +1511,7 @@ describe("web research tool context efficiency", () => {
 		expect(attempts[0]?.resultCount).toBe(0);
 		expect(attempts[1]?.resultCount).toBe(1);
 		expect((details.sourceUrls as string[])[0]).toBe("https://react.dev/reference/react");
-		expect(result.content[0]?.text ?? "").toContain("Official React reference & API docs.");
+		expect(firstBlockText(result)).toContain("Official React reference & API docs.");
 	});
 
 	test("uses official docs fallback for OpenAI pricing when search providers return no results", async () => {
@@ -1484,7 +1538,7 @@ describe("web research tool context efficiency", () => {
 		expect(details.fallbackUsed).toBe(true);
 		expect(sourceUrls[0]).toBe("https://developers.openai.com/api/docs/pricing");
 		expect(sourceUrls[1]).toBe("https://platform.openai.com/pricing");
-		expect(result.content[0]?.text ?? "").toContain("Pricing | OpenAI API [authoritative]");
+		expect(firstBlockText(result)).toContain("Pricing | OpenAI API [authoritative]");
 	});
 
 	test("records pricing coverage hints on URLs returned from pricing searches", async () => {
@@ -1601,7 +1655,9 @@ describe("web research tool context efficiency", () => {
 		expect(coverage?.kind).toBe("pricing");
 		expect(coverage?.present).toEqual(expect.arrayContaining(["model", "input_price", "currency", "effective_date"]));
 		expect(coverage?.missing).toContain("output_price");
-		expect(text).toContain("Continue pricing research only if model, input price, output price, or currency is missing");
+		expect(text).toContain(
+			"Continue pricing research only if model, input price, output price, or currency is missing",
+		);
 	});
 
 	test("assesses release coverage slots and treats migration notes as conditional", () => {
@@ -1622,7 +1678,9 @@ describe("web research tool context efficiency", () => {
 		expect(coverage?.kind).toBe("release");
 		expect(coverage?.present).toEqual(expect.arrayContaining(["version", "date", "changes"]));
 		expect(coverage?.missing).toContain("migration_notes");
-		expect(text).toContain("Migration notes are required only when the user asks about upgrading or breaking changes");
+		expect(text).toContain(
+			"Migration notes are required only when the user asks about upgrading or breaking changes",
+		);
 	});
 
 	test("assesses error coverage slots and asks for exact-error follow-up only when needed", () => {
@@ -1647,20 +1705,21 @@ describe("web research tool context efficiency", () => {
 	});
 
 	test("webFetch emits current-events coverage metadata and stop guidance", async () => {
+		vi.stubEnv("AG1_ALLOW_PRIVATE_WEBFETCH", "1");
 		let server: Server | undefined;
 		const url = await new Promise<string>((resolve) => {
 			server = createServer((_request, response) => {
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end(
 					[
-					"<html>",
-					"<head><title>Claude Code leak article</title></head>",
-					"<body><article>",
-					"<p>On March 31, 2026, Anthropic accidentally published Claude Code source maps to npm.</p>",
-					"<p>The package exposed internal TypeScript source code for the CLI.</p>",
-					"<p>Anthropic confirmed the packaging issue and republished a clean package.</p>",
-					"</article></body>",
-					"</html>",
+						"<html>",
+						"<head><title>Claude Code leak article</title></head>",
+						"<body><article>",
+						"<p>On March 31, 2026, Anthropic accidentally published Claude Code source maps to npm.</p>",
+						"<p>The package exposed internal TypeScript source code for the CLI.</p>",
+						"<p>Anthropic confirmed the packaging issue and republished a clean package.</p>",
+						"</article></body>",
+						"</html>",
 					].join(""),
 				);
 			});
@@ -1678,23 +1737,17 @@ describe("web research tool context efficiency", () => {
 		});
 
 		try {
-			const result = await webFetchToolDefinition.execute(
-				"tool-web-fetch",
-				{ url },
-				undefined,
-				undefined,
-				{
-					getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
-				} as any,
-			);
+			const result = await webFetchToolDefinition.execute("tool-web-fetch", { url }, undefined, undefined, {
+				getContextUsage: () => ({ tokens: 2_000, contextWindow: 50_000, percent: 4 }),
+			} as any);
 			const details = result.details as Record<string, unknown>;
 			const coverage = details.coverage as Record<string, unknown>;
-			const text = result.content[0]?.text ?? "";
+			const text = firstBlockText(result);
 
 			expect(coverage.present).toEqual(["date", "actor", "mechanism", "impact", "response"]);
 			expect(coverage.missing).toEqual([]);
 			expect(text).toContain("Coverage complete for a brief current-events answer.");
-			expect(text).toContain("Reuse this URL as the source reference");
+			expect(text).not.toContain("Reuse this URL as the source reference");
 		} finally {
 			await new Promise<void>((resolve) => server?.close(() => resolve()));
 		}
@@ -1741,7 +1794,7 @@ describe("web research tool context efficiency", () => {
 				expect.stringContaining("The leak exposed internal TypeScript"),
 			]),
 		);
-		expect(result.content[0]?.text).toContain("This source summary is likely sufficient");
+		expect(firstBlockText(result)).toContain("This source summary is likely sufficient");
 	});
 
 	test("autonomous webFetch suppresses docs boilerplate in facts for docs-reference urls", async () => {
@@ -1786,7 +1839,7 @@ describe("web research tool context efficiency", () => {
 		const details = result.details as Record<string, unknown>;
 		const facts = details.facts as string[];
 		const preview = details.preview as string;
-		const transcript = result.content[0]?.text ?? "";
+		const transcript = firstBlockText(result);
 
 		expect(facts).not.toContain("The library for web and native user interfaces");
 		expect(facts).not.toContain("API Reference Hooks Copy pageCopy");
@@ -1833,7 +1886,7 @@ describe("web research tool context efficiency", () => {
 		const details = result.details as Record<string, unknown>;
 		expect((details.sourceUrls as string[])[0]).toBe("https://react.dev/reference/react");
 		expect((details.preferredSourceUrls as string[])[0]).toBe("https://react.dev/reference/react");
-		expect(result.content[0]?.text).toContain("https://react.dev/reference/react");
+		expect(firstBlockText(result)).toContain("https://react.dev/reference/react");
 	});
 
 	test("widens fetch compression only for remembered research-heavy URLs", () => {
@@ -1916,9 +1969,26 @@ describe("web research tool context efficiency", () => {
 					searchProvider: "duckduckgo-html",
 					searchProviderMode: "auto",
 					results: [
-						{ title: "React Docs", url: "https://react.dev/", snippet: "Official docs", authoritative: true, sourceKind: "docs", fetchRisk: "low" },
-						{ title: "React Blog", url: "https://react.dev/blog", snippet: "Release posts", sourceKind: "general" },
-						{ title: "React API", url: "https://react.dev/reference", snippet: "API reference", sourceKind: "docs" },
+						{
+							title: "React Docs",
+							url: "https://react.dev/",
+							snippet: "Official docs",
+							authoritative: true,
+							sourceKind: "docs",
+							fetchRisk: "low",
+						},
+						{
+							title: "React Blog",
+							url: "https://react.dev/blog",
+							snippet: "Release posts",
+							sourceKind: "general",
+						},
+						{
+							title: "React API",
+							url: "https://react.dev/reference",
+							snippet: "API reference",
+							sourceKind: "docs",
+						},
 					],
 				},
 				isError: false,

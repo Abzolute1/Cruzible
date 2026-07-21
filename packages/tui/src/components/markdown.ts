@@ -1,7 +1,7 @@
 import { marked, type Token } from "marked";
 import { isImageLine } from "../terminal-image.js";
 import type { Component } from "../tui.js";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+import { applyBackgroundToLine, sanitizeTerminalText, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
 /**
  * Default text styling for markdown content.
@@ -71,7 +71,7 @@ export class Markdown implements Component {
 		theme: MarkdownTheme,
 		defaultTextStyle?: DefaultTextStyle,
 	) {
-		this.text = text;
+		this.text = sanitizeTerminalText(text);
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.theme = theme;
@@ -79,7 +79,7 @@ export class Markdown implements Component {
 	}
 
 	setText(text: string): void {
-		this.text = text;
+		this.text = sanitizeTerminalText(text);
 		this.invalidate();
 	}
 
@@ -534,9 +534,9 @@ export class Markdown implements Component {
 
 			if (itemLines.length > 0) {
 				// First line - check if it's a nested list
-				// A nested list will start with indent (spaces) followed by cyan bullet
+				// A nested list will start with indent (spaces) followed by a colored bullet
 				const firstLine = itemLines[0];
-				const isNestedList = /^\s+\x1b\[36m[-\d]/.test(firstLine); // starts with spaces + cyan + bullet char
+				const isNestedList = /^\s+\x1b\[[0-9;]*m[-\d]/.test(firstLine); // starts with spaces + SGR color + bullet char
 
 				if (isNestedList) {
 					// This is a nested list, just add it as-is (already has full indent)
@@ -549,7 +549,7 @@ export class Markdown implements Component {
 				// Rest of the lines
 				for (let j = 1; j < itemLines.length; j++) {
 					const line = itemLines[j];
-					const isNestedListLine = /^\s+\x1b\[36m[-\d]/.test(line); // starts with spaces + cyan + bullet char
+					const isNestedListLine = /^\s+\x1b\[[0-9;]*m[-\d]/.test(line); // starts with spaces + SGR color + bullet char
 
 					if (isNestedListLine) {
 						// Nested list line - already has full indent

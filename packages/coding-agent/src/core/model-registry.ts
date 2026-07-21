@@ -6,6 +6,7 @@ import {
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
+	getEnvApiKey,
 	getModels,
 	getProviders,
 	type KnownProvider,
@@ -581,12 +582,28 @@ export class ModelRegistry {
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
-			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
-			const apiKey =
-				apiKeyFromAuthStorage ??
+			let apiKey =
+				(await this.authStorage.getApiKey(model.provider, { includeFallback: false })) ??
 				(providerConfig?.apiKey
 					? resolveConfigValueOrThrow(providerConfig.apiKey, `API key for provider "${model.provider}"`)
 					: undefined);
+
+			if (!apiKey) {
+				apiKey = getEnvApiKey(model.provider);
+			}
+			if (!apiKey && model.provider === "nvidia-nim") {
+				apiKey = getEnvApiKey("nvidia") ?? (await this.authStorage.getApiKey("nvidia", { includeFallback: false }));
+			}
+
+			if (!apiKey && model.provider !== "local") {
+				return {
+					ok: false,
+					error:
+						`No API key found for "${model.provider}". ` +
+						`Set ${model.provider === "nvidia-nim" ? "NVIDIA_NIM_API_KEY or NVIDIA_API_KEY" : `${model.provider.toUpperCase().replace(/-/g, "_")}_API_KEY`}, ` +
+						`add it to auth.json, or place it in your AG1 secrets file.`,
+				};
+			}
 
 			const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 			const modelHeaders = resolveHeadersOrThrow(

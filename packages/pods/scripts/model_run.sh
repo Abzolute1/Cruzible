@@ -40,25 +40,24 @@ echo ""
 
 # Download model (with color progress bars)
 echo "Downloading model (will skip if cached)..."
+# On failure set -e aborts here and the EXIT trap reports the exit code
 HF_HUB_ENABLE_HF_TRANSFER=1 hf download "$MODEL_ID"
-
-if [ $? -ne 0 ]; then
-    echo "❌ ERROR: Failed to download model" >&2
-    exit 1
-fi
 
 echo ""
 echo "✅ Model download complete"
 echo ""
 
 # Build vLLM command
-VLLM_CMD="vllm serve '$MODEL_ID' --port $PORT --api-key '$AG1_API_KEY'"
+# Pass the API key via environment (vLLM reads VLLM_API_KEY) so it never
+# appears in `ps` argv or in the command echo below.
+export VLLM_API_KEY="$AG1_API_KEY"
+VLLM_CMD="vllm serve '$MODEL_ID' --port $PORT"
 if [ -n "$VLLM_ARGS" ]; then
     VLLM_CMD="$VLLM_CMD $VLLM_ARGS"
 fi
 
 echo "Starting vLLM server..."
-echo "Command: $VLLM_CMD"
+echo "Command: $VLLM_CMD (API key via VLLM_API_KEY env)"
 echo "========================================="
 echo ""
 
@@ -74,7 +73,9 @@ VLLM_EXIT_CODE=$?
 
 if [ $VLLM_EXIT_CODE -ne 0 ]; then
     echo "❌ ERROR: vLLM exited with code $VLLM_EXIT_CODE" >&2
-    # Make sure to exit the script command too
+    # Make sure to exit the script command too; disarm the traps first so
+    # the self-kill doesn't re-enter cleanup
+    trap - EXIT TERM INT
     kill -TERM $$ 2>/dev/null || true
     exit $VLLM_EXIT_CODE
 fi

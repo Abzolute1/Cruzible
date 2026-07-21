@@ -9,11 +9,16 @@ import {
 	calculateContextTokens,
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
+	estimateContextTokenAttribution,
 	estimateContextTokens,
+	extractWorkingMemory,
 	findCutPoint,
+	formatWorkingMemoryForSummary,
+	formatWorkingMemoryPrimaryState,
 	getLastAssistantUsage,
 	prepareCompaction,
 	shouldCompact,
+	type WorkingMemoryLedger,
 } from "../src/core/compaction/index.js";
 import {
 	buildSessionContext,
@@ -66,6 +71,28 @@ function createAssistantMessage(text: string, usage?: Usage): AssistantMessage {
 	};
 }
 
+function createAssistantToolCall(name: string, args: Record<string, unknown>, id = `${name}-call`): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id, name, arguments: args }],
+		usage: createMockUsage(100, 50),
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+	};
+}
+
+function createToolResult(toolCallId: string, text: string): AgentMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	} as AgentMessage;
+}
+
 let entryCounter = 0;
 let lastId: string | null = null;
 
@@ -92,7 +119,7 @@ function createMessageEntry(message: AgentMessage): SessionMessageEntry {
 	return entry;
 }
 
-function createCompactionEntry(summary: string, firstKeptEntryId: string): CompactionEntry {
+function createCompactionEntry(summary: string, firstKeptEntryId: string, details?: unknown): CompactionEntry {
 	const id = `test-id-${entryCounter++}`;
 	const entry: CompactionEntry = {
 		type: "compaction",
@@ -102,6 +129,7 @@ function createCompactionEntry(summary: string, firstKeptEntryId: string): Compa
 		summary,
 		firstKeptEntryId,
 		tokensBefore: 10000,
+		details,
 	};
 	lastId = id;
 	return entry;
@@ -216,6 +244,36 @@ describe("Token calculation", () => {
 
 		const estimate = estimateContextTokens(messages);
 		expect(estimate.tokens).toBeLessThan(1600);
+	});
+
+	it("attributes estimated context tokens by source", () => {
+		const attribution = estimateContextTokenAttribution({
+			systemPrompt: "system instructions",
+			tools: [
+				{
+					name: "read",
+					label: "Read",
+					description: "Read a file",
+					parameters: { type: "object", properties: { path: { type: "string" } } },
+					execute: async () => ({ content: [], details: {} }),
+				},
+			],
+			messages: [
+				createUserMessage("Fix the bug"),
+				createAssistantMessage("I will inspect it"),
+				createToolResult("read-1", "file output"),
+				{ role: "compactionSummary", summary: "Previous summary", tokensBefore: 100, timestamp: Date.now() },
+			],
+			totalTokens: 1000,
+		});
+
+		expect(attribution.systemPrompt).toBeGreaterThan(0);
+		expect(attribution.toolSchemas).toBeGreaterThan(0);
+		expect(attribution.retainedTranscript).toBeGreaterThan(0);
+		expect(attribution.toolOutputs).toBeGreaterThan(0);
+		expect(attribution.summaries).toBeGreaterThan(0);
+		expect(attribution.estimatedTotal).toBeGreaterThan(0);
+		expect(attribution.overhead).toBe(1000 - attribution.estimatedTotal);
 	});
 });
 
@@ -489,6 +547,111 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
 		expect(summarizedText).not.toContain("First summary");
 		expect(preparation!.previousSummary).toBe("First summary");
+	});
+});
+
+describe("working memory ledger", () => {
+	it("extracts goals, constraints, files, failed attempts, and verification state", () => {
+		const memory = extractWorkingMemory({
+			messages: [
+				createUserMessage("Fix the parser. Do not touch generated files. Verify with npm test."),
+				createAssistantToolCall("read", { path: "src/parser.ts" }, "read-1"),
+				createAssistantToolCall("edit", { path: "src/parser.ts", old: "bad", new: "good" }, "edit-1"),
+				createAssistantToolCall("bash", { command: "npm test" }, "bash-1"),
+				createToolResult("bash-1", "Error: expected true to equal false\nexit code 1"),
+				createAssistantMessage("Next step: update the parser guard and rerun verification."),
+			],
+		});
+
+		expect(memory.goals).toContain("Fix the parser. Do not touch generated files. Verify with npm test.");
+		expect(memory.constraints).toEqual(["Do not touch generated files.", "Verify with npm test."]);
+		expect(memory.readFiles).toContain("src/parser.ts");
+		expect(memory.modifiedFiles).toContain("src/parser.ts");
+		expect(memory.commandsRun).toContain("npm test");
+		expect(memory.failedAttempts[0]).toContain("npm test: Error: expected true to equal false");
+		expect(memory.verification).toEqual([
+			expect.objectContaining({
+				command: "npm test",
+				status: "failed",
+			}),
+		]);
+		expect(memory.nextSteps).toContain("Next step: update the parser guard and rerun verification.");
+	});
+
+	it("carries previous working memory through repeated compactions", () => {
+		const previousMemory: WorkingMemoryLedger = {
+			goals: ["Fix auth retry behavior"],
+			constraints: ["Only edit src/auth.ts"],
+			readFiles: ["tests/auth.test.ts"],
+			modifiedFiles: [],
+			commandsRun: ["npm test"],
+			failedAttempts: ["npm test: retry assertion failed"],
+			verification: [{ command: "npm test", status: "failed", detail: "retry assertion failed" }],
+			nextSteps: ["Patch src/auth.ts"],
+			openQuestions: [],
+		};
+		const u1 = createMessageEntry(createUserMessage("old"));
+		const a1 = createMessageEntry(createAssistantMessage("old answer"));
+		const compact1 = createCompactionEntry("First summary", u1.id, {
+			readFiles: ["tests/auth.test.ts"],
+			modifiedFiles: [],
+			workingMemory: previousMemory,
+		});
+		const u2 = createMessageEntry(createUserMessage("Continue. Verify with npm test."));
+		const a2 = createMessageEntry(createAssistantToolCall("edit", { path: "src/auth.ts" }, "edit-2"));
+		const u3 = createMessageEntry(createUserMessage("recent prompt"));
+		const a3 = createMessageEntry(createAssistantMessage("recent answer", createMockUsage(8000, 2000)));
+
+		const preparation = prepareCompaction([u1, a1, compact1, u2, a2, u3, a3], {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+		});
+
+		expect(preparation).toBeDefined();
+		expect(preparation!.workingMemory.goals).toContain("Fix auth retry behavior");
+		expect(preparation!.workingMemory.constraints).toContain("Only edit src/auth.ts");
+		expect(preparation!.workingMemory.modifiedFiles).toContain("src/auth.ts");
+		expect(preparation!.workingMemory.failedAttempts).toContain("npm test: retry assertion failed");
+	});
+
+	it("formats working memory as an inspectable summary artifact", () => {
+		const text = formatWorkingMemoryForSummary({
+			goals: ["Fix auth retry behavior"],
+			constraints: ["Only edit src/auth.ts"],
+			readFiles: ["tests/auth.test.ts"],
+			modifiedFiles: ["src/auth.ts"],
+			commandsRun: ["npm test"],
+			failedAttempts: ["npm test: retry assertion failed"],
+			verification: [{ command: "npm test", status: "failed", detail: "retry assertion failed" }],
+			nextSteps: ["Patch src/auth.ts"],
+			openQuestions: ["Is retry count off by one?"],
+		});
+
+		expect(text).toContain("<working-memory>");
+		expect(text).toContain("constraints:");
+		expect(text).toContain("- Only edit src/auth.ts");
+		expect(text).toContain("verification:");
+		expect(text).toContain("- failed: npm test");
+		expect(text).toContain("</working-memory>");
+	});
+
+	it("formats working memory as primary compacted state", () => {
+		const text = formatWorkingMemoryPrimaryState({
+			goals: ["Fix auth retry behavior"],
+			constraints: ["Only edit src/auth.ts"],
+			readFiles: ["tests/auth.test.ts"],
+			modifiedFiles: ["src/auth.ts"],
+			commandsRun: ["npm test"],
+			failedAttempts: [],
+			verification: [{ command: "npm test", status: "passed" }],
+			nextSteps: ["Report the result"],
+			openQuestions: [],
+		});
+
+		expect(text).toMatch(/^## Deterministic Working Memory/);
+		expect(text).toContain("<working-memory>");
+		expect(text).toContain("goals:");
+		expect(text).toContain("Treat this ledger as the primary compacted state");
 	});
 });
 

@@ -1,13 +1,14 @@
-import type { AgentTool } from "@ag1/agent-core";
-import type { ModelRegistry } from "./model-registry.js";
-import type { ResourceLoader } from "./resource-loader.js";
-import type { SessionManager } from "./session-manager.js";
-import type { SettingsManager } from "./settings-manager.js";
-import { createAllToolDefinitions } from "./tools/index.js";
-import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
+import type { AgentTool, ThinkingLevel } from "@ag1/agent-core";
+import { type Model, resetApiProviders } from "@ag1/ai";
 import type { ExtensionRunner, ToolDefinition } from "./extensions/index.js";
 import { ExtensionRunner as ExtensionRunnerImpl } from "./extensions/index.js";
-import { resetApiProviders, type Model } from "@ag1/ai";
+import type { ModelRegistry } from "./model-registry.js";
+import type { ResourceLoader } from "./resource-loader.js";
+import type { ToolSafetyPolicy } from "./safety-policy.js";
+import type { SessionManager } from "./session-manager.js";
+import type { SettingsManager } from "./settings-manager.js";
+import { createAllToolDefinitions, isTaskToolDisabled, TASK_SESSION_ENTRY_TYPE } from "./tools/index.js";
+import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
 export interface AgentSessionRuntimeBootstrapCoordinatorOptions {
 	getCwd: () => string;
@@ -26,6 +27,12 @@ export interface AgentSessionRuntimeBootstrapCoordinatorOptions {
 	setExtensionRunner: (runner: ExtensionRunner | undefined) => void;
 	getCurrentModel: () => Model<any> | undefined;
 	setCurrentModel: (model: Model<any>) => void;
+	/** Active tool safety policy — inherited by subagents below the task boundary. */
+	getToolSafety?: () => ToolSafetyPolicy | undefined;
+	/** Parent thinking level — inherited by subagents on reasoning models. */
+	getThinkingLevel?: () => ThinkingLevel;
+	/** Bubble synthesized subagent evidence into the session's tool-outcome stream. */
+	recordToolOutcome?: (outcome: { tool: string; success: boolean; detail?: string }) => void;
 }
 
 export class AgentSessionRuntimeBootstrapCoordinator {
@@ -53,6 +60,21 @@ export class AgentSessionRuntimeBootstrapCoordinator {
 		const settingsManager = this.options.getSettingsManager();
 		const cwd = this.options.getCwd();
 		const baseToolsOverride = this.options.getBaseToolsOverride();
+		const taskDeps = this.shouldEnableTaskTool()
+			? {
+					cwd,
+					modelRegistry: this.options.getModelRegistry(),
+					getParentModel: () => this.options.getCurrentModel(),
+					getParentThinkingLevel: () => this.options.getThinkingLevel?.(),
+					getSafetyPolicy: () => this.options.getToolSafety?.(),
+					getBashCommandPrefix: () => settingsManager.getShellCommandPrefix(),
+					recordTaskEntry: (data: Record<string, unknown>) => {
+						this.options.getSessionManager().appendCustomEntry(TASK_SESSION_ENTRY_TYPE, data);
+					},
+					recordToolOutcome: (outcome: { tool: string; success: boolean; detail?: string }) =>
+						this.options.recordToolOutcome?.(outcome),
+				}
+			: undefined;
 		const baseToolDefinitions = baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(baseToolsOverride).map(([name, tool]) => [name, createToolDefinitionFromAgentTool(tool)]),
@@ -60,6 +82,7 @@ export class AgentSessionRuntimeBootstrapCoordinator {
 			: createAllToolDefinitions(cwd, {
 					read: { autoResizeImages: settingsManager.getImageAutoResize() },
 					bash: { commandPrefix: settingsManager.getShellCommandPrefix() },
+					...(taskDeps ? { task: taskDeps } : {}),
 				});
 
 		this.options.setBaseToolDefinitions(
@@ -100,12 +123,30 @@ export class AgentSessionRuntimeBootstrapCoordinator {
 
 		const defaultActiveToolNames = baseToolsOverride
 			? Object.keys(baseToolsOverride)
-			: ["read", "grep", "find", "ls", "bash", "edit", "write", "webSearch", "webFetch"];
+			: ["read", "grep", "find", "ls", "bash", "edit", "write", "webSearch", "webFetch", "todo"];
+		if (!baseToolsOverride && "task" in baseToolDefinitions && !isTaskToolDisabled()) {
+			defaultActiveToolNames.push("task");
+		}
 		const activeToolNames = buildOptions.activeToolNames ?? defaultActiveToolNames;
 		this.options.refreshToolRegistry({
 			activeToolNames,
 			includeAllExtensionTools: buildOptions.includeAllExtensionTools,
 		});
+	}
+
+	/**
+	 * Task-tool surface. The `task` (subagent) tool is on by default for every
+	 * model: capability gating by model profile was removed — subagent quality
+	 * is the model's problem, not a reason to hide delegation. Explicit kill
+	 * switches remain: AG1_TASK_TOOL=1 forces on, =0 forces off
+	 * (AG1_DISABLE_TASK_TOOL=1 also forces off).
+	 */
+	private shouldEnableTaskTool(): boolean {
+		const forced = process.env.AG1_TASK_TOOL;
+		if (forced === "1" || forced?.toLowerCase() === "true") return true;
+		if (forced === "0" || forced?.toLowerCase() === "false") return false;
+		if (isTaskToolDisabled()) return false;
+		return true;
 	}
 
 	async reload(): Promise<{ hadBindings: boolean; extensionRunner: ExtensionRunner | undefined }> {

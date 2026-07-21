@@ -1,8 +1,8 @@
 import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@ag1/tui";
 import type { BranchSummaryMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
-import { keyText } from "./keybinding-hints.js";
 import { buildConsoleBadge, buildConsoleHeader } from "./console-chrome.js";
+import { keyText } from "./keybinding-hints.js";
 
 /**
  * Component that renders a branch summary message with collapsed/expanded state.

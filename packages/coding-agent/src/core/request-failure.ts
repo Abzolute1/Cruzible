@@ -20,7 +20,8 @@ export function classifyRequestFailure(message: {
 		return {
 			kind: "backend_unavailable",
 			message: `Local model backend unavailable for ${modelLabel}: ${errorMessage}`,
-			recoveryHint: "Start LM Studio (or the configured local backend), verify LM_STUDIO_URL, or switch models with Ctrl+L.",
+			recoveryHint:
+				"Start LM Studio (or the configured local backend), verify LM_STUDIO_URL, or switch models with Ctrl+L.",
 		};
 	}
 	if (!isConfigurationFailure(errorMessage)) return undefined;

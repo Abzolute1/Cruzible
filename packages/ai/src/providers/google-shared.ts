@@ -282,12 +282,15 @@ export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 /**
  * Map Gemini FinishReason to our StopReason.
  */
-export function mapStopReason(reason: FinishReason): StopReason {
+export function mapStopReason(reason: FinishReason): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
 	switch (reason) {
 		case FinishReason.STOP:
-			return "stop";
+			return { stopReason: "stop" };
 		case FinishReason.MAX_TOKENS:
-			return "length";
+			return { stopReason: "length" };
 		case FinishReason.BLOCKLIST:
 		case FinishReason.PROHIBITED_CONTENT:
 		case FinishReason.SPII:
@@ -303,7 +306,7 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.MALFORMED_FUNCTION_CALL:
 		case FinishReason.UNEXPECTED_TOOL_CALL:
 		case FinishReason.NO_IMAGE:
-			return "error";
+			return { stopReason: "error", errorMessage: `Provider finish_reason: ${reason}` };
 		default: {
 			const _exhaustive: never = reason;
 			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
@@ -314,13 +317,16 @@ export function mapStopReason(reason: FinishReason): StopReason {
 /**
  * Map string finish reason to our StopReason (for raw API responses).
  */
-export function mapStopReasonString(reason: string): StopReason {
+export function mapStopReasonString(reason: string): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
 	switch (reason) {
 		case "STOP":
-			return "stop";
+			return { stopReason: "stop" };
 		case "MAX_TOKENS":
-			return "length";
+			return { stopReason: "length" };
 		default:
-			return "error";
+			return { stopReason: "error", errorMessage: `Provider finish_reason: ${reason}` };
 	}
 }

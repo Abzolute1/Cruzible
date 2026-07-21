@@ -2,15 +2,24 @@ import type { Agent } from "@ag1/agent-core";
 import type { AssistantMessage } from "@ag1/ai";
 import { isContextOverflow } from "@ag1/ai";
 import { sleep } from "../utils/sleep.js";
-import { canReplayContinue } from "./agent-session-continue-replay.js";
 import type { AgentSessionEvent } from "./agent-session.js";
+import { canReplayContinue } from "./agent-session-continue-replay.js";
 import type { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
 import { AgentSessionRecoveryReplayScheduler } from "./agent-session-recovery-replay-scheduler.js";
 import { classifyRequestFailure } from "./request-failure.js";
+import { findMessageEntryOnBranch, type SessionManager, type SessionMessageEntry } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
+
+/**
+ * Fallback retry heuristic: string-matches provider error prose when no
+ * structured marker is present (see isRetryableErrorMessage).
+ */
+const RETRYABLE_ERROR_TEXT =
+	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i;
 
 export interface AgentSessionRetryCoordinatorOptions {
 	agent: Agent;
+	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	getContextWindow: () => number | undefined;
 	emit: (event: AgentSessionEvent) => void;
@@ -85,9 +94,32 @@ export class AgentSessionRetryCoordinator {
 		if (classifyRequestFailure(message)) return false;
 		const contextWindow = this.options.getContextWindow() ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i.test(
-			message.errorMessage,
-		);
+		return this.isRetryableErrorMessage(message.errorMessage);
+	}
+
+	/**
+	 * Retry classification. Structured markers the ai package normalizes into
+	 * errorMessage are checked first (post-wave-2 providers emit these):
+	 * - "Provider stop_reason: X" / "Provider finish_reason: X" — terminal
+	 *   (refusal/sensitive/content_filter), except explicit transport reasons.
+	 * - "Provider response status: X" — terminal response state (failed/cancelled).
+	 * - "<Provider> API error (NNN)" — HTTP status: retry 429 and 5xx only.
+	 * The free-text regex stays as a fallback for providers that only return prose.
+	 */
+	private isRetryableErrorMessage(errorMessage: string): boolean {
+		const providerReason = errorMessage.match(/Provider (?:stop_reason|finish_reason):\s*([\w-]+)/i);
+		if (providerReason) {
+			return providerReason[1].toLowerCase() === "network_error";
+		}
+		if (/Provider response status:/i.test(errorMessage)) {
+			return false;
+		}
+		const apiStatus = errorMessage.match(/API error \((\d{3})\)/i);
+		if (apiStatus) {
+			const status = Number(apiStatus[1]);
+			return status === 429 || status >= 500;
+		}
+		return RETRYABLE_ERROR_TEXT.test(errorMessage);
 	}
 
 	async handleRetryableError(message: AssistantMessage): Promise<boolean> {
@@ -148,8 +180,25 @@ export class AgentSessionRetryCoordinator {
 			messages.length > 0 && messages[messages.length - 1].role === "assistant"
 				? (messages[messages.length - 1] as AssistantMessage)
 				: undefined;
+		let removedEntry: SessionMessageEntry | undefined;
 		if (removedAssistant) {
-			this.options.agent.state.messages = messages.slice(0, -1);
+			// The failed assistant message was already persisted at message_end, so
+			// dropping it only from live state makes it reappear on resume/fork.
+			// Instead move the session leaf to the failed entry's parent — the retry
+			// then continues on a branch that excludes the failure — and rebuild live
+			// state from the session file (the source of truth). The failed entry
+			// stays in the file as an abandoned branch.
+			removedEntry = findMessageEntryOnBranch(this.options.sessionManager, removedAssistant);
+			if (removedEntry) {
+				if (removedEntry.parentId) {
+					this.options.sessionManager.branch(removedEntry.parentId);
+				} else {
+					this.options.sessionManager.resetLeaf();
+				}
+				this.options.agent.state.messages = this.options.sessionManager.buildSessionContext().messages;
+			} else {
+				this.options.agent.state.messages = messages.slice(0, -1);
+			}
 		}
 
 		return this.replayScheduler.schedule({
@@ -173,7 +222,13 @@ export class AgentSessionRetryCoordinator {
 			},
 			onRunError: (error, snapshot) => {
 				if (removedAssistant && canReplayContinue(this.getReplayState(), snapshot)) {
-					this.options.agent.state.messages = [...this.options.agent.state.messages, removedAssistant];
+					if (removedEntry) {
+						// Roll back: restore the failed entry as the branch tip again.
+						this.options.sessionManager.branch(removedEntry.id);
+						this.options.agent.state.messages = this.options.sessionManager.buildSessionContext().messages;
+					} else {
+						this.options.agent.state.messages = [...this.options.agent.state.messages, removedAssistant];
+					}
 				}
 				const attempt = this.retryAttempt;
 				this.retryAttempt = 0;

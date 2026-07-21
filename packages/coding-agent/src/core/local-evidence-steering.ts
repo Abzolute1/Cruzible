@@ -1,5 +1,4 @@
 import { buildToolOutcomeFingerprint, normalizeToolName, type ToolOutcome } from "./auton/nudges/types.js";
-import { looksLikeGuidanceTrapPath } from "./tools/guidance-trap-paths.js";
 
 export interface LocalEvidenceSteeringContext {
 	toolCallHistory: ToolOutcome[];
@@ -24,10 +23,18 @@ function isDiscoveryTool(tool: string): boolean {
 function classifyBashDetail(detail: string | undefined): "inspection" | "mutating" | "other" {
 	if (!detail) return "other";
 	const normalized = detail.replace(/\s+/g, " ").trim();
-	if (/(^|[;&|]\s*)(pwd\b|ls\b|find\b|fd\b|rg\b|grep\b|git\s+status(\s|$)|git\s+diff(\s|$)|which\b|cat\b|head\b|tail\b|sed\b|awk\b)/.test(normalized)) {
+	if (
+		/(^|[;&|]\s*)(pwd\b|ls\b|find\b|fd\b|rg\b|grep\b|git\s+status(\s|$)|git\s+diff(\s|$)|which\b|cat\b|head\b|tail\b|sed\b|awk\b)/.test(
+			normalized,
+		)
+	) {
 		return "inspection";
 	}
-	if (/(^|[;&|]\s*)(rm\b|mv\b|cp\b|touch\b|mkdir\b|npm\s+(install|run|test|exec)\b|pnpm\b|yarn\b|cargo\b|make\b|pytest\b|vitest\b|node\b|python\b|chmod\b|chown\b|git\s+(apply|checkout|reset|commit|rebase|merge)\b)/.test(normalized)) {
+	if (
+		/(^|[;&|]\s*)(rm\b|mv\b|cp\b|touch\b|mkdir\b|npm\s+(install|run|test|exec)\b|pnpm\b|yarn\b|cargo\b|make\b|pytest\b|vitest\b|node\b|python\b|chmod\b|chown\b|git\s+(apply|checkout|reset|commit|rebase|merge)\b)/.test(
+			normalized,
+		)
+	) {
 		return "mutating";
 	}
 	return "other";
@@ -38,33 +45,51 @@ function quotePath(filePath: string): string {
 }
 
 function looksLikeDirectoryInventoryPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(which directory|directory holds|directory contains|list just those filenames|what files are in it)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(which directory|directory holds|directory contains|list just those filenames|what files are in it)\b/i.test(
+			text,
+		)
+	);
 }
 
 function looksLikeComparativePrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(differs? from|difference between|how .* differs?|compare .* and|compare .* with)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(differs? from|difference between|how .* differs?|compare .* and|compare .* with)\b/i.test(text)
+	);
 }
 
 function looksLikePathAnswerPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(which file|which source file|which directory|where is|where's|contains the .*scripts?|defines the .*script|implements the .*command|which file defines|where .* is computed)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(which file|which source file|which directory|where is|where's|contains the .*scripts?|defines the .*script|implements the .*command|which file defines|where .* is computed)\b/i.test(
+			text,
+		)
+	);
 }
 
 function looksLikeBehaviorExplanationPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(summar(?:ize|ise)|explain|why it exists|purpose|what it does|how it works|what .* computes?|briefly explain)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(summar(?:ize|ise)|explain|why it exists|purpose|what it does|how it works|what .* computes?|briefly explain)\b/i.test(
+			text,
+		)
+	);
 }
 
-function looksLikeSelfContainedBenchmarkWorkspaceTask(text: string | undefined): boolean {
-	return typeof text === "string" && /\bself-contained benchmark workspace\b/i.test(text);
+function looksLikeSelfContainedWorkspaceTask(text: string | undefined): boolean {
+	return (
+		typeof text === "string" && /\bself-contained [a-z-]*\s*workspace\b|\bstay inside this workspace\b/i.test(text)
+	);
 }
 
 function looksLikeLocalImplementationTask(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(fix|debug|patch|migrate|update|refactor|repair)\b/i.test(text)
-		&& /\b(workspace|verification command|node --test|keep the patch minimal|stay inside this workspace)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(fix|debug|patch|migrate|update|refactor|repair)\b/i.test(text) &&
+		/\b(workspace|verification command|node --test|keep the patch minimal|stay inside this workspace)\b/i.test(text)
+	);
 }
 
 function mentionsMisleadingSiblingWarning(text: string | undefined): boolean {
@@ -72,78 +97,72 @@ function mentionsMisleadingSiblingWarning(text: string | undefined): boolean {
 }
 
 function looksLikeBriefExternalPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(one sentence|brief(?:ly)?|concise|headline structure|summar(?:ize|ise) briefly)\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(one sentence|brief(?:ly)?|concise|headline structure|summar(?:ize|ise) briefly)\b/i.test(text)
+	);
 }
 
 function looksLikeExpansionFollowUpPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(broaden|broader|whole picture|full picture|bigger picture|more detail|more details|more information|go deeper|dig deeper|expand|elaborate|full context|fuller context|in depth|comprehensive|unpack)\b/i.test(
+	return (
+		typeof text === "string" &&
+		/\b(broaden|broader|whole picture|full picture|bigger picture|more detail|more details|more information|go deeper|dig deeper|expand|elaborate|full context|fuller context|in depth|comprehensive|unpack)\b/i.test(
 			text,
-		);
+		)
+	);
 }
 
 function looksLikeStrongSourcePrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(strongest source|strongest sources|authoritative source|authoritative sources|confirm the leak vector|approximate date)\b/i.test(text);
-}
-
-function looksLikeMetricPrompt(text: string | undefined): boolean {
-	return typeof text === "string" && /\bscore per 1k tokens\b/i.test(text);
+	return (
+		typeof text === "string" &&
+		/\b(strongest source|strongest sources|authoritative source|authoritative sources|confirm the leak vector|approximate date)\b/i.test(
+			text,
+		)
+	);
 }
 
 function looksLikeCurrentEventsNormalizationPrompt(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\bcurrent-events\b/i.test(text)
-		&& /\bnormaliz(?:e|ation|ed|ing)\b/i.test(text);
+	return typeof text === "string" && /\bcurrent-events\b/i.test(text) && /\bnormaliz(?:e|ation|ed|ing)\b/i.test(text);
 }
 
 function looksLikeScriptOrCommandLookup(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\b(command|script|runner|archive|compare|benchmark archive|benchmark runner|benchmark compare)\b/i.test(text);
+	return typeof text === "string" && /\b(command|script|runner|archive|compare)\b/i.test(text);
 }
 
-function looksLikeBenchmarkHarnessScriptLookup(text: string | undefined): boolean {
-	return typeof text === "string"
-		&& /\bbenchmark\b/i.test(text)
-		&& /\b(archive|compare|run|runner)\b/i.test(text);
+function looksLikeRepoLevelScriptLookup(text: string | undefined): boolean {
+	return (
+		looksLikeScriptOrCommandLookup(text) &&
+		typeof text === "string" &&
+		/\b(repo|repository|project|root|which file|which directory|implements?|defines?|holds|contains)\b/i.test(text)
+	);
 }
 
 function looksLikeReferenceArtifact(filePath: string): boolean {
 	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-	return normalized.endsWith(".md")
-		|| normalized.includes("/test/")
-		|| normalized.includes("/tests/")
-		|| normalized.includes("/docs/")
-		|| normalized.includes("/examples/")
-		|| normalized.includes("/example/")
-		|| normalized.includes("/fixtures/")
-		|| normalized.includes("benchmark-scenarios.json")
-		|| normalized.includes("mission")
-		|| normalized.includes("audit")
-		|| normalized.includes("history/");
-}
-
-function looksLikeGuidancePlumbing(filePath: string): boolean {
-	return looksLikeGuidanceTrapPath(filePath) && !looksLikeReferenceArtifact(filePath);
-}
-
-function looksLikeMetricPromptTrap(filePath: string | undefined, userPrompt: string | undefined): boolean {
-	if (!filePath || !looksLikeMetricPrompt(userPrompt)) return false;
-	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-	return normalized.endsWith("/core/tools/grep.ts")
-		|| normalized.endsWith("/core/prompt-intent-steering.ts")
-		|| normalized.endsWith("/core/local-evidence-steering.ts");
+	return (
+		normalized.endsWith(".md") ||
+		normalized.includes("/test/") ||
+		normalized.includes("/tests/") ||
+		normalized.includes("/docs/") ||
+		normalized.includes("/examples/") ||
+		normalized.includes("/example/") ||
+		normalized.includes("/fixtures/") ||
+		normalized.includes("mission") ||
+		normalized.includes("audit") ||
+		normalized.includes("history/")
+	);
 }
 
 function looksLikeCurrentEventsPromptTrap(filePath: string | undefined, userPrompt: string | undefined): boolean {
 	if (!filePath || !looksLikeCurrentEventsNormalizationPrompt(userPrompt)) return false;
 	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-	return normalized.endsWith("/core/tools/grep.ts")
-		|| normalized.endsWith("/core/prompt-intent-steering.ts")
-		|| normalized.endsWith("/core/local-evidence-steering.ts")
-		|| normalized.includes("/test/")
-		|| normalized.includes("/tests/");
+	return (
+		normalized.endsWith("/core/tools/grep.ts") ||
+		normalized.endsWith("/core/prompt-intent-steering.ts") ||
+		normalized.endsWith("/core/local-evidence-steering.ts") ||
+		normalized.includes("/test/") ||
+		normalized.includes("/tests/")
+	);
 }
 
 function looksLikeImplementationPath(filePath: string | undefined): boolean {
@@ -222,7 +241,9 @@ function buildRepeatedStepAddendum(outcomes: ToolOutcome[]): string | undefined 
 
 	const last = recent[recent.length - 1];
 	const lastFingerprint = buildToolOutcomeFingerprint(last);
-	const sameFingerprintCount = recent.filter((outcome) => buildToolOutcomeFingerprint(outcome) === lastFingerprint).length;
+	const sameFingerprintCount = recent.filter(
+		(outcome) => buildToolOutcomeFingerprint(outcome) === lastFingerprint,
+	).length;
 	if (sameFingerprintCount < 2) return undefined;
 
 	const normalizedTool = normalizeToolName(last.tool);
@@ -245,7 +266,8 @@ function buildRepeatedStepAddendum(outcomes: ToolOutcome[]): string | undefined 
 
 function latestSuccessfulFile(outcomes: ToolOutcome[]): string | undefined {
 	const candidates = outcomes.filter(
-		(outcome): outcome is ToolOutcome & { file: string } => outcome.success && typeof outcome.file === "string" && outcome.file.length > 0,
+		(outcome): outcome is ToolOutcome & { file: string } =>
+			outcome.success && typeof outcome.file === "string" && outcome.file.length > 0,
 	);
 	const implementationFile = candidates
 		.slice()
@@ -273,9 +295,6 @@ interface GrepEvidenceMetadata {
 	uniqueFileCount?: number;
 	firstMatchPath?: string;
 	firstMatchLine?: number;
-	recoveryPattern?: string;
-	recoveryPath?: string;
-	recoveryRequired?: boolean;
 }
 
 interface FindEvidenceMetadata {
@@ -327,18 +346,16 @@ function getDecisiveGrepPath(outcome: ToolOutcome | undefined): string | undefin
 function hasDecisiveGrepEvidence(outcome: ToolOutcome | undefined): boolean {
 	const metadata = getGrepMetadata(outcome);
 	return Boolean(
-		outcome
-			&& normalizeToolName(outcome.tool) === "grep"
-			&& outcome.success
-			&& typeof outcome.file === "string"
-			&& outcome.file.length > 0
-			&& metadata?.matchCount
-			&& metadata.matchCount > 0
-			&& metadata.uniqueFileCount
-			&& metadata.uniqueFileCount >= 1
-			&& metadata.firstMatchPath
-			&& !metadata.recoveryRequired
-			&& !looksLikeGuidanceTrapPath(metadata.firstMatchPath),
+		outcome &&
+			normalizeToolName(outcome.tool) === "grep" &&
+			outcome.success &&
+			typeof outcome.file === "string" &&
+			outcome.file.length > 0 &&
+			metadata?.matchCount &&
+			metadata.matchCount > 0 &&
+			metadata.uniqueFileCount &&
+			metadata.uniqueFileCount >= 1 &&
+			metadata.firstMatchPath,
 	);
 }
 
@@ -381,12 +398,10 @@ function lsLooksLikeSmallFixtureWorkspace(outcome: ToolOutcome | undefined): boo
 }
 
 function hasRepeatedNoMatchFinds(outcomes: ToolOutcome[]): boolean {
-	const recentFinds = outcomes
-		.slice(-4)
-		.filter((outcome) => {
-			const normalized = normalizeToolName(outcome.tool);
-			return (normalized === "find" || normalized === "glob") && outcome.success;
-		});
+	const recentFinds = outcomes.slice(-4).filter((outcome) => {
+		const normalized = normalizeToolName(outcome.tool);
+		return (normalized === "find" || normalized === "glob") && outcome.success;
+	});
 	if (recentFinds.length < 2) return false;
 	return recentFinds.slice(-3).every((outcome) => !outcome.file);
 }
@@ -403,18 +418,22 @@ function hasRichWebEvidence(outcome: ToolOutcome): boolean {
 }
 
 function isRichDocsFetch(outcome: ToolOutcome): boolean {
-	return normalizeToolName(outcome.tool) === "webfetch"
-		&& outcome.success
-		&& outcome.metadata?.status === "rich"
-		&& outcome.metadata?.intent === "docs_reference";
+	return (
+		normalizeToolName(outcome.tool) === "webfetch" &&
+		outcome.success &&
+		outcome.metadata?.status === "rich" &&
+		outcome.metadata?.intent === "docs_reference"
+	);
 }
 
 function isRichAuthoritativeWebFetch(outcome: ToolOutcome): boolean {
-	return normalizeToolName(outcome.tool) === "webfetch"
-		&& outcome.success
-		&& outcome.metadata?.status === "rich"
-		&& outcome.metadata?.authoritative === true
-		&& (outcome.metadata?.intent === "docs_reference" || outcome.metadata?.intent === "current_events");
+	return (
+		normalizeToolName(outcome.tool) === "webfetch" &&
+		outcome.success &&
+		outcome.metadata?.status === "rich" &&
+		outcome.metadata?.authoritative === true &&
+		(outcome.metadata?.intent === "docs_reference" || outcome.metadata?.intent === "current_events")
+	);
 }
 
 function extractNamedDocsToken(userPrompt: string): string | undefined {
@@ -424,9 +443,14 @@ function extractNamedDocsToken(userPrompt: string): string | undefined {
 	return plainTokenMatch?.[1]?.trim().toLowerCase();
 }
 
-function topAuthoritativeSearchSnippetLooksSufficient(outcome: ToolOutcome | undefined, userPrompt: string | undefined): boolean {
+function topAuthoritativeSearchSnippetLooksSufficient(
+	outcome: ToolOutcome | undefined,
+	userPrompt: string | undefined,
+): boolean {
 	const metadata = getWebSearchMetadata(outcome);
-	const topResult = metadata?.results?.find((result) => result?.authoritative === true && typeof result.snippet === "string");
+	const topResult = metadata?.results?.find(
+		(result) => result?.authoritative === true && typeof result.snippet === "string",
+	);
 	if (!topResult?.snippet || !userPrompt) return false;
 	if (topResult.snippet.length < 90) return false;
 	const normalizedSnippet = topResult.snippet.toLowerCase();
@@ -436,7 +460,8 @@ function topAuthoritativeSearchSnippetLooksSufficient(outcome: ToolOutcome | und
 			return true;
 		}
 		return /\b(permalink|parameter|option)\b/i.test(userPrompt)
-			? /\bpermalink\b/.test(normalizedSnippet) && /\b(ensure|once|navigate|destination page|interactive|no effect)\b/.test(normalizedSnippet)
+			? /\bpermalink\b/.test(normalizedSnippet) &&
+					/\b(ensure|once|navigate|destination page|interactive|no effect)\b/.test(normalizedSnippet)
 			: true;
 	}
 	if (metadata?.intent === "current_events") {
@@ -454,11 +479,13 @@ function hasCompleteReadEvidence(outcome: ToolOutcome): boolean {
 }
 
 function hasSubstantialReadEvidence(outcome: ToolOutcome): boolean {
-	return normalizeToolName(outcome.tool) === "read"
-		&& outcome.success
-		&& looksLikeImplementationPath(outcome.file)
-		&& typeof outcome.file === "string"
-		&& (outcome.estimatedTokens ?? 0) >= 180;
+	return (
+		normalizeToolName(outcome.tool) === "read" &&
+		outcome.success &&
+		looksLikeImplementationPath(outcome.file) &&
+		typeof outcome.file === "string" &&
+		(outcome.estimatedTokens ?? 0) >= 180
+	);
 }
 
 function hasSubstantialListingEvidence(outcome: ToolOutcome): boolean {
@@ -481,10 +508,7 @@ function getConvergedReadFile(outcomes: ToolOutcome[]): string | undefined {
 function getRepeatedFingerprintCount(outcomes: ToolOutcome[]): number {
 	if (outcomes.length === 0) return 0;
 	const targetFingerprint = buildToolOutcomeFingerprint(outcomes[outcomes.length - 1]);
-	return outcomes
-		.slice(-4)
-		.filter((outcome) => buildToolOutcomeFingerprint(outcome) === targetFingerprint)
-		.length;
+	return outcomes.slice(-4).filter((outcome) => buildToolOutcomeFingerprint(outcome) === targetFingerprint).length;
 }
 
 function getComparativeReadHint(firstMatchLine: number | undefined): string {
@@ -499,13 +523,12 @@ function getComparativeReadHint(firstMatchLine: number | undefined): string {
 function hasSingleFileFindEvidence(outcome: ToolOutcome | undefined): boolean {
 	const metadata = getFindMetadata(outcome);
 	return Boolean(
-		outcome
-			&& outcome.success
-			&& (normalizeToolName(outcome.tool) === "find" || normalizeToolName(outcome.tool) === "glob")
-			&& typeof outcome.file === "string"
-			&& outcome.file.length > 0
-			&& metadata?.resultCount === 1
-			&& metadata.firstMatchPath,
+		outcome?.success &&
+			(normalizeToolName(outcome.tool) === "find" || normalizeToolName(outcome.tool) === "glob") &&
+			typeof outcome.file === "string" &&
+			outcome.file.length > 0 &&
+			metadata?.resultCount === 1 &&
+			metadata.firstMatchPath,
 	);
 }
 
@@ -573,10 +596,15 @@ function buildAnswerNowAddendum(context: LocalEvidenceSteeringContext): string |
 			grepMetadata?.matchCount === 1 &&
 			grepMetadata.uniqueFileCount === 1
 		) {
-			const lineHint = typeof grepMetadata.firstMatchLine === "number" ? ` at line ${grepMetadata.firstMatchLine}` : "";
+			const lineHint =
+				typeof grepMetadata.firstMatchLine === "number" ? ` at line ${grepMetadata.firstMatchLine}` : "";
 			return `Runtime steering: The last turn already found a single decisive grep match in ${quotePath(decisiveGrepPath)}${lineHint}. If the user asked which file/path defines or contains something, answer now with that location. Only read further if they asked for behavior or surrounding implementation details.`;
 		}
-		if ((normalized === "grep" || normalized === "find" || normalized === "glob") && decisiveGrepPath && !referenceArtifact) {
+		if (
+			(normalized === "grep" || normalized === "find" || normalized === "glob") &&
+			decisiveGrepPath &&
+			!referenceArtifact
+		) {
 			return `Runtime steering: You already have a decisive location in ${quotePath(decisiveGrepPath)}. Prefer reading that file or answering directly instead of performing more discovery.`;
 		}
 	}
@@ -588,9 +616,10 @@ function buildAnswerNowAddendum(context: LocalEvidenceSteeringContext): string |
 		!lsMetadata.entryLimitReached &&
 		!lsMetadata.truncation?.truncated
 	) {
-		const sample = Array.isArray(lsMetadata.entriesSample) && lsMetadata.entriesSample.length > 0
-			? ` Key entries: ${lsMetadata.entriesSample.map((entry) => quotePath(entry)).join(", ")}.`
-			: "";
+		const sample =
+			Array.isArray(lsMetadata.entriesSample) && lsMetadata.entriesSample.length > 0
+				? ` Key entries: ${lsMetadata.entriesSample.map((entry) => quotePath(entry)).join(", ")}.`
+				: "";
 		return `Runtime steering: The last turn already listed ${quotePath(lsMetadata.directoryPath)} completely. Answer now from that directory listing instead of calling more discovery tools.${sample}`;
 	}
 
@@ -602,6 +631,16 @@ function buildAnswerNowAddendum(context: LocalEvidenceSteeringContext): string |
 	}
 
 	return undefined;
+}
+
+/**
+ * Global kill switch for text-heuristic prompt steering (intent addenda, local-evidence
+ * addenda, runtime continuation/control messages). Set AG1_PROMPT_STEERING=0 to disable.
+ * Default ON until eval A/B data shows whether the steering earns its tokens — flip the
+ * default only based on measured pass-rate/cost-per-solved, never on intuition.
+ */
+export function isPromptSteeringEnabled(): boolean {
+	return process.env.AG1_PROMPT_STEERING !== "0";
 }
 
 export function buildLocalEvidenceControl(context: LocalEvidenceSteeringContext): LocalEvidenceControl | undefined {
@@ -628,7 +667,8 @@ export function buildLocalEvidenceControl(context: LocalEvidenceSteeringContext)
 		.map((outcome) => outcome.file)
 		.filter((file): file is string => typeof file === "string" && file.length > 0);
 	const convergedDiscoveryFile =
-		recentDiscoverySameFile.length >= 2 && recentDiscoverySameFile.every((file) => file === recentDiscoverySameFile[0])
+		recentDiscoverySameFile.length >= 2 &&
+		recentDiscoverySameFile.every((file) => file === recentDiscoverySameFile[0])
 			? recentDiscoverySameFile[0]
 			: undefined;
 
@@ -666,17 +706,22 @@ export function buildLocalEvidenceControl(context: LocalEvidenceSteeringContext)
 		};
 	}
 
-	if (topAuthoritativeSearchSnippetLooksSufficient(lastTool, context.userPrompt) && lastTool.metadata?.intent === "docs_reference") {
+	if (
+		topAuthoritativeSearchSnippetLooksSufficient(lastTool, context.userPrompt) &&
+		lastTool.metadata?.intent === "docs_reference"
+	) {
 		return {
 			mode: "answer_now",
-			message: "Runtime control: The authoritative docs search snippet already contains the requested fact. Answer now from that evidence instead of running webSearch or webFetch again.",
+			message:
+				"Runtime control: The authoritative docs search snippet already contains the requested fact. Answer now from that evidence instead of running webSearch or webFetch again.",
 		};
 	}
 
 	if (briefExternalPrompt && topAuthoritativeSearchSnippetLooksSufficient(lastTool, context.userPrompt)) {
 		return {
 			mode: "answer_now",
-			message: "Runtime control: The authoritative web search snippet already contains the requested fact. Answer now from that evidence instead of running another webSearch or webFetch.",
+			message:
+				"Runtime control: The authoritative web search snippet already contains the requested fact. Answer now from that evidence instead of running another webSearch or webFetch.",
 		};
 	}
 
@@ -728,8 +773,7 @@ export function buildLocalEvidenceControl(context: LocalEvidenceSteeringContext)
 		decisiveGrepPath &&
 		hasDecisiveGrepEvidence(lastTool) &&
 		!looksLikeReferenceArtifact(decisiveGrepPath) &&
-		!looksLikeMetricPromptTrap(decisiveGrepPath, context.userPrompt)
-		&& !looksLikeCurrentEventsPromptTrap(decisiveGrepPath, context.userPrompt)
+		!looksLikeCurrentEventsPromptTrap(decisiveGrepPath, context.userPrompt)
 	) {
 		const grepMetadata = getGrepMetadata(lastTool);
 		const lineHint = typeof grepMetadata?.firstMatchLine === "number" ? ` offset=${grepMetadata.firstMatchLine}` : "";
@@ -760,7 +804,12 @@ export function buildLocalEvidenceControl(context: LocalEvidenceSteeringContext)
 		};
 	}
 
-	if (lastTool.file && hasSubstantialReadEvidence(lastTool) && previousTool?.file === lastTool.file && hasDecisiveGrepEvidence(previousTool)) {
+	if (
+		lastTool.file &&
+		hasSubstantialReadEvidence(lastTool) &&
+		previousTool?.file === lastTool.file &&
+		hasDecisiveGrepEvidence(previousTool)
+	) {
 		const progress = getReadProgress(lastTool);
 		if (comparativePrompt) {
 			return {
@@ -872,7 +921,8 @@ function buildReadProgressAddendum(context: LocalEvidenceSteeringContext): strin
 	}
 
 	if (progress.completion === "partial" && typeof progress.nextOffset === "number") {
-		const repeatedSameFile = recentReads.length >= 2 && recentReads.every((outcome) => outcome.file === lastRead.file);
+		const repeatedSameFile =
+			recentReads.length >= 2 && recentReads.every((outcome) => outcome.file === lastRead.file);
 		if (repeatedSameFile) {
 			return `Runtime steering: Recent reads already advanced through ${quotePath(lastRead.file)}. If more content is required, continue with \`offset=${progress.nextOffset}\`; otherwise answer from the ranges you already have instead of rereading earlier lines.`;
 		}
@@ -984,14 +1034,15 @@ export function buildRuntimeContinuationMessage(context: LocalEvidenceSteeringCo
 export function buildLocalEvidencePromptAddendum(context: LocalEvidenceSteeringContext): string | undefined {
 	const recentTools = recentSuccessful(context.toolCallHistory);
 	const recentFiles = recentSuccessful(context.fileAccessHistory).filter(
-		(outcome): outcome is ToolOutcome & { file: string } => typeof outcome.file === "string" && outcome.file.length > 0,
+		(outcome): outcome is ToolOutcome & { file: string } =>
+			typeof outcome.file === "string" && outcome.file.length > 0,
 	);
 	if (recentTools.length === 0) return undefined;
 	const directoryPrompt = looksLikeDirectoryInventoryPrompt(context.userPrompt);
 	const scriptLookupPrompt = looksLikeScriptOrCommandLookup(context.userPrompt);
-	const benchmarkHarnessLookup = looksLikeBenchmarkHarnessScriptLookup(context.userPrompt);
-	const benchmarkWorkspaceTask = looksLikeSelfContainedBenchmarkWorkspaceTask(context.userPrompt)
-		&& looksLikeLocalImplementationTask(context.userPrompt);
+	const repoLevelScriptLookup = looksLikeRepoLevelScriptLookup(context.userPrompt);
+	const selfContainedWorkspaceTask =
+		looksLikeSelfContainedWorkspaceTask(context.userPrompt) && looksLikeLocalImplementationTask(context.userPrompt);
 	const misleadingSiblingTask = mentionsMisleadingSiblingWarning(context.userPrompt);
 	const addenda: Array<{ priority: number; message: string }> = [];
 	const pushAddendum = (priority: number, message: string | undefined) => {
@@ -1009,16 +1060,16 @@ export function buildLocalEvidencePromptAddendum(context: LocalEvidenceSteeringC
 			"Runtime steering: Recent find attempts did not produce a decisive file. Stop chaining broader wildcard find patterns. For sibling script/file directory questions, inspect the likely shared parent directory next, usually repo-root `scripts/`, or do one repo-root listing to confirm it before searching again.",
 		);
 	}
-	if (scriptLookupPrompt && benchmarkHarnessLookup && hasRepeatedNoMatchFinds(recentTools)) {
+	if (scriptLookupPrompt && repoLevelScriptLookup && hasRepeatedNoMatchFinds(recentTools)) {
 		pushAddendum(
 			98,
-			"Runtime steering: Recent script-lookup find attempts did not produce a decisive file. For benchmark harness commands in this repo, pivot to repo-root `scripts/` now. Do one targeted `find`/`read` under `scripts/harness-benchmark-*` or inspect `scripts/` directly before any more package-local grep/find/ls.",
+			"Runtime steering: Recent script-lookup find attempts did not produce a decisive file. For repo-level commands, pivot to repo-root `scripts/` now. Do one targeted `find`/`read` under `scripts/` or inspect that directory directly before any more package-local grep/find/ls.",
 		);
 	}
-	if (scriptLookupPrompt && benchmarkHarnessLookup && recentTools.slice(-3).some(isPackageLocalCodingAgentDetail)) {
+	if (scriptLookupPrompt && repoLevelScriptLookup && recentTools.slice(-3).some(isPackageLocalCodingAgentDetail)) {
 		pushAddendum(
 			97,
-			"Runtime steering: This command/script lookup is drifting inside `packages/coding-agent`, but the benchmark harness command scripts for this repo live under repo-root `scripts/`. Pivot back to repo-root `scripts/` before continuing local discovery.",
+			"Runtime steering: This command/script lookup is drifting inside `packages/coding-agent`, but repo-level command scripts commonly live under repo-root `scripts/`. Pivot back to repo-root `scripts/` before continuing local discovery.",
 		);
 	}
 
@@ -1047,23 +1098,10 @@ export function buildLocalEvidencePromptAddendum(context: LocalEvidenceSteeringC
 		const normalizedTool = normalizeToolName(lastFile.tool);
 		if (normalizedTool === "grep") {
 			const referenceArtifact = looksLikeReferenceArtifact(lastFile.file);
-			const guidancePlumbing = looksLikeGuidancePlumbing(lastFile.file);
 			if (referenceArtifact) {
 				pushAddendum(
 					85,
 					`Runtime steering: The last grep hit ${quotePath(lastFile.file)} looks like a test, scenario, or note that only references the target name. Do not treat it as the defining implementation. Prefer the real implementation under scripts/, src/, packages/*/src, lib/, or app/. If the user asked which file defines a script or tool, switch to find on likely filenames under repo-root script directories before grepping deeper in tests.`,
-				);
-			}
-			if (guidancePlumbing) {
-				pushAddendum(
-					85,
-					`Runtime steering: The last grep hit ${quotePath(lastFile.file)} looks like transcript or prompt guidance, not the primary implementation. Prefer nearby implementation modules in the same tool area, especially search/intent logic files such as \`research-intent.ts\` or \`websearch.ts\`, before treating this guidance file as the answer.`,
-				);
-			}
-			if (looksLikeMetricPromptTrap(lastFile.file, context.userPrompt)) {
-				pushAddendum(
-					96,
-					`Runtime steering: The last grep hit ${quotePath(lastFile.file)} only references the phrase ${quotePath("score per 1k tokens")} as search guidance, not the metric implementation. Do not answer from this file. Retry one focused grep for likely identifiers such as \`scorePer1kTokens\` or \`score_per_1k_tokens\` in implementation/reporting code before exploring further.`,
 				);
 			}
 			if (looksLikeCurrentEventsPromptTrap(lastFile.file, context.userPrompt)) {
@@ -1090,16 +1128,16 @@ export function buildLocalEvidencePromptAddendum(context: LocalEvidenceSteeringC
 				75,
 				`Runtime steering: The last turn already inspected ${quotePath(lastFile.file)}. Reuse that listing and switch to read, find, or grep for specifics instead of repeating ls.`,
 			);
-			if (benchmarkWorkspaceTask && lsLooksLikeSmallFixtureWorkspace(lastFile)) {
+			if (selfContainedWorkspaceTask && lsLooksLikeSmallFixtureWorkspace(lastFile)) {
 				pushAddendum(
 					96,
-					"Runtime steering: This small benchmark workspace is already scoped by the top-level listing. Stop shell-style file hunting. Read the likely implementation, importing caller, failing test, or named reference file next, then make the patch.",
+					"Runtime steering: This small self-contained workspace is already scoped by the top-level listing. Stop shell-style file hunting. Read the likely implementation, importing caller, failing test, or named reference file next, then make the patch.",
 				);
 			}
-			if (benchmarkHarnessLookup && lastFile.file.startsWith("packages/coding-agent")) {
+			if (repoLevelScriptLookup && lastFile.file.startsWith("packages/coding-agent")) {
 				pushAddendum(
 					95,
-					"Runtime steering: This package-local listing is not the primary search root for benchmark harness command scripts. Pivot to repo-root `scripts/` now instead of continuing inside `packages/coding-agent`.",
+					"Runtime steering: This package-local listing is probably not the primary search root for repo-level command scripts. Pivot to repo-root `scripts/` now instead of continuing inside `packages/coding-agent`.",
 				);
 			}
 			if (looksLikeScriptOrCommandLookup(context.userPrompt) && lsShowsScriptsChild(lastFile)) {
@@ -1115,7 +1153,7 @@ export function buildLocalEvidencePromptAddendum(context: LocalEvidenceSteeringC
 				`Runtime steering: The last read focused on ${quotePath(lastFile.file)}, which looks like docs, examples, or another reference artifact. Do not treat it as the defining implementation for a local code lookup. Switch back to source-oriented grep/find under scripts/, src/, packages/*/src, lib/, or app/.`,
 			);
 		}
-		if (normalizedTool === "read" && benchmarkWorkspaceTask && misleadingSiblingTask) {
+		if (normalizedTool === "read" && selfContainedWorkspaceTask && misleadingSiblingTask) {
 			pushAddendum(
 				95,
 				"Runtime steering: The task warns about a misleading similarly named file. Before editing, confirm the real caller/import path or failing test expectation. Do not copy semantics from the file you just read only because the filename matches.",

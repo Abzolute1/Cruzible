@@ -41,6 +41,7 @@ export type KnownProvider =
 	| "opencode-go"
 	| "kimi-coding"
 	| "nvidia"
+	| "nvidia-nim"
 	| "local";
 export type Provider = KnownProvider | string;
 
@@ -164,6 +165,8 @@ export interface ToolCall {
 	name: string;
 	arguments: Record<string, any>;
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
+	/** Set when the provider stream was truncated and final argument JSON failed strict parsing; the agent layer must not execute this call. */
+	malformedArguments?: boolean;
 }
 
 export interface Usage {

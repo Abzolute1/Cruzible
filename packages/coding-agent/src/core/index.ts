@@ -29,10 +29,10 @@ export { type BashExecutorOptions, type BashResult, executeBash, executeBashWith
 export type { CompactionResult } from "./compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.js";
 export {
+	buildEvidencePlan,
 	type EvidencePlanAction,
 	type EvidencePlanState,
 	type EvidencePlanStep,
-	buildEvidencePlan,
 	formatEvidencePlanStep,
 	nextEvidencePlanStep,
 } from "./evidence-planner.js";
@@ -79,63 +79,70 @@ export {
 	type TurnEndEvent,
 	type TurnStartEvent,
 } from "./extensions/index.js";
-export { createSyntheticSourceInfo } from "./source-info.js";
 export {
+	inferModelCapabilityProfile,
+	type ModelCapabilityLevel,
+	type ModelCapabilityProfile,
+	type ModelCapabilityProfileInput,
+	type RecommendedCompactionPolicy,
+} from "./model-capability-profile.js";
+export {
+	normalizePatchIntent,
 	type PatchIntent,
 	type PatchReplacement,
-	normalizePatchIntent,
 } from "./patch-intent.js";
 export {
-	type RunDiagnosticInput,
-	type RunDiagnostics,
-	buildRunDiagnostics,
-} from "./run-diagnostics.js";
-export {
+	RepairController,
 	type RepairControllerOptions,
 	type RepairSnapshot,
 	type RepairVerifierDecision,
-	RepairController,
 } from "./repair-controller.js";
 export {
+	buildRunDiagnostics,
+	type RunDiagnosticInput,
+	type RunDiagnostics,
+} from "./run-diagnostics.js";
+export { createSyntheticSourceInfo } from "./source-info.js";
+export {
+	decideStop,
+	StopController,
 	type StopControllerOptions,
 	type StopControllerSnapshot,
 	type StopDecision,
 	type StopDecisionInput,
-	StopController,
-	decideStop,
 } from "./stop-controller.js";
-export {
-	type VerificationFailureClassification,
-	type VerificationFailureClassificationOptions,
-	type VerificationFailureKind,
-	type VerificationSelectionOptions,
-	classifyVerificationFailure,
-	commandMatchesVerifier,
-	selectVerificationCommand,
-} from "./verification-controller.js";
 export {
 	type ControlledRuntimeMode,
 	type ControlledTaskIntent,
-	type TaskPolicy,
 	classifyControlledTaskIntent,
 	formatTaskPolicy,
 	inferTaskPolicy,
+	type TaskPolicy,
 } from "./task-policy.js";
 export {
 	type ControlledToolDecision,
 	type ControlledToolObservation,
-	type ToolOrchestratorOptions,
-	ToolOrchestrator,
 	parseEmbeddedTaskPolicy,
+	ToolOrchestrator,
+	type ToolOrchestratorOptions,
 } from "./tool-orchestrator.js";
 export {
+	classifyVerificationFailure,
+	commandMatchesVerifier,
+	selectVerificationCommand,
+	type VerificationFailureClassification,
+	type VerificationFailureClassificationOptions,
+	type VerificationFailureKind,
+	type VerificationSelectionOptions,
+} from "./verification-controller.js";
+export {
 	type BuildWorkspaceIndexOptions,
+	buildWorkspaceIndex,
+	buildWorkspaceManifest,
+	formatWorkspaceManifest,
 	type WorkspaceImportEdge,
 	type WorkspaceIndex,
 	type WorkspaceIndexFile,
 	type WorkspaceManifest,
 	type WorkspaceManifestOptions,
-	buildWorkspaceIndex,
-	buildWorkspaceManifest,
-	formatWorkspaceManifest,
 } from "./workspace-index.js";

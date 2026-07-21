@@ -14,24 +14,16 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type {
-	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
-} from "@ag1/agent-core";
+import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@ag1/agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@ag1/ai";
 import { isContextOverflow } from "@ag1/ai";
 import { stripFrontmatter } from "../utils/frontmatter.js";
-import { sleep } from "../utils/sleep.js";
 import { AgentSessionBashCoordinator } from "./agent-session-bash-coordinator.js";
+import { AgentSessionCapabilityCoordinator } from "./agent-session-capability-coordinator.js";
 import { AgentSessionCompactionCoordinator } from "./agent-session-compaction-coordinator.js";
-import { AgentSessionExtensionCoreCoordinator } from "./agent-session-extension-core-coordinator.js";
 import { AgentSessionEventDispatcher } from "./agent-session-event-dispatcher.js";
 import { AgentSessionEventLoopCoordinator } from "./agent-session-event-loop-coordinator.js";
+import { AgentSessionExtensionCoreCoordinator } from "./agent-session-extension-core-coordinator.js";
 import { AgentSessionExtensionLifecycleCoordinator } from "./agent-session-extension-lifecycle-coordinator.js";
 import {
 	buildAgentSessionStats,
@@ -40,59 +32,60 @@ import {
 	exportAgentSessionJsonl,
 	getLastAgentAssistantText,
 } from "./agent-session-inspector.js";
-import {
-	AgentSessionPromptCoordinator,
-	type AgentSessionPromptOptions,
-} from "./agent-session-prompt-coordinator.js";
+import { AgentSessionModelCoordinator, type AgentSessionModelCycleResult } from "./agent-session-model-coordinator.js";
+import { AgentSessionPromptCoordinator, type AgentSessionPromptOptions } from "./agent-session-prompt-coordinator.js";
 import { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
 import { AgentSessionRetryCoordinator } from "./agent-session-retry-coordinator.js";
 import { AgentSessionRuntimeBootstrapCoordinator } from "./agent-session-runtime-bootstrap-coordinator.js";
-import { AgentSessionToolRegistryCoordinator } from "./agent-session-tool-registry-coordinator.js";
 import { AgentSessionToolFailureCoordinator } from "./agent-session-tool-failure-coordinator.js";
+import { AgentSessionToolRegistryCoordinator } from "./agent-session-tool-registry-coordinator.js";
 import { AgentSessionTreeCoordinator } from "./agent-session-tree-coordinator.js";
 import { AgentSessionXmlCoordinator } from "./agent-session-xml-coordinator.js";
-import {
-	type AgentSessionModelCycleResult,
-	AgentSessionModelCoordinator,
-} from "./agent-session-model-coordinator.js";
+import type { ToolOutcome } from "./auton/nudges/types.js";
 import type { BashResult } from "./bash-executor.js";
 import {
 	type CompactionResult,
 	calculateContextTokens,
-	compact,
 	estimateContextTokens,
-	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.js";
-import {
-	type ContextUsage,
-	type ExtensionCommandContextActions,
-	type ExtensionErrorListener,
+import { getPreviousWorkingMemory } from "./compaction/working-memory.js";
+import type {
+	ContextUsage,
+	ExtensionCommandContextActions,
+	ExtensionErrorListener,
 	ExtensionRunner,
-	type ExtensionUIContext,
-	type InputSource,
-	type SessionStartEvent,
-	type ShutdownHandler,
-	type ToolDefinition,
-	type ToolInfo,
+	ExtensionUIContext,
+	InputSource,
+	SessionStartEvent,
+	ShutdownHandler,
+	ToolDefinition,
+	ToolInfo,
 } from "./extensions/index.js";
 import { getEffectiveContextWindow } from "./lmstudio-settings.js";
 import type { CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { findExactModelReferenceMatch } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { evaluateToolSafety, type ToolSafetyPolicy } from "./safety-policy.js";
-import { getLatestCompactionEntry, type BranchSummaryEntry, type CompactionEntry, type SessionManager } from "./session-manager.js";
+import {
+	type BranchSummaryEntry,
+	findMessageEntryOnBranch,
+	getLatestCompactionEntry,
+	type SessionManager,
+} from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import type { SourceInfo } from "./source-info.js";
-import { buildSystemPrompt } from "./system-prompt.js";
+import { buildSystemPrompt, buildWorkspaceSnapshot } from "./system-prompt.js";
 import type { TaskPolicy } from "./task-policy.js";
+import { buildToolFactCachePromptAddendum, ToolFactCache } from "./tool-fact-cache.js";
 import { ToolOrchestrator } from "./tool-orchestrator.js";
 import type { BashOperations } from "./tools/bash.js";
 import { getResearchUrlHint } from "./tools/research-intent.js";
-import { type TurnDegradationSeverity } from "./turn-health.js";
-import { type XmlFallbackSeverity } from "./xml-tool-parser.js";
+import type { TurnDegradationSeverity } from "./turn-health.js";
+import type { XmlFallbackSeverity } from "./xml-tool-parser.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -146,6 +139,7 @@ export type AgentSessionEvent =
 			reason: "already_scheduled" | "state_changed";
 			message: string;
 	  }
+	| { type: "recovery_replay_error"; owner: "retry" | "compaction"; message: string }
 	| {
 			type: "xml_tool_call";
 			toolName: string;
@@ -169,7 +163,8 @@ export type AgentSessionEvent =
 			recoveryHint?: string;
 	  }
 	| { type: "nudge"; nudgeType: string; message?: string; details?: string; shouldStop: boolean }
-	| { type: "tool_failure_warning"; toolName: string; failureCount: number; correctiveMessage: string };
+	| { type: "tool_failure_warning"; toolName: string; failureCount: number; correctiveMessage: string }
+	| { type: "persistence_error"; message: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -307,7 +302,10 @@ function normalizeWebResearchUrl(value: string | undefined): string | undefined 
 	try {
 		const parsed = new URL(trimmed);
 		parsed.hash = "";
-		if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) {
+		if (
+			(parsed.protocol === "https:" && parsed.port === "443") ||
+			(parsed.protocol === "http:" && parsed.port === "80")
+		) {
 			parsed.port = "";
 		}
 		return parsed.toString().replace(/\/$/, "").toLowerCase();
@@ -316,7 +314,9 @@ function normalizeWebResearchUrl(value: string | undefined): string | undefined 
 	}
 }
 
-function parseWebResearchUrl(value: string | undefined): { normalized: string; host: string; path: string } | undefined {
+function parseWebResearchUrl(
+	value: string | undefined,
+): { normalized: string; host: string; path: string } | undefined {
 	const normalized = normalizeWebResearchUrl(value);
 	if (!normalized) return undefined;
 	try {
@@ -407,7 +407,13 @@ function areWebResearchPathsMateriallyDifferent(previousPath: string, nextPath: 
 }
 
 function extractWebResearchCoverageKind(value: unknown): WebResearchCoverageKind | undefined {
-	if (value === "current_events" || value === "docs" || value === "pricing" || value === "release" || value === "error") {
+	if (
+		value === "current_events" ||
+		value === "docs" ||
+		value === "pricing" ||
+		value === "release" ||
+		value === "error"
+	) {
 		return value;
 	}
 	return undefined;
@@ -422,7 +428,8 @@ function getWebResearchCoverageFromDetails(details: unknown): {
 		return { complete: false, missing: [] };
 	}
 	const record = details as Record<string, unknown>;
-	const coverage = record.coverage && typeof record.coverage === "object" ? record.coverage as Record<string, unknown> : undefined;
+	const coverage =
+		record.coverage && typeof record.coverage === "object" ? (record.coverage as Record<string, unknown>) : undefined;
 	const kind = extractWebResearchCoverageKind(coverage?.kind) ?? extractWebResearchCoverageKind(record.coverageKind);
 	const missing = Array.isArray(coverage?.missing)
 		? coverage.missing.filter((entry): entry is string => typeof entry === "string")
@@ -453,11 +460,13 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private readonly _eventDispatcher: AgentSessionEventDispatcher;
+	private readonly _capabilityCoordinator: AgentSessionCapabilityCoordinator;
 	private readonly _compactionCoordinator: AgentSessionCompactionCoordinator;
 	private readonly _eventLoopCoordinator: AgentSessionEventLoopCoordinator;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -481,6 +490,8 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	/** Memoized top-level workspace listing for system-prompt grounding (stable across turns). */
+	private _workspaceSnapshot?: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _baseToolsOverride?: Record<string, AgentTool>;
@@ -491,6 +502,7 @@ export class AgentSession {
 	private _controlledToolCallsThisTurn = 0;
 	private readonly _webResearchBudgetDisabled = process.env.AG1_DISABLE_WEB_RESEARCH_BUDGET === "1";
 	private _webResearchRuntimeState: WebResearchRuntimeState = createWebResearchRuntimeState();
+	private _toolFactCache = new ToolFactCache();
 
 	/** Custom context window override (tokens), set via /set-context. Overrides model.contextWindow. */
 	private _customContextWindow: number | undefined;
@@ -528,8 +540,15 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._toolSafety = config.toolSafety;
-		this._toolOrchestrator = config.toolPolicy ? new ToolOrchestrator({ cwd: this._cwd, policy: config.toolPolicy }) : undefined;
-		this._eventDispatcher = new AgentSessionEventDispatcher(this.sessionManager, () => this._extensionRunner);
+		this._toolOrchestrator = config.toolPolicy
+			? new ToolOrchestrator({ cwd: this._cwd, policy: config.toolPolicy })
+			: undefined;
+		this._eventDispatcher = new AgentSessionEventDispatcher(
+			this.sessionManager,
+			() => this._extensionRunner,
+			(outcome) => this.recordToolOutcome(outcome),
+		);
+		this.seedFactCacheFromWorkingMemory();
 		this._recoveryArbiter = new AgentSessionRecoveryArbiter();
 		this._compactionCoordinator = new AgentSessionCompactionCoordinator({
 			agent: this.agent,
@@ -545,9 +564,11 @@ export class AgentSession {
 			reconnectToAgent: () => this._reconnectToAgent(),
 			abortAgent: () => this.abort(),
 			recoveryArbiter: this._recoveryArbiter,
+			recordToolOutcome: (outcome) => this.recordToolOutcome(outcome),
 		});
 		this._retryCoordinator = new AgentSessionRetryCoordinator({
 			agent: this.agent,
+			sessionManager: this.sessionManager,
 			settingsManager: this.settingsManager,
 			getContextWindow: () => this.contextWindow,
 			emit: (event) => this._emit(event),
@@ -570,13 +591,17 @@ export class AgentSession {
 			emitQueueUpdate: () => this._emitQueueUpdate(),
 			emitExtensionEvent: (event) => this._emitExtensionEvent(event),
 			emitPublicEvent: (event) => this._emit(event),
-			appendCustomMessageEntry: (customType, content, display, details) => {
-				this.sessionManager.appendCustomMessageEntry(customType, content, display ?? true, details);
+			appendCustomMessageEntry: async (customType, content, display, details) => {
+				await this.sessionManager.appendCustomMessageEntryAsync(customType, content, display ?? true, details);
 			},
-			appendMessage: (message) => {
-				this.sessionManager.appendMessage(message);
+			appendMessage: async (message) => {
+				await this.sessionManager.appendMessageAsync(message);
 			},
+			flushPendingBashMessages: () => this._flushPendingBashMessages(),
 			resetOverflowRecovery: () => this._compactionCoordinator.resetOverflowRecovery(),
+			resetWebResearchRuntimeState: () => {
+				this._webResearchRuntimeState = createWebResearchRuntimeState();
+			},
 			emitDegradedTurn: (event) => {
 				this._emit({
 					type: "degraded_turn",
@@ -627,6 +652,10 @@ export class AgentSession {
 			checkToolFailures: () => this._checkToolFailures(),
 			emit: (event) => this._emit(event),
 			getBaseSystemPrompt: () => this._baseSystemPrompt,
+			getControlledRuntimeGuidance: () =>
+				this._toolOrchestrator
+					? "Controlled runtime is active: emit exactly one tool call per assistant turn, then wait for its result before the next action. Emitting multiple tool calls in one turn gets the extra calls rejected."
+					: undefined,
 			tryExecuteExtensionCommand: (text) => this._tryExecuteExtensionCommand(text),
 			expandPromptText: (text) => {
 				let expandedText = this._expandSkillCommand(text);
@@ -652,8 +681,17 @@ export class AgentSession {
 				this.agent.state.systemPrompt = prompt;
 			},
 		});
+		this._capabilityCoordinator = new AgentSessionCapabilityCoordinator({
+			getModel: () => this.model,
+			getVisualToolsMode: () => this.settingsManager.getVisualToolsMode(),
+			getApiKeyAndHeaders: (model) => this._modelRegistry.getApiKeyAndHeaders(model),
+			refreshToolRegistry: () => this._refreshToolRegistry(),
+		});
 		this._toolRegistryCoordinator = new AgentSessionToolRegistryCoordinator({
 			getModel: () => this.model,
+			getVerifierModel: () => this.resolveVerifierModel(),
+			getVisualToolsMode: () => this.settingsManager.getVisualToolsMode(),
+			getVisionVerdict: (model) => this.getVisionVerdict(model),
 			getExtensionRunner: () => this._extensionRunner,
 			getBaseToolDefinitions: () => this._baseToolDefinitions,
 			getCustomTools: () => this._customTools,
@@ -692,6 +730,9 @@ export class AgentSession {
 			setCurrentModel: (model) => {
 				this.agent.state.model = model;
 			},
+			getToolSafety: () => this._toolSafety,
+			getThinkingLevel: () => this.thinkingLevel,
+			recordToolOutcome: (outcome) => this.recordToolOutcome(outcome),
 		});
 		this._treeCoordinator = new AgentSessionTreeCoordinator({
 			agent: this.agent,
@@ -700,6 +741,10 @@ export class AgentSession {
 			getModel: () => this.model,
 			getExtensionRunner: () => this._extensionRunner,
 			getRequiredRequestAuth: (model) => this._getRequiredRequestAuth(model),
+			disconnectFromAgent: () => this._disconnectFromAgent(),
+			reconnectToAgent: () => this._reconnectToAgent(),
+			abortAgent: () => this.abort(),
+			waitForEventLoop: () => this._eventLoopCoordinator.wait(),
 		});
 		this._bashCoordinator = new AgentSessionBashCoordinator({
 			agent: this.agent,
@@ -711,10 +756,6 @@ export class AgentSession {
 				getMessages: () => this.agent.state.messages,
 				setMessages: (messages) => {
 					this.agent.state.messages = messages;
-				},
-				getSystemPrompt: () => this.agent.state.systemPrompt,
-				setSystemPrompt: (prompt) => {
-					this.agent.state.systemPrompt = prompt;
 				},
 				prompt: (messages) => this.agent.prompt(messages),
 				continue: () => this.agent.continue(),
@@ -847,8 +888,6 @@ export class AgentSession {
 		};
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
-			// Track structured tool calls (for XML fallback detection)
-			this._xmlCoordinator.noteStructuredToolCall();
 			this._toolOrchestrator?.noteToolResult({
 				toolName: toolCall.name,
 				args,
@@ -930,7 +969,9 @@ export class AgentSession {
 		};
 	}
 
-	private _evaluateControlledToolBatch(assistantMessage: AssistantMessage): { block: true; reason: string } | undefined {
+	private _evaluateControlledToolBatch(
+		assistantMessage: AssistantMessage,
+	): { block: true; reason: string } | undefined {
 		if (!this._toolOrchestrator) return undefined;
 		const toolCalls = assistantMessage.content.filter((block) => block.type === "toolCall");
 		if (toolCalls.length <= 1) return undefined;
@@ -957,7 +998,10 @@ export class AgentSession {
 	 * path: blocked tools become normal error tool results in the transcript
 	 * instead of throwing or tearing down the run.
 	 */
-	private async _evaluateToolSafety(toolName: string, args: unknown): Promise<{ block: true; reason: string } | undefined> {
+	private async _evaluateToolSafety(
+		toolName: string,
+		args: unknown,
+	): Promise<{ block: true; reason: string } | undefined> {
 		const orchestrationDecision = this._toolOrchestrator?.evaluate(toolName, args);
 		if (orchestrationDecision && !orchestrationDecision.allow) {
 			return {
@@ -1019,7 +1063,9 @@ export class AgentSession {
 		if (normalizedTool === "websearch") {
 			const query = normalizeWebResearchValue(getStringArg(args, "query"));
 			const duplicateQuery = query
-				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) => isNearDuplicateWebSearch(entry, query))
+				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) =>
+						isNearDuplicateWebSearch(entry, query),
+					)
 				: undefined;
 			if (duplicateQuery) {
 				return {
@@ -1029,7 +1075,9 @@ export class AgentSession {
 				};
 			}
 			const broaderAfterSpecific = query
-				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) => isBroadWebResearchQueryAfterSpecific(entry, query))
+				? [...history.webSearchQueries, ...runtimeState.searchQueries].find((entry) =>
+						isBroadWebResearchQueryAfterSpecific(entry, query),
+					)
 				: undefined;
 			if (broaderAfterSpecific) {
 				return {
@@ -1054,7 +1102,9 @@ export class AgentSession {
 			}
 			if (parsedUrl?.host) {
 				const placeholderPaths = runtimeState.placeholderHosts.get(parsedUrl.host) ?? [];
-				const repeatedPlaceholderHost = placeholderPaths.some((path) => !areWebResearchPathsMateriallyDifferent(path, parsedUrl.path));
+				const repeatedPlaceholderHost = placeholderPaths.some(
+					(path) => !areWebResearchPathsMateriallyDifferent(path, parsedUrl.path),
+				);
 				if (repeatedPlaceholderHost) {
 					return {
 						block: true,
@@ -1065,8 +1115,8 @@ export class AgentSession {
 			}
 			const requestedKind = parsedUrl ? this._inferWebFetchCoverageKindForUrl(parsedUrl.normalized) : undefined;
 			if (
-				(requestedKind === "current_events" || requestedKind === undefined)
-				&& runtimeState.completedCoverageKinds.has("current_events")
+				(requestedKind === "current_events" || requestedKind === undefined) &&
+				runtimeState.completedCoverageKinds.has("current_events")
 			) {
 				return {
 					block: true,
@@ -1075,8 +1125,8 @@ export class AgentSession {
 				};
 			}
 			const docsComplete =
-				(requestedKind === "docs" && runtimeState.authoritativeCompletedCoverageKinds.has("docs"))
-				|| (requestedKind === "pricing" && runtimeState.authoritativeCompletedCoverageKinds.has("pricing"));
+				(requestedKind === "docs" && runtimeState.authoritativeCompletedCoverageKinds.has("docs")) ||
+				(requestedKind === "pricing" && runtimeState.authoritativeCompletedCoverageKinds.has("pricing"));
 			if (docsComplete) {
 				return {
 					block: true,
@@ -1149,7 +1199,7 @@ export class AgentSession {
 		const parsedUrl = parseWebResearchUrl(getStringArg(args, "url"));
 		if (!parsedUrl) return;
 		const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
-		const detailsRecord = details && typeof details === "object" ? details as Record<string, unknown> : {};
+		const detailsRecord = details && typeof details === "object" ? (details as Record<string, unknown>) : {};
 		const coverage = getWebResearchCoverageFromDetails(details);
 		const coverageKind = coverage.kind ?? this._inferWebFetchCoverageKindForUrl(parsedUrl.normalized);
 		const status = typeof detailsRecord.status === "string" ? detailsRecord.status : undefined;
@@ -1258,10 +1308,14 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		// Persist bash results recorded during the last run that were still
+		// waiting for the next prompt, so they are not lost on teardown.
+		this._bashCoordinator.flushPending();
 		this._retryCoordinator.abort();
 		this._compactionCoordinator.abort();
 		this._treeCoordinator.abort();
 		this._bashCoordinator.abort();
+		this._xmlCoordinator.abort();
 		this.agent.abort();
 		this._disconnectFromAgent();
 		this._eventDispatcher.clearListeners();
@@ -1285,6 +1339,67 @@ export class AgentSession {
 	get contextWindow(): number | undefined {
 		if (!this.model) return undefined;
 		return getEffectiveContextWindow(this.model, this._customContextWindow);
+	}
+
+	/**
+	 * Resolve the verifier model used for independent review duties (verify_ui
+	 * judge, autonomous acceptance review). Resolution order: the configured
+	 * `verifierModel` reference → exact match against scoped models (or the
+	 * registry's available models) → the active model. Returns undefined only
+	 * when no active model is selected and no configured ref resolves.
+	 */
+	resolveVerifierModel(): Model<any> | undefined {
+		const ref = this.settingsManager.getVerifierModel()?.trim();
+		if (ref) {
+			const candidates =
+				this.scopedModels.length > 0
+					? this.scopedModels.map((scoped) => scoped.model)
+					: this._modelRegistry.getAvailable();
+			const match = findExactModelReferenceMatch(ref, candidates);
+			if (match) return match;
+		}
+		return this.model;
+	}
+
+	/** Tool fact cache for reusing prior successful tool results (lowers cost, preserves discovered state without re-execution). */
+	get toolFactCache(): ToolFactCache {
+		return this._toolFactCache;
+	}
+
+	/** Record a tool outcome for the fact cache (centralized for all modes). */
+	recordToolOutcome(outcome: ToolOutcome): void {
+		try {
+			this._toolFactCache.record(outcome);
+		} catch {
+			// Observability writes (fact cache, journal) must never fail real work —
+			// e.g. a session write-lock timeout is a reason to skip the record, not
+			// to fail the tool call that produced it.
+		}
+	}
+
+	/** Seed the fact cache from previous working memory (helps facts survive compaction for lower cost, no intelligence loss). */
+	private seedFactCacheFromWorkingMemory(previous?: any): void {
+		const branch = this.sessionManager.getBranch() as any;
+		const prevCompactionIndex = branch.findLastIndex?.((e: any) => e.type === "compaction") ?? -1;
+		const prev = previous || getPreviousWorkingMemory(branch, prevCompactionIndex);
+		if (!prev) return;
+
+		// Seed reads (reusable file knowledge)
+		for (const file of (prev.readFiles || []).slice(0, 10)) {
+			this._toolFactCache.record({ tool: "read", success: true, file });
+		}
+
+		// Seed successful bash commands (e.g. ls, tests) as reusable facts
+		for (const cmd of (prev.commandsRun || []).slice(0, 5)) {
+			this._toolFactCache.record({ tool: "bash", success: true, detail: cmd });
+		}
+
+		// Seed successful verifications (tests, builds)
+		for (const v of (prev.verification || []).slice(0, 5)) {
+			if (v.status === "passed") {
+				this._toolFactCache.record({ tool: "verify", success: true, detail: v.command || v.detail });
+			}
+		}
 	}
 
 	/** Set a custom context window override (in tokens). Pass undefined to use model default.
@@ -1466,9 +1581,11 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		this._workspaceSnapshot ??= buildWorkspaceSnapshot(this._cwd);
 
 		return buildSystemPrompt({
 			cwd: this._cwd,
+			workspaceSnapshot: this._workspaceSnapshot || undefined,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
@@ -1498,7 +1615,10 @@ export class AgentSession {
 	 * Check for repeated tool failures and inject a corrective message if needed.
 	 * Returns a custom message to inject, or undefined if no correction needed.
 	 */
-	private _checkToolFailures(): { message: CustomMessage | undefined; warnings: Array<{ toolName: string; failureCount: number; correctiveMessage: string }> } {
+	private _checkToolFailures(): {
+		message: CustomMessage | undefined;
+		warnings: Array<{ toolName: string; failureCount: number; correctiveMessage: string }>;
+	} {
 		return this._toolFailureCoordinator.preparePromptInjection(this.getActiveToolNames());
 	}
 
@@ -1524,8 +1644,19 @@ export class AgentSession {
 	}
 
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		this._webResearchRuntimeState = createWebResearchRuntimeState();
-		const promptOptions: AgentSessionPromptOptions | undefined = options;
+		// NOTE: _webResearchRuntimeState is NOT reset here — this prompt may only be
+		// queued (mid-stream), and resetting now would zero the current turn's budget.
+		// The reset happens when the user turn actually starts (user message_start
+		// in the event-loop coordinator).
+		const factAddendum = buildToolFactCachePromptAddendum(this._toolFactCache);
+		let effectiveAddendum = options?.systemPromptAddendum;
+		if (factAddendum) {
+			effectiveAddendum = effectiveAddendum ? `${effectiveAddendum}\n\n${factAddendum}` : factAddendum;
+		}
+		const promptOptions: AgentSessionPromptOptions | undefined = {
+			...options,
+			systemPromptAddendum: effectiveAddendum,
+		};
 		await this._promptCoordinator.prompt(text, promptOptions);
 	}
 
@@ -1537,6 +1668,15 @@ export class AgentSession {
 	async recoverXmlToolCallsNow(): Promise<void> {
 		await this._eventLoopCoordinator.wait();
 		await this._processXmlToolCalls();
+	}
+
+	/**
+	 * Wait for the internal event queue to finish processing and persisting all
+	 * emitted agent events. Used before operations that re-read the session
+	 * file from disk (fork, session switch) so no tail messages are lost.
+	 */
+	async waitForEventLoop(): Promise<void> {
+		await this._eventLoopCoordinator.wait();
 	}
 
 	/**
@@ -1745,10 +1885,17 @@ export class AgentSession {
 			if (message.display === false) {
 				// Hidden runtime/control messages are ephemeral steering state; keep the newest one in live session state.
 				this.agent.state.messages = this.agent.state.messages.filter(
-					(existing) => !(existing.role === "custom" && existing.display === false && existing.customType === message.customType),
+					(existing) =>
+						!(
+							existing.role === "custom" &&
+							existing.display === false &&
+							existing.customType === message.customType
+						),
 				);
 			}
-			this.agent.state.messages.push(appMessage);
+			// `Agent.state.messages` returns a copy on read; assign through the setter
+			// (which splices in place) instead of pushing into the throwaway copy.
+			this.agent.state.messages = [...this.agent.state.messages, appMessage];
 			this.sessionManager.appendCustomMessageEntry(
 				message.customType,
 				message.content,
@@ -1840,6 +1987,7 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		this.abortRetry();
 		this.agent.abort();
+		this._xmlCoordinator.abort();
 		await this.agent.waitForIdle();
 	}
 
@@ -1850,6 +1998,10 @@ export class AgentSession {
 	 */
 	async setModel(model: Model<any>): Promise<void> {
 		await this._modelCoordinator.setModel(model);
+		// Visual tools are gated on the active model's vision capability
+		this._refreshToolRegistry();
+		void this._resolveVisionCapability(model);
+		void this._resolveContextLength(model);
 	}
 
 	/**
@@ -1859,7 +2011,45 @@ export class AgentSession {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
-		return this._modelCoordinator.cycleModel(direction);
+		const result = await this._modelCoordinator.cycleModel(direction);
+		if (result) {
+			// Visual tools are gated on the active model's vision capability
+			this._refreshToolRegistry();
+			void this._resolveVisionCapability(result.model);
+			void this._resolveContextLength(result.model);
+		}
+		return result;
+	}
+
+	/**
+	 * Last known probed vision verdict for a model, if any. Consulted by the
+	 * tool registry gate between the visualTools override and registry metadata.
+	 * Shares getCachedVision's asymmetric TTL so a stale "no" expires quickly
+	 * (a freshly loaded vision adapter must not stay gated off for 24h).
+	 */
+	getVisionVerdict(model: Model<any>): "yes" | "no" | undefined {
+		return this._capabilityCoordinator.getVisionVerdict(model);
+	}
+
+	private _resolveVisionCapability(model: Model<any>): Promise<void> {
+		return this._capabilityCoordinator.resolveVisionCapability(model);
+	}
+
+	/**
+	 * Await vision capability resolution before the first generation. On a
+	 * single-slot local server a fire-and-forget probe always loses the race:
+	 * the canary queues behind the first turn's generation and times out, so
+	 * visual tools stay gated off for the whole session. Autonomous/print runs
+	 * call this before the first prompt so turn 1's tool list is correct. The
+	 * await is bounded by the canary timeout and only happens when tools would
+	 * otherwise start gated off (auto mode, no declared metadata, no verdict).
+	 */
+	async ensureVisionCapabilityResolved(): Promise<void> {
+		return this._capabilityCoordinator.ensureVisionCapabilityResolved();
+	}
+
+	private _resolveContextLength(model: Model<any>): Promise<void> {
+		return this._capabilityCoordinator.resolveContextLength(model);
 	}
 
 	// =========================================================================
@@ -1998,8 +2188,23 @@ export class AgentSession {
 
 			this._compactionCoordinator.markOverflowRecoveryAttempted();
 			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.state.messages = messages.slice(0, -1);
+			const lastMessage = messages[messages.length - 1];
+			if (lastMessage?.role === "assistant") {
+				// The overflow error message was already persisted at message_end.
+				// Branch around its entry (rebuilding live state from the session
+				// file) instead of only slicing live state, so the excluded error
+				// does not reappear on resume/fork. Same fix as the retry path.
+				const overflowEntry = findMessageEntryOnBranch(this.sessionManager, lastMessage);
+				if (overflowEntry) {
+					if (overflowEntry.parentId) {
+						this.sessionManager.branch(overflowEntry.parentId);
+					} else {
+						this.sessionManager.resetLeaf();
+					}
+					this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+				} else {
+					this.agent.state.messages = messages.slice(0, -1);
+				}
 			}
 			await this._runAutoCompaction("overflow", true);
 			return;
@@ -2034,6 +2239,8 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
 		await this._compactionCoordinator.runAuto(reason, willRetry);
+		// Refresh facts from the just-created working memory so they survive this compaction
+		this.seedFactCacheFromWorkingMemory();
 	}
 
 	/**
@@ -2147,10 +2354,20 @@ export class AgentSession {
 		includeAllExtensionTools?: boolean;
 	}): void {
 		this._runtimeBootstrapCoordinator.buildRuntime(options);
+		// Bootstrap assigns the model directly (bypassing setModel) — probe for
+		// vision capability here too or visual tools never appear at session start.
+		if (this.model) {
+			void this._resolveVisionCapability(this.model);
+			void this._resolveContextLength(this.model);
+		}
 	}
 
 	async reload(): Promise<void> {
 		await this._runtimeBootstrapCoordinator.reload();
+		if (this.model) {
+			void this._resolveVisionCapability(this.model);
+			void this._resolveContextLength(this.model);
+		}
 
 		const hasBindings =
 			this._extensionLifecycleCoordinator.uiContext ||
@@ -2348,6 +2565,8 @@ export class AgentSession {
 		return deriveAgentSessionContextUsage({
 			contextWindow: this.contextWindow,
 			messages: this.messages,
+			systemPrompt: this.systemPrompt,
+			tools: this.agent.state.tools,
 			sessionManager: this.sessionManager,
 		});
 	}

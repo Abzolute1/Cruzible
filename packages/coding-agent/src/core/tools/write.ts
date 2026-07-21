@@ -1,12 +1,13 @@
 import type { AgentTool } from "@ag1/agent-core";
 import { Container, Text } from "@ag1/tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
+import { mkdir as fsMkdir } from "fs/promises";
 import { dirname } from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
+import { writeFileAtomically } from "./file-mutation-transaction.js";
 import { resolveContainedPath } from "./path-utils.js";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -24,13 +25,13 @@ export type WriteToolInput = Static<typeof writeSchema>;
  */
 export interface WriteOperations {
 	/** Write content to a file */
-	writeFile: (absolutePath: string, content: string) => Promise<void>;
+	writeFile: (absolutePath: string, content: string, signal?: AbortSignal) => Promise<void>;
 	/** Create directory recursively */
 	mkdir: (dir: string) => Promise<void>;
 }
 
 const defaultWriteOperations: WriteOperations = {
-	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+	writeFile: (path, content, signal) => writeFileAtomically(path, content, signal),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
 };
 
@@ -165,6 +166,12 @@ function formatWriteSuccess(path: string, content: string): string {
 	return `Wrote ${content.length}B to ${path}.`;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) {
+		throw new Error("Operation aborted");
+	}
+}
+
 function formatWriteResult(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean },
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
@@ -202,46 +209,19 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			const absolutePath = resolveContainedPath(path, cwd, { allowMissing: true });
+			const absolutePath = resolveContainedPath(path, cwd);
 			const dir = dirname(absolutePath);
-			return withFileMutationQueue(
-				absolutePath,
-				() =>
-					new Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }>(
-						(resolve, reject) => {
-							if (signal?.aborted) {
-								reject(new Error("Operation aborted"));
-								return;
-							}
-							let aborted = false;
-							const onAbort = () => {
-								aborted = true;
-								reject(new Error("Operation aborted"));
-							};
-							signal?.addEventListener("abort", onAbort, { once: true });
-							(async () => {
-								try {
-									// Create parent directories if needed.
-									await ops.mkdir(dir);
-									if (aborted) return;
-									// Write the file contents.
-									await ops.writeFile(absolutePath, content);
-									if (aborted) return;
-									signal?.removeEventListener("abort", onAbort);
-									resolve({
-										content: [
-											{ type: "text", text: formatWriteSuccess(path, content) },
-										],
-										details: undefined,
-									});
-								} catch (error: any) {
-									signal?.removeEventListener("abort", onAbort);
-									if (!aborted) reject(error);
-								}
-							})();
-						},
-					),
-			);
+			return withFileMutationQueue(absolutePath, async () => {
+				throwIfAborted(signal);
+				await ops.mkdir(dir);
+				throwIfAborted(signal);
+				await ops.writeFile(absolutePath, content, signal);
+				throwIfAborted(signal);
+				return {
+					content: [{ type: "text" as const, text: formatWriteSuccess(path, content) }],
+					details: undefined,
+				};
+			});
 		},
 		renderCall(args, theme, context) {
 			const renderArgs = args as { path?: string; file_path?: string; content?: string } | undefined;

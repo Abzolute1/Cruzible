@@ -6,14 +6,9 @@
  * try to refresh tokens simultaneously.
  */
 
-import {
-	getEnvApiKey,
-	type OAuthCredentials,
-	type OAuthLoginCallbacks,
-	type OAuthProviderId,
-} from "@ag1/ai";
+import { getEnvApiKey, type OAuthCredentials, type OAuthLoginCallbacks, type OAuthProviderId } from "@ag1/ai";
 import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@ag1/ai/oauth";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
@@ -60,6 +55,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	/** Atomic write (temp + rename) so concurrent readers never see partial content. */
+	private writeAtomic(content: string): void {
+		const tmpPath = `${this.authPath}.tmp`;
+		writeFileSync(tmpPath, content, "utf-8");
+		chmodSync(tmpPath, 0o600);
+		renameSync(tmpPath, this.authPath);
+	}
+
 	private acquireLockSyncWithRetry(path: string): () => void {
 		const maxAttempts = 10;
 		const delayMs = 20;
@@ -97,8 +100,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, "utf-8");
-				chmodSync(this.authPath, 0o600);
+				this.writeAtomic(next);
 			}
 			return result;
 		} finally {
@@ -142,8 +144,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, "utf-8");
-				chmodSync(this.authPath, 0o600);
+				this.writeAtomic(next);
 			}
 			throwIfCompromised();
 			return result;
@@ -435,6 +436,22 @@ export class AuthStorage {
 
 		const envKey = getEnvApiKey(providerId);
 		if (envKey) return envKey;
+
+		if (providerId === "nvidia-nim") {
+			const nvidiaRuntimeKey = this.runtimeOverrides.get("nvidia");
+			if (nvidiaRuntimeKey) return nvidiaRuntimeKey;
+
+			const nvidiaSecretFileKey = readProviderSecretFileApiKey("nvidia");
+			if (nvidiaSecretFileKey) return nvidiaSecretFileKey;
+
+			const nvidiaEnvKey = getEnvApiKey("nvidia");
+			if (nvidiaEnvKey) return nvidiaEnvKey;
+
+			const nvidiaCred = this.data.nvidia;
+			if (nvidiaCred?.type === "api_key") {
+				return resolveConfigValue(nvidiaCred.key);
+			}
+		}
 
 		const cred = this.data[providerId];
 

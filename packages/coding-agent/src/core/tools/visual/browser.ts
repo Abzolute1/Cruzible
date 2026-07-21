@@ -25,7 +25,7 @@ let _launchPromise: Promise<Browser> | null = null;
  * error string instead of throwing a hard crash.
  */
 export async function getBrowser(): Promise<{ browser: Browser | null; error?: string }> {
-	if (_browser && _browser.isConnected()) {
+	if (_browser?.isConnected()) {
 		return { browser: _browser };
 	}
 
@@ -50,7 +50,12 @@ export async function getBrowser(): Promise<{ browser: Browser | null; error?: s
 				`Playwright browser not installed. Run: npx playwright install chromium\n\nOriginal error: ${message}`,
 			);
 		}
-		if (message.includes("libnss") || message.includes("libatk") || message.includes("libgbm") || message.includes("libasound")) {
+		if (
+			message.includes("libnss") ||
+			message.includes("libatk") ||
+			message.includes("libgbm") ||
+			message.includes("libasound")
+		) {
 			throw new Error(
 				`Playwright OS dependencies are missing. Run: npx playwright install-deps chromium\n\nOriginal error: ${message}`,
 			);

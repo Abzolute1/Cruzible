@@ -1,0 +1,349 @@
+{
+  "id": "benchmark-v3_5",
+  "name": "Benchmark v3.5",
+  "description": "Efficiency-forward diagnostic benchmark for choosing a cheap default coding-agent model. Uses deterministic engineering fixtures with stricter token/tool budgets than v3.",
+  "version": 3.5,
+  "parent": "benchmark-v3",
+  "scenarios": [
+    {
+      "id": "debug_json_parser_edge_case",
+      "category": "debugging",
+      "description": "Fix a falsey-value parser bug and verify it with the existing test suite.",
+      "weight": 4,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Fix the configuration parser so explicit falsey values from user input are preserved.\n2. Do not rewrite the tests.\n3. Run the targeted verification command before you finish.\n4. Give a short final answer that says what you changed and what verification passed.\n\nConstraints:\n\n- Stay inside this workspace.\n- Keep the fix minimal.\n- The intended verification command is: `node --test`\n",
+      "files": [
+        {
+          "path": "src/config-parser.mjs",
+          "lines": [
+            "import { defaultConfig } from \"./defaults.mjs\";",
+            "",
+            "export function parseConfig(userConfig = {}) {",
+            "\treturn {",
+            "\t\tenabled: userConfig.enabled || defaultConfig.enabled,",
+            "\t\tretryCount: Number(userConfig.retryCount) || defaultConfig.retryCount,",
+            "\t\tlabel: userConfig.label || defaultConfig.label,",
+            "\t};",
+            "}"
+          ]
+        },
+        {
+          "path": "src/defaults.mjs",
+          "lines": [
+            "export const defaultConfig = {",
+            "\tenabled: true,",
+            "\tretryCount: 3,",
+            "\tlabel: \"production\",",
+            "};"
+          ]
+        },
+        {
+          "path": "tests/config-parser.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { parseConfig } from \"../src/config-parser.mjs\";",
+            "",
+            "test(\"parseConfig preserves explicit falsey values from user config\", () => {",
+            "\tconst parsed = parseConfig({",
+            "\t\tenabled: false,",
+            "\t\tretryCount: 0,",
+            "\t\tlabel: \"\",",
+            "\t});",
+            "",
+            "\tassert.equal(parsed.enabled, false);",
+            "\tassert.equal(parsed.retryCount, 0);",
+            "\tassert.equal(parsed.label, \"\");",
+            "});"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "debug_cross_file_state_bug",
+      "category": "debugging",
+      "description": "Repair a cross-file state indexing bug and verify the corrected behavior.",
+      "weight": 5,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Fix the session state bug so saved scopes can be listed correctly for a user.\n2. Keep the fix focused. Do not rewrite the store from scratch.\n3. Run the verification command before your final answer.\n4. End with a short summary of the bug and the verification result.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `node --test`\n",
+      "files": [
+        {
+          "path": "src/key-normalizer.mjs",
+          "lines": [
+            "export function makeSessionKey(userId, scope) {",
+            "\treturn `${scope.trim()}:${userId}`;",
+            "}",
+            "",
+            "export function parseSessionKey(key) {",
+            "\tconst [userId, scope] = key.split(\":\");",
+            "\treturn { userId, scope };",
+            "}"
+          ]
+        },
+        {
+          "path": "src/session-index.mjs",
+          "lines": [
+            "import { parseSessionKey } from \"./key-normalizer.mjs\";",
+            "",
+            "export function listScopesForUser(store, userId) {",
+            "\treturn [...store.keys()]",
+            "\t\t.map((key) => parseSessionKey(key))",
+            "\t\t.filter((entry) => entry.userId === userId)",
+            "\t\t.map((entry) => entry.scope);",
+            "}"
+          ]
+        },
+        {
+          "path": "src/session-store.mjs",
+          "lines": [
+            "import { makeSessionKey } from \"./key-normalizer.mjs\";",
+            "",
+            "export function createSessionStore() {",
+            "\treturn new Map();",
+            "}",
+            "",
+            "export function saveSession(store, userId, scope, value) {",
+            "\tstore.set(makeSessionKey(userId, scope), value);",
+            "}",
+            "",
+            "export function getSession(store, userId, scope) {",
+            "\treturn store.get(makeSessionKey(userId, scope)) ?? null;",
+            "}"
+          ]
+        },
+        {
+          "path": "tests/session-store.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { createSessionStore, saveSession, getSession } from \"../src/session-store.mjs\";",
+            "import { listScopesForUser } from \"../src/session-index.mjs\";",
+            "",
+            "test(\"saved scopes remain discoverable for the same user\", () => {",
+            "\tconst store = createSessionStore();",
+            "\tsaveSession(store, \"alex\", \"draft\", { id: 1 });",
+            "\tsaveSession(store, \"alex\", \"published\", { id: 2 });",
+            "",
+            "\tassert.deepEqual(listScopesForUser(store, \"alex\").sort(), [\"draft\", \"published\"]);",
+            "\tassert.deepEqual(getSession(store, \"alex\", \"published\"), { id: 2 });",
+            "});"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "patch_add_guard_test",
+      "category": "patch",
+      "description": "Fix a patch bug and add the missing regression test before finishing.",
+      "weight": 5,
+      "verifyCommand": "node --test && node scripts/check-regression-test.mjs",
+      "expectedChangedFilesMax": 2,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Fix the search URL builder so an explicit limit of `0` is preserved.\n2. Add a regression test for that case.\n3. Run the verification command before your final answer.\n4. End with a short summary of the code change and the test coverage you added.\n\nConstraints:\n\n- Stay inside this workspace.\n- Keep the patch minimal.\n- The intended verification command is: `node --test && node scripts/check-regression-test.mjs`\n",
+      "files": [
+        {
+          "path": "scripts/check-regression-test.mjs",
+          "lines": [
+            "import { readFileSync } from \"node:fs\";",
+            "",
+            "const content = readFileSync(new URL(\"../tests/search-url.test.mjs\", import.meta.url), \"utf8\");",
+            "if (!content.includes(\"preserves an explicit limit of 0\")) {",
+            "\tconsole.error(\"missing regression test for explicit zero limit\");",
+            "\tprocess.exit(1);",
+            "}"
+          ]
+        },
+        {
+          "path": "src/search-url.mjs",
+          "lines": [
+            "export function buildSearchUrl(baseUrl, query, limit = 20) {",
+            "\tconst url = new URL(baseUrl);",
+            "\turl.searchParams.set(\"q\", query);",
+            "\tif (limit) url.searchParams.set(\"limit\", String(limit));",
+            "\treturn url.toString();",
+            "}"
+          ]
+        },
+        {
+          "path": "tests/search-url.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { buildSearchUrl } from \"../src/search-url.mjs\";",
+            "",
+            "test(\"buildSearchUrl includes the query parameter\", () => {",
+            "\tconst url = buildSearchUrl(\"https://example.test/search\", \"bench\");",
+            "\tassert.equal(url, \"https://example.test/search?q=bench&limit=20\");",
+            "});",
+            "",
+            "test(\"buildSearchUrl preserves a custom positive limit\", () => {",
+            "\tconst url = buildSearchUrl(\"https://example.test/search\", \"bench\", 5);",
+            "\tassert.equal(url, \"https://example.test/search?q=bench&limit=5\");",
+            "});"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "docs_abort_timeout_migration",
+      "category": "docs-guided-migration",
+      "description": "Apply a local docs migration note to request timeout handling.",
+      "weight": 4,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Read the provided docs excerpt in `reference/abort-signal-timeout.md`.\n2. Migrate the request helper to follow that guidance.\n3. Keep the change scoped to the implementation that needs it.\n4. Run the verification command before your final answer.\n5. End with a short summary of the migration and the verification result.\n\nConstraints:\n\n- Stay inside this workspace.\n- Do not rewrite the tests.\n- The intended verification command is: `node --test`\n",
+      "files": [
+        {
+          "path": "reference/abort-signal-timeout.md",
+          "lines": [
+            "# AbortSignal.timeout migration note",
+            "",
+            "Use `AbortSignal.timeout(ms)` when you need a timeout-backed signal.",
+            "",
+            "Preferred pattern:",
+            "",
+            "```js",
+            "const signal = AbortSignal.timeout(timeoutMs);",
+            "return fetchJson(url, { signal });",
+            "```",
+            "",
+            "Do not keep passing a custom `timeoutMs` option through the transport layer once the helper has switched to a signal-based timeout."
+          ]
+        },
+        {
+          "path": "src/fake-fetch.mjs",
+          "lines": [
+            "export async function fakeFetchJson(url, options = {}) {",
+            "\treturn {",
+            "\t\turl,",
+            "\t\toptions,",
+            "\t\tsawSignal: Boolean(options.signal),",
+            "\t\tsawTimeoutMs: Object.hasOwn(options, \"timeoutMs\"),",
+            "\t};",
+            "}"
+          ]
+        },
+        {
+          "path": "src/request.mjs",
+          "lines": [
+            "import { fakeFetchJson } from \"./fake-fetch.mjs\";",
+            "",
+            "export async function getJson(url, { timeoutMs = 1000 } = {}) {",
+            "\treturn fakeFetchJson(url, { timeoutMs });",
+            "}"
+          ]
+        },
+        {
+          "path": "tests/request.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { getJson } from \"../src/request.mjs\";",
+            "",
+            "test(\"getJson forwards a timeout-backed signal instead of timeoutMs\", async () => {",
+            "\tconst result = await getJson(\"https://example.test/data\", { timeoutMs: 2500 });",
+            "",
+            "\tassert.equal(result.sawSignal, true);",
+            "\tassert.equal(result.sawTimeoutMs, false);",
+            "\tassert.equal(typeof result.options.signal.aborted, \"boolean\");",
+            "});"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ambiguous_entrypoint_recovery",
+      "category": "local-evidence",
+      "description": "Avoid a misleading similarly named file and patch the active formatter.",
+      "weight": 4,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Fix the report rendering bug so the CLI output uses line breaks between summary items.\n2. Be careful: there is a misleading similarly named formatter file in the workspace.\n3. Run the verification command before your final answer.\n4. End with a short summary of what you fixed and what verification passed.\n\nConstraints:\n\n- Stay inside this workspace.\n- Keep the patch minimal.\n- The intended verification command is: `node --test`\n",
+      "files": [
+        {
+          "path": "cli/formatter.mjs",
+          "lines": [
+            "export function formatSummary(items) {",
+            "\treturn items.map((item) => `* ${item}`).join(\"\\n\");",
+            "}"
+          ]
+        },
+        {
+          "path": "cli/render-report.mjs",
+          "lines": [
+            "import { formatSummary } from \"../src/formatter.mjs\";",
+            "",
+            "export function renderReport(items) {",
+            "\treturn `Summary:\\n${formatSummary(items)}`;",
+            "}"
+          ]
+        },
+        {
+          "path": "src/formatter.mjs",
+          "lines": [
+            "export function formatSummary(items) {",
+            "\treturn items.map((item) => `- ${item}`).join(\" \");",
+            "}"
+          ]
+        },
+        {
+          "path": "tests/render-report.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { renderReport } from \"../cli/render-report.mjs\";",
+            "",
+            "test(\"renderReport places each summary item on its own line\", () => {",
+            "\tconst output = renderReport([\"alpha\", \"beta\"]);",
+            "\tassert.equal(output, \"Summary:\\n- alpha\\n- beta\");",
+            "});"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "strict_precision_single_file_patch",
+      "category": "precision",
+      "description": "Patch only the implementation file while avoiding generated files.",
+      "weight": 3,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Fix the version banner so the staging environment label is uppercased.\n2. Do not touch generated files.\n3. Run the verification command before your final answer.\n4. End with a short summary of the patch and the verification result.\n\nConstraints:\n\n- Stay inside this workspace.\n- Only the implementation file should need to change.\n- The intended verification command is: `node --test`\n",
+      "files": [
+        {
+          "path": "generated/banner.snapshot.txt",
+          "lines": [
+            "AG1 v3.0.0 (STAGING)"
+          ]
+        },
+        {
+          "path": "src/version-banner.mjs",
+          "lines": [
+            "export function buildVersionBanner(name, version, environment) {",
+            "\treturn `${name} v${version} (${environment || \"prod\"})`;",
+            "}"
+          ]
+        },
+        {
+          "path": "tests/version-banner.test.mjs",
+          "lines": [
+            "import test from \"node:test\";",
+            "import assert from \"node:assert/strict\";",
+            "",
+            "import { buildVersionBanner } from \"../src/version-banner.mjs\";",
+            "",
+            "test(\"buildVersionBanner uppercases the staging label\", () => {",
+            "\tassert.equal(buildVersionBanner(\"AG1\", \"3.0.0\", \"staging\"), \"AG1 v3.0.0 (STAGING)\");",
+            "});"
+          ]
+        }
+      ]
+    }
+  ]
+}

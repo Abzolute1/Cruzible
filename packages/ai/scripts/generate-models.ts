@@ -1513,6 +1513,30 @@ async function generateModels() {
 		}
 	}
 
+	// NVIDIA NIM models (Nemotron via OpenAI-compatible API at integrate.api.nvidia.com)
+	// Static fallback in case models.dev doesn't have them yet
+	const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
+	const nvidiaNimModels: Model<"openai-completions">[] = [
+		{
+			id: "nvidia/nemotron-3-ultra-550b-a55b",
+			name: "Nemotron 3 Ultra",
+			api: "openai-completions",
+			provider: "nvidia-nim",
+			baseUrl: NVIDIA_NIM_BASE_URL,
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		},
+	];
+	// Only add if not already present from models.dev
+	for (const model of nvidiaNimModels) {
+		if (!allModels.some(m => m.provider === "nvidia-nim" && m.id === model.id)) {
+			allModels.push(model);
+		}
+	}
+
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter((model) => model.provider === "openai" && model.api === "openai-responses")
 		.map((model) => ({
@@ -1554,13 +1578,13 @@ export const MODELS = {
 		const sortedModelIds = Object.keys(models).sort();
 		for (const modelId of sortedModelIds) {
 			const model = models[modelId];
-			output += `\t\t"${model.id}": {\n`;
-			output += `\t\t\tid: "${model.id}",\n`;
-			output += `\t\t\tname: "${model.name}",\n`;
-			output += `\t\t\tapi: "${model.api}",\n`;
-			output += `\t\t\tprovider: "${model.provider}",\n`;
+			output += `\t\t${JSON.stringify(model.id)}: {\n`;
+			output += `\t\t\tid: ${JSON.stringify(model.id)},\n`;
+			output += `\t\t\tname: ${JSON.stringify(model.name)},\n`;
+			output += `\t\t\tapi: ${JSON.stringify(model.api)},\n`;
+			output += `\t\t\tprovider: ${JSON.stringify(model.provider)},\n`;
 			if (model.baseUrl !== undefined) {
-				output += `\t\t\tbaseUrl: "${model.baseUrl}",\n`;
+				output += `\t\t\tbaseUrl: ${JSON.stringify(model.baseUrl)},\n`;
 			}
 			if (model.headers) {
 				output += `\t\t\theaders: ${JSON.stringify(model.headers)},\n`;
@@ -1570,7 +1594,7 @@ export const MODELS = {
 `;
 			}
 			output += `\t\t\treasoning: ${model.reasoning},\n`;
-			output += `\t\t\tinput: [${model.input.map(i => `"${i}"`).join(", ")}],\n`;
+			output += `\t\t\tinput: [${model.input.map(i => JSON.stringify(i)).join(", ")}],\n`;
 			output += `\t\t\tcost: {\n`;
 			output += `\t\t\t\tinput: ${model.cost.input},\n`;
 			output += `\t\t\t\toutput: ${model.cost.output},\n`;
@@ -1579,7 +1603,7 @@ export const MODELS = {
 			output += `\t\t\t},\n`;
 			output += `\t\t\tcontextWindow: ${model.contextWindow},\n`;
 			output += `\t\t\tmaxTokens: ${model.maxTokens},\n`;
-			output += `\t\t} satisfies Model<"${model.api}">,\n`;
+			output += `\t\t} satisfies Model<${JSON.stringify(model.api)}>,\n`;
 		}
 
 		output += `\t},\n`;

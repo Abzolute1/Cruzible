@@ -5,7 +5,14 @@ export type VerificationSelectionOptions = {
 	manifest?: Pick<WorkspaceManifest, "testFiles" | "likelyVerifier">;
 };
 
-export type VerificationFailureKind = "assertion" | "syntax" | "import" | "timeout" | "environment" | "unrelated" | "unknown";
+export type VerificationFailureKind =
+	| "assertion"
+	| "syntax"
+	| "import"
+	| "timeout"
+	| "environment"
+	| "unrelated"
+	| "unknown";
 
 export type VerificationFailureClassification = {
 	kind: VerificationFailureKind;
@@ -70,7 +77,9 @@ function usefulFailureLines(output: string): string[] {
 
 function extractPaths(output: string): string[] {
 	const paths = new Set<string>();
-	for (const match of normalizeOutput(output).matchAll(/(?:^|\s)([A-Za-z0-9_.@/-]+\.(?:mjs|cjs|js|jsx|ts|tsx|json))(?::\d+)?/g)) {
+	for (const match of normalizeOutput(output).matchAll(
+		/(?:^|\s)([A-Za-z0-9_.@/-]+\.(?:mjs|cjs|js|jsx|ts|tsx|json))(?::\d+)?/g,
+	)) {
 		const path = match[1]?.replace(/^\.\//, "");
 		if (path && !path.startsWith("node:")) paths.add(path);
 	}
@@ -78,17 +87,23 @@ function extractPaths(output: string): string[] {
 }
 
 function pathMatchesAny(path: string, candidates: string[]): boolean {
-	return candidates.some((candidate) => path === candidate || path.endsWith(`/${candidate}`) || candidate.endsWith(`/${path}`));
+	return candidates.some(
+		(candidate) => path === candidate || path.endsWith(`/${candidate}`) || candidate.endsWith(`/${path}`),
+	);
 }
 
 function classifyKind(output: string, paths: string[], relevantPaths: string[]): VerificationFailureKind {
 	const normalized = output.toLowerCase();
 	if (/timed?\s*out|timeout|exceeded.*timeout/i.test(output)) return "timeout";
-	if (/err_module_not_found|cannot find module|module not found|failed to resolve|enoent.*(?:open|stat)/i.test(output)) return "import";
+	if (/err_module_not_found|cannot find module|module not found|failed to resolve|enoent.*(?:open|stat)/i.test(output))
+		return "import";
 	if (/syntaxerror|unexpected token|unterminated|string literal|missing \)|ts\d{4}/i.test(output)) return "syntax";
-	if (/eacces|permission denied|network|connection refused|address already in use|spawn .* enoent/i.test(output)) return "environment";
-	if (paths.length > 0 && relevantPaths.length > 0 && !paths.some((path) => pathMatchesAny(path, relevantPaths))) return "unrelated";
-	if (/assertionerror|assert\.|expected|actual|not equal|strictEqual|deepStrictEqual|\bnot ok\b/i.test(output)) return "assertion";
+	if (/eacces|permission denied|network|connection refused|address already in use|spawn .* enoent/i.test(output))
+		return "environment";
+	if (paths.length > 0 && relevantPaths.length > 0 && !paths.some((path) => pathMatchesAny(path, relevantPaths)))
+		return "unrelated";
+	if (/assertionerror|assert\.|expected|actual|not equal|strictEqual|deepStrictEqual|\bnot ok\b/i.test(output))
+		return "assertion";
 	if (/error|failed|failure/i.test(normalized)) return "unknown";
 	return "unknown";
 }
@@ -116,8 +131,7 @@ export function classifyVerificationFailure(
 	const importantLine =
 		lines.find((line) =>
 			/assertionerror|syntaxerror|err_module_not_found|cannot find module|timed?\s*out|timeout|error/i.test(line),
-		) ??
-		lines.find((line) => /\bnot ok\b|expected|actual/i.test(line));
+		) ?? lines.find((line) => /\bnot ok\b|expected|actual/i.test(line));
 	const summaryLines = [importantLine, ...lines.filter((line) => line !== importantLine)].filter(Boolean).slice(0, 4);
 	const summary = summaryLines.join(" | ").slice(0, 500) || "verification failed without a useful textual error";
 	return {

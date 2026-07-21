@@ -58,9 +58,9 @@ describe("AgentSession web research budget", () => {
 		expect(fetchExecutions).toBe(1);
 		const blockedResult = harness.session.messages.find(
 			(message) =>
-				message.role === "toolResult"
-				&& message.isError
-				&& message.content.some(
+				message.role === "toolResult" &&
+				message.isError &&
+				message.content.some(
 					(part) => part.type === "text" && part.text.includes("current-events coverage is already complete"),
 				),
 		);
@@ -108,9 +108,9 @@ describe("AgentSession web research budget", () => {
 		expect(fetchExecutions).toBe(1);
 		const blockedResult = harness.session.messages.find(
 			(message) =>
-				message.role === "toolResult"
-				&& message.isError
-				&& message.content.some(
+				message.role === "toolResult" &&
+				message.isError &&
+				message.content.some(
 					(part) => part.type === "text" && part.text.includes("already returned placeholder/interstitial"),
 				),
 		);
@@ -197,10 +197,11 @@ describe("AgentSession web research budget", () => {
 		expect(searchExecutions).toBe(1);
 		const blockedResult = harness.session.messages.find(
 			(message) =>
-				message.role === "toolResult"
-				&& message.isError
-				&& message.content.some(
-					(part) => part.type === "text" && part.text.includes("broader webSearch query would discard specificity"),
+				message.role === "toolResult" &&
+				message.isError &&
+				message.content.some(
+					(part) =>
+						part.type === "text" && part.text.includes("broader webSearch query would discard specificity"),
 				),
 		);
 		expect(blockedResult).toBeDefined();

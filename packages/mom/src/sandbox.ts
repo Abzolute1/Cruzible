@@ -59,6 +59,10 @@ function execSimple(cmd: string, args: string[]): Promise<string> {
 		child.stderr?.on("data", (d) => {
 			stderr += d;
 		});
+		child.on("error", (err) => {
+			// Spawn failure (e.g. docker not in PATH) - no 'close' event follows
+			reject(err);
+		});
 		child.on("close", (code) => {
 			if (code === 0) resolve(stdout);
 			else reject(new Error(stderr || `Exit code ${code}`));
@@ -101,6 +105,8 @@ export interface ExecResult {
 	code: number;
 }
 
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
 class HostExecutor implements Executor {
 	async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
 		return new Promise((resolve, reject) => {
@@ -114,6 +120,8 @@ class HostExecutor implements Executor {
 
 			let stdout = "";
 			let stderr = "";
+			let stdoutTruncated = false;
+			let stderrTruncated = false;
 			let timedOut = false;
 
 			const timeoutHandle =
@@ -137,16 +145,20 @@ class HostExecutor implements Executor {
 			}
 
 			child.stdout?.on("data", (data) => {
+				if (stdoutTruncated) return;
 				stdout += data.toString();
-				if (stdout.length > 10 * 1024 * 1024) {
-					stdout = stdout.slice(0, 10 * 1024 * 1024);
+				if (stdout.length > MAX_OUTPUT_BYTES) {
+					stdout = stdout.slice(0, MAX_OUTPUT_BYTES);
+					stdoutTruncated = true;
 				}
 			});
 
 			child.stderr?.on("data", (data) => {
+				if (stderrTruncated) return;
 				stderr += data.toString();
-				if (stderr.length > 10 * 1024 * 1024) {
-					stderr = stderr.slice(0, 10 * 1024 * 1024);
+				if (stderr.length > MAX_OUTPUT_BYTES) {
+					stderr = stderr.slice(0, MAX_OUTPUT_BYTES);
+					stderrTruncated = true;
 				}
 			});
 
@@ -155,6 +167,10 @@ class HostExecutor implements Executor {
 				if (options?.signal) {
 					options.signal.removeEventListener("abort", onAbort);
 				}
+
+				// Surface truncation so callers (and the model) can see output was cut
+				if (stdoutTruncated) stdout += "\n[OUTPUT TRUNCATED at 10MB]";
+				if (stderrTruncated) stderr += "\n[OUTPUT TRUNCATED at 10MB]";
 
 				if (options?.signal?.aborted) {
 					reject(new Error(`${stdout}\n${stderr}\nCommand aborted`.trim()));
@@ -180,8 +196,14 @@ class DockerExecutor implements Executor {
 	constructor(private container: string) {}
 
 	async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
-		// Wrap command for docker exec
-		const dockerCmd = `docker exec ${this.container} sh -c ${shellEscape(command)}`;
+		// Wrap command for docker exec. With a timeout set, also enforce it inside the
+		// container (with a grace period so the host side reports the timeout first):
+		// killing the local docker exec client does not reliably kill the exec'd process.
+		const inner =
+			options?.timeout && options.timeout > 0
+				? `timeout -s KILL ${options.timeout + 5} sh -c ${shellEscape(command)}`
+				: `sh -c ${shellEscape(command)}`;
+		const dockerCmd = `docker exec ${this.container} ${inner}`;
 		const hostExecutor = new HostExecutor();
 		return hostExecutor.exec(dockerCmd, options);
 	}

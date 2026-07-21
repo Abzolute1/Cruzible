@@ -2,16 +2,18 @@ import type { AgentMessage } from "@ag1/agent-core";
 import type { ImageContent, Message, TextContent } from "@ag1/ai";
 import { randomUUID } from "crypto";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "fs";
-import { readdir, stat } from "fs/promises";
+import { appendFile, readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
@@ -146,6 +148,9 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+/** Listener invoked after an entry has been appended to the session journal. */
+export type SessionEntryListener = (entry: SessionEntry) => void;
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
 	entry: SessionEntry;
@@ -195,6 +200,10 @@ export type ReadonlySessionManager = Pick<
 	| "getSessionName"
 >;
 
+const SESSION_WRITE_LOCK_STALE_MS = 5 * 60_000;
+const SESSION_WRITE_LOCK_RETRY_MS = 20;
+const SESSION_WRITE_LOCK_TIMEOUT_MS = 2_000;
+
 /** Generate a unique short ID (8 hex chars, collision-checked) */
 function generateId(byId: { has(id: string): boolean }): string {
 	for (let i = 0; i < 100; i++) {
@@ -203,6 +212,133 @@ function generateId(byId: { has(id: string): boolean }): string {
 	}
 	// Fallback to full UUID if somehow we have collisions
 	return randomUUID();
+}
+
+function getErrorCode(error: unknown): string | undefined {
+	return typeof error === "object" && error !== null && "code" in error
+		? (error as { code?: string }).code
+		: undefined;
+}
+
+function waitForSessionLockRetry(): void {
+	const buffer = new SharedArrayBuffer(4);
+	Atomics.wait(new Int32Array(buffer), 0, 0, SESSION_WRITE_LOCK_RETRY_MS);
+}
+
+function sleepSessionLockRetry(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, SESSION_WRITE_LOCK_RETRY_MS));
+}
+
+function getLockOwnerPath(lockPath: string): string {
+	return join(lockPath, "owner");
+}
+
+/**
+ * Remove a stale lock directory left behind by a dead process.
+ *
+ * A lock is only broken when it is old AND has no live owner: the owner file
+ * written at acquisition records the acquiring pid, and a live pid (or EPERM,
+ * meaning the process exists but is owned by another user) keeps the lock
+ * intact. This prevents the stale-check from deleting a third process's fresh
+ * lock. Locks without an owner file (written by older versions) are broken on
+ * age alone.
+ */
+function breakStaleSessionFileLock(lockPath: string): boolean {
+	try {
+		const stats = statSync(lockPath);
+		if (Date.now() - stats.mtimeMs <= SESSION_WRITE_LOCK_STALE_MS) {
+			return false;
+		}
+		let ownerPid: number | undefined;
+		try {
+			ownerPid = Number.parseInt(readFileSync(getLockOwnerPath(lockPath), "utf8"), 10);
+		} catch {
+			ownerPid = undefined; // legacy lock without an owner file
+		}
+		if (ownerPid !== undefined && Number.isInteger(ownerPid) && ownerPid > 0) {
+			if (ownerPid === process.pid) return false; // our own lock: never break it
+			try {
+				process.kill(ownerPid, 0);
+				return false; // owner process is alive
+			} catch (error) {
+				if (getErrorCode(error) !== "ESRCH") return false; // EPERM etc. → process exists
+			}
+		}
+		rmSync(lockPath, { recursive: true, force: true });
+		return true;
+	} catch (error) {
+		if (getErrorCode(error) === "ENOENT") {
+			return true;
+		}
+		throw error;
+	}
+}
+
+/**
+ * Single non-blocking attempt to acquire the session file lock.
+ * Returns the release function on success, null when the lock is held.
+ */
+function tryAcquireSessionFileLock(sessionFile: string): (() => void) | null {
+	const lockPath = `${sessionFile}.lock`;
+	const ownerToken = `${process.pid}:${randomUUID()}`;
+
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			mkdirSync(lockPath, { mode: 0o700 });
+			writeFileSync(getLockOwnerPath(lockPath), ownerToken);
+			return () => {
+				// Only remove the lock if we still own it: a stale-breaker may have
+				// deleted the directory and a third process may have re-acquired it.
+				try {
+					if (readFileSync(getLockOwnerPath(lockPath), "utf8") === ownerToken) {
+						rmSync(lockPath, { recursive: true, force: true });
+					}
+				} catch {
+					// Lock directory (or owner file) already gone.
+				}
+			};
+		} catch (error) {
+			if (getErrorCode(error) !== "EEXIST") {
+				throw error;
+			}
+		}
+
+		if (attempt === 0 && breakStaleSessionFileLock(lockPath)) {
+			continue;
+		}
+		return null;
+	}
+	return null;
+}
+
+/**
+ * Acquire the session file lock, blocking the caller in-process for a bounded
+ * time. Only used by structural rewrites; the hot append path uses the async
+ * variant so the main thread is never blocked on lock contention.
+ */
+function acquireSessionFileLock(sessionFile: string): () => void {
+	const deadline = Date.now() + SESSION_WRITE_LOCK_TIMEOUT_MS;
+	for (;;) {
+		const release = tryAcquireSessionFileLock(sessionFile);
+		if (release) return release;
+		if (Date.now() >= deadline) {
+			throw new SessionLockTimeout(`Timed out waiting for session write lock: ${sessionFile}.lock`);
+		}
+		waitForSessionLockRetry();
+	}
+}
+
+/** Async lock acquisition: retries with timer backoff instead of blocking the main thread. */
+async function acquireSessionFileLockAsync(sessionFile: string): Promise<() => void> {
+	const deadline = Date.now() + SESSION_WRITE_LOCK_TIMEOUT_MS;
+	for (;;) {
+		const release = tryAcquireSessionFileLock(sessionFile);
+		if (release) return release;
+		if (Date.now() >= deadline) {
+			throw new SessionLockTimeout(`Timed out waiting for session write lock: ${sessionFile}.lock`);
+		}
+		await sleepSessionLockRetry();
+	}
 }
 
 /** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */
@@ -217,6 +353,7 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 		}
 
 		entry.id = generateId(ids);
+		ids.add(entry.id);
 		entry.parentId = prevId;
 		prevId = entry.id;
 
@@ -298,6 +435,25 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 		}
 	}
 	return null;
+}
+
+/**
+ * Find the message entry on the current branch whose message object is the
+ * given message (identity match). Returns undefined when the message is not on
+ * the current branch (e.g. it was never persisted).
+ */
+export function findMessageEntryOnBranch(
+	sessionManager: SessionManager,
+	message: AgentMessage,
+): SessionMessageEntry | undefined {
+	const branch = sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "message" && (entry as SessionMessageEntry).message === message) {
+			return entry as SessionMessageEntry;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -439,6 +595,45 @@ interface ParsedSessionFile {
 	malformedLines: number;
 }
 
+/**
+ * Minimal per-entry shape check; entries failing it are treated as corrupt lines.
+ * Without this, an entry like {"type":"message"} with no `message` passed parsing
+ * and crashed later in buildSessionContext. id/parentId are intentionally NOT
+ * required here: v1 files lack them and get them from migrateV1ToV2.
+ */
+function hasValidEntryShape(entry: unknown): entry is FileEntry {
+	if (typeof entry !== "object" || entry === null) return false;
+	const e = entry as Record<string, unknown>;
+	if (typeof e.type !== "string") return false;
+	switch (e.type) {
+		case "session":
+			return typeof e.id === "string";
+		case "message":
+			return typeof e.message === "object" && e.message !== null;
+		case "thinking_level_change":
+			return typeof e.thinkingLevel === "string";
+		case "model_change":
+			return typeof e.provider === "string" && typeof e.modelId === "string";
+		case "compaction":
+			// v1 used firstKeptEntryIndex (number); migration converts it to firstKeptEntryId
+			return (
+				typeof e.summary === "string" &&
+				typeof e.tokensBefore === "number" &&
+				(typeof e.firstKeptEntryId === "string" || typeof e.firstKeptEntryIndex === "number")
+			);
+		case "branch_summary":
+			return typeof e.fromId === "string" && typeof e.summary === "string";
+		case "custom":
+		case "custom_message":
+			return typeof e.customType === "string";
+		case "label":
+			return typeof e.targetId === "string";
+		default:
+			// session_info and unknown/forward-compatible types pass through
+			return true;
+	}
+}
+
 function parseSessionFile(filePath: string): ParsedSessionFile {
 	if (!existsSync(filePath)) {
 		return { entries: [], hasValidHeader: false, malformedLines: 0 };
@@ -453,6 +648,10 @@ function parseSessionFile(filePath: string): ParsedSessionFile {
 		if (!line.trim()) continue;
 		try {
 			const entry = JSON.parse(line) as FileEntry;
+			if (!hasValidEntryShape(entry)) {
+				malformedLines++;
+				continue;
+			}
 			entries.push(entry);
 		} catch {
 			malformedLines++;
@@ -465,6 +664,52 @@ function parseSessionFile(filePath: string): ParsedSessionFile {
 	const header = entries[0];
 	const hasValidHeader = header.type === "session" && typeof (header as any).id === "string";
 	return { entries, hasValidHeader, malformedLines };
+}
+
+function mergeEntriesForSessionRewrite(sessionFile: string, currentEntries: FileEntry[]): FileEntry[] {
+	if (!existsSync(sessionFile) || currentEntries.length === 0) {
+		return currentEntries;
+	}
+
+	const parsed = parseSessionFile(sessionFile);
+	if (!parsed.hasValidHeader || parsed.malformedLines > 0 || parsed.entries.length === 0) {
+		return currentEntries;
+	}
+
+	const currentHeader = currentEntries[0] as SessionHeader;
+	const diskHeader = parsed.entries[0] as SessionHeader;
+	if (diskHeader.id !== currentHeader.id) {
+		return currentEntries;
+	}
+
+	if ((diskHeader.version ?? 1) < (currentHeader.version ?? CURRENT_SESSION_VERSION)) {
+		return currentEntries;
+	}
+
+	const currentById = new Map<string, SessionEntry>();
+	for (const entry of currentEntries) {
+		if (entry.type !== "session") {
+			currentById.set(entry.id, entry);
+		}
+	}
+
+	const merged: FileEntry[] = [currentHeader];
+	const mergedIds = new Set<string>();
+	for (const entry of parsed.entries.slice(1)) {
+		if (entry.type === "session" || typeof entry.id !== "string") {
+			continue;
+		}
+		merged.push(currentById.get(entry.id) ?? entry);
+		mergedIds.add(entry.id);
+	}
+
+	for (const entry of currentEntries.slice(1)) {
+		if (entry.type !== "session" && !mergedIds.has(entry.id)) {
+			merged.push(entry);
+		}
+	}
+
+	return merged;
 }
 
 function isValidSessionFile(filePath: string): boolean {
@@ -648,12 +893,41 @@ async function listSessionsFromDir(
 }
 
 /**
- * Manages conversation sessions as append-only trees stored in JSONL files.
+ * Error thrown when a session entry cannot be persisted to disk.
+ * Thrown before any in-memory state is mutated, so memory and the session
+ * file stay consistent and later appends can still succeed.
+ */
+export class SessionPersistenceError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "SessionPersistenceError";
+	}
+}
+
+/**
+ * Thrown when the session write lock cannot be acquired within the bounded
+ * wait. Subclasses SessionPersistenceError so existing persistence-failure
+ * handling applies, while remaining distinguishable via instanceof/name.
+ */
+export class SessionLockTimeout extends SessionPersistenceError {
+	constructor(message: string) {
+		super(message);
+		this.name = "SessionLockTimeout";
+	}
+}
+
+/**
+ * Manages conversation sessions as trees stored in JSONL files.
  *
  * Each session entry has an id and parentId forming a tree structure. The "leaf"
  * pointer tracks the current position. Appending creates a child of the current leaf.
  * Branching moves the leaf to an earlier entry, allowing new branches without
  * modifying history.
+ *
+ * Persistence: appending an entry writes its single JSONL line under the session
+ * file lock (the common path). Structural operations — migration, branch
+ * extraction, corruption recovery — rewrite the whole file atomically under the
+ * same lock, merging in entries other processes may have appended.
  *
  * Use buildSessionContext() to get the resolved message list for the LLM, which
  * handles compaction summaries and follows the path from root to current leaf.
@@ -669,8 +943,38 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private entryListeners: SessionEntryListener[] = [];
 
-	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
+	/**
+	 * Register a listener invoked after every journal entry is appended.
+	 * Listener errors are swallowed so observers can never break persistence.
+	 * Returns an unsubscribe function.
+	 */
+	onEntryAppended(listener: SessionEntryListener): () => void {
+		this.entryListeners.push(listener);
+		return () => {
+			const index = this.entryListeners.indexOf(listener);
+			if (index >= 0) this.entryListeners.splice(index, 1);
+		};
+	}
+
+	private _notifyEntryAppended(entry: SessionEntry): void {
+		for (const listener of this.entryListeners) {
+			try {
+				listener(entry);
+			} catch {
+				// Observer errors must not affect session persistence.
+			}
+		}
+	}
+
+	private constructor(
+		cwd: string,
+		sessionDir: string,
+		sessionFile: string | undefined,
+		persist: boolean,
+		newSessionOptions?: NewSessionOptions,
+	) {
 		this.cwd = cwd;
 		this.sessionDir = sessionDir;
 		this.persist = persist;
@@ -681,13 +985,16 @@ export class SessionManager {
 		if (sessionFile) {
 			this.setSessionFile(sessionFile);
 		} else {
-			this.newSession();
+			this.newSession(newSessionOptions);
 		}
 	}
 
 	/** Switch to a different session file (used for resume and branching) */
 	setSessionFile(sessionFile: string): void {
 		this.sessionFile = resolve(sessionFile);
+		if (existsSync(this.sessionFile) && statSync(this.sessionFile).isDirectory()) {
+			throw new Error(`Cannot open session: path is a directory: ${this.sessionFile}`);
+		}
 		if (existsSync(this.sessionFile)) {
 			const parsed = parseSessionFile(this.sessionFile);
 			this.fileEntries = parsed.hasValidHeader && parsed.malformedLines === 0 ? parsed.entries : [];
@@ -695,10 +1002,14 @@ export class SessionManager {
 			// If file was empty or corrupted (no valid header or malformed lines), quarantine it and start fresh.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
+				// Preserve the session id when the header itself was readable.
+				const preservedId = parsed.hasValidHeader ? (parsed.entries[0] as SessionHeader).id : undefined;
 				if (existsSync(explicitPath)) {
 					quarantineCorruptedSessionFile(explicitPath);
 				}
-				this.newSession();
+				// Reset in-memory state WITHOUT persisting: newSession() here would first
+				// write an orphan empty session file under a fresh timestamped name.
+				this.resetSessionState(preservedId ? { id: preservedId } : undefined);
 				this.sessionFile = explicitPath;
 				this._rewriteFile();
 				return;
@@ -720,6 +1031,21 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
+		const timestamp = this.resetSessionState(options);
+		if (this.persist) {
+			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+			this._rewriteFile();
+		}
+		return this.sessionFile;
+	}
+
+	/**
+	 * Reset in-memory state to a fresh session header without persisting anything.
+	 * Used when the target file path is managed separately (corruption recovery)
+	 * so no orphan empty session file is created. Returns the header timestamp.
+	 */
+	private resetSessionState(options?: NewSessionOptions): string {
 		this.sessionId = options?.id ?? randomUUID();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
@@ -734,13 +1060,7 @@ export class SessionManager {
 		this.byId.clear();
 		this.labelsById.clear();
 		this.leafId = null;
-
-		if (this.persist) {
-			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
-			this._rewriteFile();
-		}
-		return this.sessionFile;
+		return timestamp;
 	}
 
 	private _buildIndex(): void {
@@ -766,15 +1086,21 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		const tempPath = `${this.sessionFile}.${randomUUID()}.tmp`;
+		const releaseLock = acquireSessionFileLock(this.sessionFile);
+		let tempPath: string | undefined;
 		try {
+			this.fileEntries = mergeEntriesForSessionRewrite(this.sessionFile, this.fileEntries);
+			this._buildIndex();
+
+			const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
+			tempPath = `${this.sessionFile}.${randomUUID()}.tmp`;
 			writeFileSync(tempPath, content);
 			renameSync(tempPath, this.sessionFile);
 		} finally {
-			if (existsSync(tempPath)) {
+			if (tempPath && existsSync(tempPath)) {
 				unlinkSync(tempPath);
 			}
+			releaseLock();
 		}
 	}
 
@@ -798,16 +1124,95 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
-	_persist(_entry: SessionEntry): void {
+	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
-		this._rewriteFile();
+		try {
+			if (!existsSync(this.sessionFile)) {
+				// No file on disk yet (e.g. an explicit --session path that was never
+				// created): write the full current state first so the file starts
+				// with the session header, then append the entry below.
+				this._rewriteFile();
+			}
+			// Fast path: append just this entry's line under the session file lock.
+			// Holding the same lock as _rewriteFile() means the append cannot
+			// interleave with a full rewrite, and appends from other processes only
+			// ever add lines — a later rewrite merges them back in, so no entries
+			// are lost. Full rewrites stay for structural operations only.
+			const releaseLock = acquireSessionFileLock(this.sessionFile);
+			try {
+				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			} finally {
+				releaseLock();
+			}
+		} catch (error) {
+			if (error instanceof SessionPersistenceError) {
+				throw error;
+			}
+			throw new SessionPersistenceError(
+				`Failed to persist session entry to ${this.sessionFile}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	/**
+	 * Async variant of _persist: waits for the write lock with timer backoff
+	 * instead of blocking the main thread. Used by the event-processing queue.
+	 */
+	private async _persistAsync(entry: SessionEntry): Promise<void> {
+		if (!this.persist || !this.sessionFile) return;
+		try {
+			if (!existsSync(this.sessionFile)) {
+				this._rewriteFile();
+			}
+			const releaseLock = await acquireSessionFileLockAsync(this.sessionFile);
+			try {
+				await appendFile(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			} finally {
+				releaseLock();
+			}
+		} catch (error) {
+			if (error instanceof SessionPersistenceError) {
+				throw error;
+			}
+			throw new SessionPersistenceError(
+				`Failed to persist session entry to ${this.sessionFile}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
+		// Validate serializability before touching any state: extension-supplied
+		// details may contain BigInt or circular references that make
+		// JSON.stringify throw. Persist before mutating in-memory state so a
+		// failure cannot leave memory and disk diverged.
+		try {
+			JSON.stringify(entry);
+		} catch (error) {
+			throw new SessionPersistenceError(
+				`Session entry of type "${entry.type}" is not serializable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		this._persist(entry);
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
-		this._persist(entry);
+		this._notifyEntryAppended(entry);
+	}
+
+	/** Async variant of _appendEntry: persists via the non-blocking lock path. */
+	private async _appendEntryAsync(entry: SessionEntry): Promise<void> {
+		try {
+			JSON.stringify(entry);
+		} catch (error) {
+			throw new SessionPersistenceError(
+				`Session entry of type "${entry.type}" is not serializable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		await this._persistAsync(entry);
+		this.fileEntries.push(entry);
+		this.byId.set(entry.id, entry);
+		this.leafId = entry.id;
+		this._notifyEntryAppended(entry);
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -825,6 +1230,22 @@ export class SessionManager {
 			message,
 		};
 		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Async variant of appendMessage: identical semantics, but lock acquisition
+	 * waits without blocking the main thread. Used by the event-processing queue.
+	 */
+	async appendMessageAsync(message: Message | CustomMessage | BashExecutionMessage): Promise<string> {
+		const entry: SessionMessageEntry = {
+			type: "message",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			message,
+		};
+		await this._appendEntryAsync(entry);
 		return entry.id;
 	}
 
@@ -944,6 +1365,31 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 		};
 		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Async variant of appendCustomMessageEntry: identical semantics, but lock
+	 * acquisition waits without blocking the main thread. Used by the
+	 * event-processing queue.
+	 */
+	async appendCustomMessageEntryAsync<T = unknown>(
+		customType: string,
+		content: string | (TextContent | ImageContent)[],
+		display: boolean,
+		details?: T,
+	): Promise<string> {
+		const entry: CustomMessageEntry<T> = {
+			type: "custom_message",
+			customType,
+			content,
+			display,
+			details,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		await this._appendEntryAsync(entry);
 		return entry.id;
 	}
 
@@ -1240,9 +1686,9 @@ export class SessionManager {
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.ag1/agent/sessions/<encoded-cwd>/).
 	 */
-	static create(cwd: string, sessionDir?: string): SessionManager {
+	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const dir = sessionDir ?? getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true);
+		return new SessionManager(cwd, dir, undefined, true, options);
 	}
 
 	/**
@@ -1252,6 +1698,10 @@ export class SessionManager {
 	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
 	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
+		// Fail with a clear error instead of an uncaught EISDIR from readFileSync.
+		if (existsSync(path) && statSync(path).isDirectory()) {
+			throw new Error(`Cannot open session: path is a directory: ${path}`);
+		}
 		// Extract cwd from session header if possible, otherwise use process.cwd()
 		const entries = loadEntriesFromFile(path);
 		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;

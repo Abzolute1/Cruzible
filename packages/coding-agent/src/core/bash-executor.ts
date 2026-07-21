@@ -6,13 +6,11 @@
  * - Direct calls from modes that need bash execution
  */
 
-import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import stripAnsi from "strip-ansi";
 import { sanitizeBinaryOutput } from "../utils/shell.js";
-import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
+import { type BashOperations, createDefaultBashOperations } from "./tools/bash.js";
+import { getBashFullOutputTempPath, shouldRetainBashFullOutput } from "./tools/bash-output-retention.js";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.js";
 
 // ============================================================================
@@ -35,7 +33,7 @@ export interface BashResult {
 	cancelled: boolean;
 	/** Whether the output was truncated */
 	truncated: boolean;
-	/** Path to temp file containing full output (if output exceeded truncation threshold) */
+	/** Path to retained full output, only present when AG1_RETAIN_BASH_FULL_OUTPUT=1 */
 	fullOutputPath?: string;
 }
 
@@ -57,7 +55,7 @@ export interface BashResult {
  * @returns Promise resolving to execution result
  */
 export function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
-	return executeBashWithOperations(command, process.cwd(), createLocalBashOperations(), options);
+	return executeBashWithOperations(command, process.cwd(), createDefaultBashOperations(), options);
 }
 
 /**
@@ -77,17 +75,31 @@ export async function executeBashWithOperations(
 	let tempFilePath: string | undefined;
 	let tempFileStream: WriteStream | undefined;
 	let totalBytes = 0;
+	const retainFullOutput = shouldRetainBashFullOutput();
 
 	const ensureTempFile = () => {
+		if (!retainFullOutput) {
+			return;
+		}
 		if (tempFilePath) {
 			return;
 		}
-		const id = randomBytes(8).toString("hex");
-		tempFilePath = join(tmpdir(), `ag1-bash-${id}.log`);
-		tempFileStream = createWriteStream(tempFilePath);
+		tempFilePath = getBashFullOutputTempPath();
+		tempFileStream = createWriteStream(tempFilePath, { mode: 0o600 });
 		for (const chunk of outputChunks) {
 			tempFileStream.write(chunk);
 		}
+	};
+
+	const closeTempFile = async () => {
+		const stream = tempFileStream;
+		if (!stream) {
+			return;
+		}
+		await new Promise<void>((resolve, reject) => {
+			stream.once("error", reject);
+			stream.end(() => resolve());
+		});
 	};
 
 	const decoder = new TextDecoder();
@@ -127,15 +139,12 @@ export async function executeBashWithOperations(
 			signal: options?.signal,
 		});
 
-		if (tempFileStream) {
-			tempFileStream.end();
-		}
-
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);
 		if (truncationResult.truncated) {
 			ensureTempFile();
 		}
+		await closeTempFile();
 		const cancelled = options?.signal?.aborted ?? false;
 
 		return {
@@ -146,10 +155,6 @@ export async function executeBashWithOperations(
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
-		if (tempFileStream) {
-			tempFileStream.end();
-		}
-
 		// Check if it was an abort
 		if (options?.signal?.aborted) {
 			const fullOutput = outputChunks.join("");
@@ -157,6 +162,7 @@ export async function executeBashWithOperations(
 			if (truncationResult.truncated) {
 				ensureTempFile();
 			}
+			await closeTempFile();
 			return {
 				output: truncationResult.truncated ? truncationResult.content : fullOutput,
 				exitCode: undefined,
@@ -166,6 +172,7 @@ export async function executeBashWithOperations(
 			};
 		}
 
+		await closeTempFile();
 		throw err;
 	}
 }

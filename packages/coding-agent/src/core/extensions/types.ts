@@ -8,12 +8,7 @@
  * - Interact with the user via UI primitives
  */
 
-import type {
-	AgentMessage,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ThinkingLevel,
-} from "@ag1/agent-core";
+import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback, ThinkingLevel } from "@ag1/agent-core";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -253,6 +248,19 @@ export interface ContextUsage {
 	percent: number | null;
 	/** Whether tokens/percent are heuristic estimates instead of post-response usage-based values. */
 	estimated?: boolean;
+	/** Heuristic attribution for the current context footprint by source. */
+	attribution?: ContextTokenAttribution;
+}
+
+export interface ContextTokenAttribution {
+	systemPrompt: number;
+	toolSchemas: number;
+	retainedTranscript: number;
+	summaries: number;
+	toolOutputs: number;
+	estimatedTotal: number;
+	/** Provider/serialization overhead or exact-usage delta not explained by local estimates. */
+	overhead: number;
 }
 
 export interface CompactOptions {
@@ -1432,12 +1440,22 @@ export interface Extension {
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 }
 
+/** Workspace-trust prompt recorded when project-local extensions were skipped (see the trust gate in loader.ts). */
+export interface ProjectTrustPrompt {
+	/** Project config dir (e.g. <cwd>/.ag1) that must be trusted before its extensions may run */
+	projectConfigDir: string;
+	/** Project-local extension paths that were skipped pending trust */
+	extensionPaths: string[];
+}
+
 /** Result of loading extensions. */
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
+	/** Set when project-local extensions were skipped because the project is not trusted */
+	pendingTrustPrompt?: ProjectTrustPrompt;
 }
 
 // ============================================================================

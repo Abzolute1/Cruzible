@@ -1,22 +1,11 @@
-import { existsSync, mkdirSync, readFileSync } from "fs";
-import { appendFile, writeFile } from "fs/promises";
+import { existsSync, mkdirSync } from "fs";
+import { writeFile } from "fs/promises";
 import { join } from "path";
 import * as log from "./log.js";
 
 export interface Attachment {
 	original: string; // original filename from uploader
 	local: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
-}
-
-export interface LoggedMessage {
-	date: string; // ISO 8601 date (e.g., "2025-11-26T10:44:00.000Z") for easy grepping
-	ts: string; // slack timestamp or epoch ms
-	user: string; // user ID (or "bot" for bot responses)
-	userName?: string; // handle (e.g., "mario")
-	displayName?: string; // display name (e.g., "Mario Zechner")
-	text: string;
-	attachments: Attachment[];
-	isBot: boolean;
 }
 
 export interface ChannelStoreConfig {
@@ -28,16 +17,20 @@ interface PendingDownload {
 	channelId: string;
 	localPath: string; // relative path
 	url: string;
+	resolve: () => void; // called when this download finishes (success or failure)
 }
+
+// Cap attachment downloads so a multi-GB file can't OOM the bot
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 export class ChannelStore {
 	private workingDir: string;
 	private botToken: string;
 	private pendingDownloads: PendingDownload[] = [];
 	private isDownloading = false;
-	// Track recently logged message timestamps to prevent duplicates
-	// Key: "channelId:ts", automatically cleaned up after 60 seconds
-	private recentlyLogged = new Map<string, number>();
+	// In-flight downloads by local path, so runs can wait for their attachments
+	private inFlightDownloads = new Map<string, Promise<void>>();
 
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
@@ -99,7 +92,10 @@ export class ChannelStore {
 			});
 
 			// Queue for background download
-			this.pendingDownloads.push({ channelId, localPath, url });
+			const done = new Promise<void>((resolve) => {
+				this.pendingDownloads.push({ channelId, localPath, url, resolve });
+			});
+			this.inFlightDownloads.set(localPath, done);
 		}
 
 		// Trigger background download
@@ -109,77 +105,11 @@ export class ChannelStore {
 	}
 
 	/**
-	 * Log a message to the channel's log.jsonl
-	 * Returns false if message was already logged (duplicate)
+	 * Wait for the given attachments' downloads to finish (success or failure).
+	 * Call before starting a run so the agent never reads paths that don't exist yet.
 	 */
-	async logMessage(channelId: string, message: LoggedMessage): Promise<boolean> {
-		// Check for duplicate (same channel + timestamp)
-		const dedupeKey = `${channelId}:${message.ts}`;
-		if (this.recentlyLogged.has(dedupeKey)) {
-			return false; // Already logged
-		}
-
-		// Mark as logged and schedule cleanup after 60 seconds
-		this.recentlyLogged.set(dedupeKey, Date.now());
-		setTimeout(() => this.recentlyLogged.delete(dedupeKey), 60000);
-
-		const logPath = join(this.getChannelDir(channelId), "log.jsonl");
-
-		// Ensure message has a date field
-		if (!message.date) {
-			// Parse timestamp to get date
-			let date: Date;
-			if (message.ts.includes(".")) {
-				// Slack timestamp format (1234567890.123456)
-				date = new Date(parseFloat(message.ts) * 1000);
-			} else {
-				// Epoch milliseconds
-				date = new Date(parseInt(message.ts, 10));
-			}
-			message.date = date.toISOString();
-		}
-
-		const line = `${JSON.stringify(message)}\n`;
-		await appendFile(logPath, line, "utf-8");
-		return true;
-	}
-
-	/**
-	 * Log a bot response
-	 */
-	async logBotResponse(channelId: string, text: string, ts: string): Promise<void> {
-		await this.logMessage(channelId, {
-			date: new Date().toISOString(),
-			ts,
-			user: "bot",
-			text,
-			attachments: [],
-			isBot: true,
-		});
-	}
-
-	/**
-	 * Get the timestamp of the last logged message for a channel
-	 * Returns null if no log exists
-	 */
-	getLastTimestamp(channelId: string): string | null {
-		const logPath = join(this.workingDir, channelId, "log.jsonl");
-		if (!existsSync(logPath)) {
-			return null;
-		}
-
-		try {
-			const content = readFileSync(logPath, "utf-8");
-			const lines = content.trim().split("\n");
-			if (lines.length === 0 || lines[0] === "") {
-				return null;
-			}
-			const lastLine = lines[lines.length - 1];
-			const message = JSON.parse(lastLine) as LoggedMessage;
-			return message.ts;
-		} catch {
-			return null;
-		}
+	async waitForDownloads(localPaths: string[]): Promise<void> {
+		await Promise.all(localPaths.map((p) => this.inFlightDownloads.get(p)).filter((p) => p !== undefined));
 	}
 
 	/**
@@ -200,6 +130,9 @@ export class ChannelStore {
 			} catch (error) {
 				const errorMsg = error instanceof Error ? error.message : String(error);
 				log.logWarning(`Failed to download attachment`, `${item.localPath}: ${errorMsg}`);
+			} finally {
+				this.inFlightDownloads.delete(item.localPath);
+				item.resolve();
 			}
 		}
 
@@ -218,17 +151,53 @@ export class ChannelStore {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		const response = await fetch(url, {
-			headers: {
-				Authorization: `Bearer ${this.botToken}`,
-			},
-		});
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
 
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		try {
+			const response = await fetch(url, {
+				headers: {
+					Authorization: `Bearer ${this.botToken}`,
+				},
+				signal: controller.signal,
+			});
+
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+			}
+
+			// Reject early when the server tells us the size
+			const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+			if (contentLength > MAX_ATTACHMENT_BYTES) {
+				throw new Error(`Attachment too large: ${contentLength} bytes (limit ${MAX_ATTACHMENT_BYTES})`);
+			}
+
+			// Stream with a hard cap - a missing/lying Content-Length can't OOM us
+			if (!response.body) {
+				throw new Error("Empty response body");
+			}
+			const reader = response.body.getReader();
+			const chunks: Uint8Array[] = [];
+			let total = 0;
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				total += value.byteLength;
+				if (total > MAX_ATTACHMENT_BYTES) {
+					await reader.cancel();
+					throw new Error(`Attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`);
+				}
+				chunks.push(value);
+			}
+
+			await writeFile(filePath, Buffer.concat(chunks.map((c) => Buffer.from(c))));
+		} catch (error) {
+			if (error instanceof Error && error.name === "AbortError") {
+				throw new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s`);
+			}
+			throw error;
+		} finally {
+			clearTimeout(timeout);
 		}
-
-		const buffer = await response.arrayBuffer();
-		await writeFile(filePath, Buffer.from(buffer));
 	}
 }

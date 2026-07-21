@@ -28,7 +28,9 @@ export async function handleInteractiveEditorSubmitAfterBuiltin(
 ): Promise<boolean> {
 	if (text.startsWith("!")) {
 		if (state.isPlanningMode) {
-			actions.showWarning("Bash shortcuts are blocked in planning mode. Switch to interactive or autonomous mode to execute shell commands.");
+			actions.showWarning(
+				"Bash shortcuts are blocked in planning mode. Switch to interactive or autonomous mode to execute shell commands.",
+			);
 			actions.restoreEditorText(text);
 			return true;
 		}

@@ -24,6 +24,10 @@ function isImageFile(filePath: string): string | null {
 	return IMAGE_MIME_TYPES[ext] || null;
 }
 
+// Images are read as base64 (4/3 size inflation) through the executor, whose stdout
+// is capped at 10MB - so reject images that would not fit (7MB -> ~9.3MB base64).
+const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
+
 const readSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're reading and why (shown to user)" }),
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
@@ -49,6 +53,18 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 			const mimeType = isImageFile(path);
 
 			if (mimeType) {
+				// Reject images too large to fit base64-encoded in the executor output cap
+				const sizeResult = await executor.exec(`wc -c < ${shellEscape(path)}`, { signal });
+				if (sizeResult.code !== 0) {
+					throw new Error(sizeResult.stderr || `Failed to read file: ${path}`);
+				}
+				const fileSize = Number.parseInt(sizeResult.stdout.trim(), 10);
+				if (fileSize > MAX_IMAGE_BYTES) {
+					throw new Error(
+						`Image too large: ${formatSize(fileSize)} (limit ${formatSize(MAX_IMAGE_BYTES)}). Resize or convert it first (e.g. with bash).`,
+					);
+				}
+
 				// Read as image (binary) - use base64
 				const result = await executor.exec(`base64 < ${shellEscape(path)}`, { signal });
 				if (result.code !== 0) {
@@ -70,7 +86,7 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 			if (countResult.code !== 0) {
 				throw new Error(countResult.stderr || `Failed to read file: ${path}`);
 			}
-			const totalFileLines = Number.parseInt(countResult.stdout.trim(), 10) + 1; // wc -l counts newlines, not lines
+			const totalFileLines = Number.parseInt(countResult.stdout.trim(), 10);
 
 			// Apply offset if specified (1-indexed)
 			const startLine = offset ? Math.max(1, offset) : 1;
@@ -114,7 +130,7 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 			if (truncation.firstLineExceedsLimit) {
 				// First line at offset exceeds 50KB - tell model to use bash
 				const firstLineSize = formatSize(Buffer.byteLength(selectedContent.split("\n")[0], "utf-8"));
-				outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
+				outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${shellEscape(path)} | head -c ${DEFAULT_MAX_BYTES}]`;
 				details = { truncation };
 			} else if (truncation.truncated) {
 				// Truncation occurred - build actionable notice

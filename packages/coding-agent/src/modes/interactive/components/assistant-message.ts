@@ -12,6 +12,17 @@ export class AssistantMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private hiddenThinkingLabel: string;
 	private lastMessage?: AssistantMessage;
+	/** True while the message is still streaming in (thinking renders live). */
+	private streaming = false;
+	/** Verbose mode: thinking always renders in full, even after completion. */
+	private verbose = false;
+	/** True when this component renders no visible text (collapsed thinking only). */
+	private thinkingOnly = false;
+
+	/** Whether this component carries no visible text content (safe to group tools across). */
+	get isThinkingOnly(): boolean {
+		return this.thinkingOnly;
+	}
 
 	constructor(
 		message?: AssistantMessage,
@@ -53,8 +64,26 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	setStreaming(streaming: boolean): void {
+		this.streaming = streaming;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setVerbose(verbose: boolean): void {
+		this.verbose = verbose;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
 	updateContent(message: AssistantMessage): void {
 		this.lastMessage = message;
+		this.thinkingOnly =
+			!message.content.some((c) => c.type === "text" && this.getRenderableText(c.text).trim()) &&
+			message.stopReason !== "error" &&
+			message.stopReason !== "aborted";
 
 		this.clear();
 		this.addChild(new Spacer(1));
@@ -67,6 +96,26 @@ export class AssistantMessageComponent extends Container {
 
 		if (hasVisibleContent) {
 			this.addChild(new Spacer(1));
+		}
+
+		// Condensed mode: thinking (including fragments interleaved with text) is summarized
+		// once, up front — never split a sentence around a "Thinking… (7 chars)" stub.
+		const collapsedThinking = !this.hideThinkingBlock && !this.verbose && !this.streaming;
+		if (collapsedThinking) {
+			const totalThinkingChars = message.content
+				.filter((c) => c.type === "thinking")
+				.reduce((sum, c) => sum + c.thinking.trim().length, 0);
+			if (totalThinkingChars > 0) {
+				this.addChild(
+					new Text(
+						theme.italic(
+							theme.fg("thinkingText", `Thinking… (${totalThinkingChars.toLocaleString("en-US")} chars)`),
+						),
+						0,
+						0,
+					),
+				);
+			}
 		}
 
 		// Render content in order
@@ -83,6 +132,9 @@ export class AssistantMessageComponent extends Container {
 					}),
 				);
 			} else if (content.type === "thinking" && content.thinking.trim()) {
+				if (collapsedThinking) {
+					continue; // summarized once above
+				}
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
@@ -98,7 +150,8 @@ export class AssistantMessageComponent extends Container {
 					if (hasVisibleContentAfter) {
 						this.addChild(new Spacer(1));
 					}
-				} else {
+				} else if (this.verbose || this.streaming) {
+					// Full thinking: verbose mode, or live while streaming (that's when it's interesting).
 					this.addChild(
 						new Markdown(content.thinking.trim(), 0, 0, this.markdownTheme, {
 							color: (text: string) => theme.fg("thinkingText", text),
@@ -137,5 +190,4 @@ export class AssistantMessageComponent extends Container {
 	private getRenderableText(text: string): string {
 		return stripXmlToolCallArtifacts(text).trim();
 	}
-
 }

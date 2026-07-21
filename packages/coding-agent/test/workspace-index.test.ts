@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
 	buildWorkspaceIndex,
 	buildWorkspaceManifest,
+	buildWorkspaceRepoMap,
+	clearWorkspaceIndexCache,
 	formatWorkspaceManifest,
+	formatWorkspaceRepoMap,
 } from "../src/core/workspace-index.js";
 
 describe("workspace-index", () => {
@@ -26,6 +29,7 @@ describe("workspace-index", () => {
 			join(rootDir, "src", "config-parser.mjs"),
 			'import { defaults } from "./defaults.mjs";\nexport function parseConfig(input) { return { ...defaults, ...input }; }\n',
 		);
+		writeFileSync(join(rootDir, "src", "index.mjs"), 'export { parseConfig } from "./config-parser.mjs";\n');
 		writeFileSync(
 			join(rootDir, "tests", "config-parser.test.mjs"),
 			'import { parseConfig } from "../src/config-parser.mjs";\n',
@@ -35,6 +39,7 @@ describe("workspace-index", () => {
 	});
 
 	afterEach(() => {
+		clearWorkspaceIndexCache(rootDir);
 		rmSync(rootDir, { recursive: true, force: true });
 	});
 
@@ -70,5 +75,30 @@ describe("workspace-index", () => {
 		expect(manifest.files).toContain("tests/config-parser.test.mjs");
 		expect(manifest.likelyVerifier).toBe("npm test");
 		expect(formatWorkspaceManifest(manifest)).toContain("Controlled workspace manifest:");
+		expect(formatWorkspaceManifest(manifest)).toContain("Repo map:");
+	});
+
+	test("builds a compact repo map from the workspace index", () => {
+		const index = buildWorkspaceIndex({ rootDir });
+		const repoMap = buildWorkspaceRepoMap(index);
+
+		expect(repoMap.topDirectories).toContain("src");
+		expect(repoMap.entrypoints).toContain("src/index.mjs");
+		expect(repoMap.packageManagerFiles).toContain("package.json");
+		expect(repoMap.testFileCount).toBe(1);
+		expect(formatWorkspaceRepoMap(repoMap)).toContain("file types:");
+	});
+
+	test("caches stable workspace indexes until invalidated", () => {
+		const first = buildWorkspaceIndex({ rootDir });
+		const second = buildWorkspaceIndex({ rootDir });
+
+		expect(second).toBe(first);
+
+		clearWorkspaceIndexCache(rootDir);
+		const rebuilt = buildWorkspaceIndex({ rootDir });
+
+		expect(rebuilt).not.toBe(first);
+		expect(rebuilt.files.map((file) => file.path)).toEqual(first.files.map((file) => file.path));
 	});
 });

@@ -13,6 +13,7 @@ import {
 	buildLocalEvidenceControl,
 	buildLocalEvidencePromptAddendum,
 	buildRuntimeContinuationMessage,
+	isPromptSteeringEnabled,
 } from "../core/local-evidence-steering.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
 import { buildPromptIntentAddendum } from "../core/prompt-intent-steering.js";
@@ -47,6 +48,10 @@ type XmlRecoverableSession = AgentSessionRuntime["session"] & {
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
+	// Last-resort watchdog interval for turn completion. Completion is normally
+	// signalled by the real terminal event (agent_end) or by the prompt()
+	// promise settling; this timer only covers a missing terminal event (e.g.
+	// a run that produced a final message but no agent_end).
 	const turnCompletionIdleMs = 150;
 	const maxContinuationRecoveriesPerPrompt = 2;
 	let exitCode = 0;
@@ -88,21 +93,24 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			};
 		});
 
-	const shouldCancelPendingTurnCompletion = (event: {
-		type: string;
-		message?: unknown;
-	}): boolean => {
+	const shouldCancelPendingTurnCompletion = (event: { type: string; message?: unknown }): boolean => {
 		if (finalAssistantSeenThisPrompt) {
 			return false;
 		}
 		if (event.type === "agent_start") return true;
-		if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+		if (
+			event.type === "tool_execution_start" ||
+			event.type === "tool_execution_update" ||
+			event.type === "tool_execution_end"
+		) {
 			return true;
 		}
 		if (event.type === "message_update") return true;
 		if (event.type === "message_start") {
 			const message =
-				event.message && typeof event.message === "object" ? (event.message as { role?: string; display?: boolean }) : undefined;
+				event.message && typeof event.message === "object"
+					? (event.message as { role?: string; display?: boolean })
+					: undefined;
 			if (message?.role === "custom" && message.display === false) {
 				return false;
 			}
@@ -126,7 +134,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		if (toolName === "websearch" && typeof args.query === "string") return args.query;
 		if (toolName === "webfetch" && typeof args.url === "string") return args.url;
 		if (toolName === "read") {
-			const path = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
+			const path =
+				typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
 			if (!path) return undefined;
 			const suffix: string[] = [];
 			if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);
@@ -174,20 +183,24 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		const normalizedText = text.toLowerCase();
 		const normalizedToolName = normalizeToolName(toolName);
 		if (
-			normalizedToolName === "read"
-			&& (normalizedText.includes("path not found") || normalizedText.includes("use find to locate files") || normalizedText.includes("use ls to inspect directories"))
+			normalizedToolName === "read" &&
+			(normalizedText.includes("path not found") ||
+				normalizedText.includes("use find to locate files") ||
+				normalizedText.includes("use ls to inspect directories"))
 		) {
 			return true;
 		}
 		const looksLikeValidationFailure =
-			/^Validation failed for tool\b/i.test(text)
-			|| normalizedText.includes("input is invalid")
-			|| normalizedText.includes("must have required property");
+			/^Validation failed for tool\b/i.test(text) ||
+			normalizedText.includes("input is invalid") ||
+			normalizedText.includes("must have required property");
 		if (!looksLikeValidationFailure) return false;
-		return normalizedToolName === "find"
-			|| normalizedToolName === "grep"
-			|| normalizedToolName === "read"
-			|| normalizedToolName === "edit";
+		return (
+			normalizedToolName === "find" ||
+			normalizedToolName === "grep" ||
+			normalizedToolName === "read" ||
+			normalizedToolName === "edit"
+		);
 	};
 
 	const buildToolValidationRecoveryMessage = (toolName: string): string => {
@@ -198,13 +211,14 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				: normalizedToolName === "grep"
 					? "- Reissue exactly one valid `grep` call with a concrete `pattern` argument."
 					: normalizedToolName === "edit"
-					? "- Reissue exactly one valid `edit` call with a concrete `path` and a non-empty `edits` array."
+						? "- Reissue exactly one valid `edit` call with a concrete `path` and a non-empty `edits` array."
 						: "- Reissue exactly one valid `read` call with a concrete `path` or `filePath` argument.";
-		const replacementHint = normalizedToolName === "edit"
-			? "\n- Each edit entry must contain at least one actual replacement such as `oldText` and `newText`."
-			: normalizedToolName === "read"
-				? "\n- If the exact path is not known, do one direct discovery call (`find` or `ls`) instead of retrying the same missing path."
-				: "";
+		const replacementHint =
+			normalizedToolName === "edit"
+				? "\n- Each edit entry must contain at least one actual replacement such as `oldText` and `newText`."
+				: normalizedToolName === "read"
+					? "\n- If the exact path is not known, do one direct discovery call (`find` or `ls`) instead of retrying the same missing path."
+					: "";
 		return [
 			"<runtime-continuation-state>",
 			"- The previous tool call was malformed or incomplete.",
@@ -245,9 +259,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			return;
 		}
 		const nextActiveToolNames =
-			mode === "read_then_answer" && configuredActiveToolNames.includes("read")
-				? ["read"]
-				: [];
+			mode === "read_then_answer" && configuredActiveToolNames.includes("read") ? ["read"] : [];
 		if (!sameToolSet(session.getActiveToolNames(), nextActiveToolNames)) {
 			maybeSession.setActiveToolsByName(nextActiveToolNames);
 		}
@@ -261,8 +273,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	const shouldSendDecisiveRuntimeControl = (mode: "answer_now" | "read_then_answer"): boolean =>
-		runtimeControlPriority(mode) > runtimeControlPriority(lastDecisiveRuntimeControlMode)
-		|| runtimeToolLockViolatedThisTurn;
+		runtimeControlPriority(mode) > runtimeControlPriority(lastDecisiveRuntimeControlMode) ||
+		runtimeToolLockViolatedThisTurn;
 
 	const sendRuntimeControlMessage = (mode: "answer_now" | "read_then_answer", message: string): void => {
 		applyRuntimeToolLock(mode);
@@ -279,7 +291,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				},
 				{ deliverAs: "steer" },
 			)
-			.catch(() => {});
+			.catch((error) => {
+				console.error("[PrintMode] Failed to send runtime control message:", error);
+			});
 	};
 
 	const assistantMessageLooksFinal = (message: AssistantMessage): boolean => {
@@ -287,7 +301,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		const content = Array.isArray(message.content) ? message.content : [];
 		const hasToolCall = content.some((part) => part.type === "toolCall");
 		if (hasToolCall) return false;
-		const hasText = content.some((part) => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0);
+		const hasText = content.some(
+			(part) => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0,
+		);
 		return hasText;
 	};
 
@@ -310,16 +326,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	const assistantMessageNeedsContinuationRecovery = (message: AssistantMessage): boolean => {
 		const content = Array.isArray(message.content) ? message.content : [];
 		if (content.some((part) => part.type === "toolCall")) return false;
-		const hasText = content.some((part) => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0);
-		const hasThinking = content.some((part) => part.type === "thinking" && typeof part.thinking === "string" && part.thinking.trim().length > 0);
+		const hasText = content.some(
+			(part) => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0,
+		);
+		const hasThinking = content.some(
+			(part) => part.type === "thinking" && typeof part.thinking === "string" && part.thinking.trim().length > 0,
+		);
 		if (message.stopReason === "length" && hasThinking && !hasText) {
 			return true;
 		}
-		if (
-			message.stopReason === "length" &&
-			activeRuntimeToolLock === "answer_now" &&
-			(hasText || hasThinking)
-		) {
+		if (message.stopReason === "length" && activeRuntimeToolLock === "answer_now" && (hasText || hasThinking)) {
 			return true;
 		}
 		if (message.stopReason !== "stop") return false;
@@ -338,7 +354,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		finalAssistantMessageForPrompt = undefined;
 		activePromptText = message;
 		const addenda = [
-			buildPromptIntentAddendum(message),
+			isPromptSteeringEnabled() ? buildPromptIntentAddendum(message) : undefined,
 			consumeRuntimePromptAddendum(promptOptions?.systemPromptAddendum),
 		].filter((part): part is string => typeof part === "string" && part.trim().length > 0);
 		const systemPromptAddendum = addenda.length > 0 ? addenda.join("\n\n") : undefined;
@@ -388,8 +404,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			fileAccessHistory: currentTurnFileAccessHistory,
 		};
 		if (prepareNextTurn) {
-			pendingRuntimePromptAddendum = buildLocalEvidencePromptAddendum(steeringContext);
-			const continuationMessage = buildRuntimeContinuationMessage(steeringContext);
+			pendingRuntimePromptAddendum = isPromptSteeringEnabled()
+				? buildLocalEvidencePromptAddendum(steeringContext)
+				: undefined;
+			const continuationMessage = isPromptSteeringEnabled()
+				? buildRuntimeContinuationMessage(steeringContext)
+				: undefined;
 			if (continuationMessage) {
 				await session.sendCustomMessage(
 					{
@@ -473,9 +493,20 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					runtimeToolLockViolatedThisTurn = false;
 					break;
 				case "agent_end":
-					scheduleTurnCompletion();
+					// Real terminal signal: the run is over. Resolve completion
+					// immediately when the final assistant message was already seen
+					// (unless an XML recovery run was queued, which needs the
+					// watchdog window to start its follow-up run); otherwise arm
+					// the idle watchdog as a last resort — a continuation or
+					// recovery follow-up run cancels it via agent_start.
+					if (finalAssistantSeenThisPrompt && !xmlRecoverySteerQueuedThisTurn) {
+						clearPendingTurnCompletionTimer();
+						pendingTurnCompletionResolve?.();
+					} else {
+						scheduleTurnCompletion();
+					}
 					break;
-				case "message_end":
+				case "message_end": {
 					let continuationRecoveryQueued = false;
 					if (
 						event.message.role === "assistant" &&
@@ -486,9 +517,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						continuationRecoveryCountThisPrompt += 1;
 						continuationRecoveryQueued = true;
 						const repeatedRecovery = continuationRecoveryCountThisPrompt > 1;
-						const continuationMessage = activeRuntimeToolLock === "answer_now"
-							? (
-								(event.message as AssistantMessage).stopReason === "length"
+						const continuationMessage =
+							activeRuntimeToolLock === "answer_now"
+								? (event.message as AssistantMessage).stopReason === "length"
 									? [
 											"<runtime-continuation-state>",
 											"- The previous answer was cut off mid-response.",
@@ -503,22 +534,21 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 											"- Do not stop again without either an answer or a concrete tool call.",
 											"</runtime-continuation-state>",
 										].join("\n")
-								)
-							: repeatedRecovery
-								? [
-										"<runtime-continuation-state>",
-										"- Repeated planning-only continuations are not allowed.",
-										"- Do not emit more internal reasoning or planning text.",
-										"- Output exactly one concrete next tool call now, or the direct answer if no tool is needed.",
-										"</runtime-continuation-state>",
-									].join("\n")
-								: [
-										"<runtime-continuation-state>",
-										"- The previous assistant step stopped at internal reasoning only.",
-										"- Continue immediately with either one concrete next tool call or a direct answer.",
-										"- Do not stop again without externalizing the next action.",
-										"</runtime-continuation-state>",
-									].join("\n");
+								: repeatedRecovery
+									? [
+											"<runtime-continuation-state>",
+											"- Repeated planning-only continuations are not allowed.",
+											"- Do not emit more internal reasoning or planning text.",
+											"- Output exactly one concrete next tool call now, or the direct answer if no tool is needed.",
+											"</runtime-continuation-state>",
+										].join("\n")
+									: [
+											"<runtime-continuation-state>",
+											"- The previous assistant step stopped at internal reasoning only.",
+											"- Continue immediately with either one concrete next tool call or a direct answer.",
+											"- Do not stop again without externalizing the next action.",
+											"</runtime-continuation-state>",
+										].join("\n");
 						void session
 							.sendCustomMessage(
 								{
@@ -529,7 +559,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 								},
 								{ deliverAs: "followUp" },
 							)
-							.catch(() => {});
+							.catch((error) => {
+								console.error("[PrintMode] Failed to queue continuation recovery:", error);
+							});
 					}
 					if (
 						event.message.role === "assistant" &&
@@ -555,9 +587,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 									},
 									{ deliverAs: "steer" },
 								)
-								.catch(() => {});
+								.catch((error) => {
+									console.error("[PrintMode] Failed to queue XML recovery steering:", error);
+								});
 						}
-						void (session as XmlRecoverableSession).recoverXmlToolCallsNow?.().catch(() => {});
+						void (session as XmlRecoverableSession).recoverXmlToolCallsNow?.().catch((error) => {
+							console.error("[PrintMode] XML tool-call recovery failed:", error);
+						});
 					}
 					if (
 						event.message.role === "assistant" &&
@@ -571,20 +607,20 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						scheduleTurnCompletion();
 					}
 					break;
+				}
 				case "tool_execution_start":
 					pendingToolArgs.set(event.toolCallId, event.args ?? {});
 					if (!finalAssistantSeenThisPrompt && activeRuntimeToolLock) {
 						const normalizedToolName = normalizeToolName(event.toolName);
 						const allowedTool =
-							activeRuntimeToolLock === "read_then_answer"
-								? normalizedToolName === "read"
-								: false;
+							activeRuntimeToolLock === "read_then_answer" ? normalizedToolName === "read" : false;
 						if (!allowedTool) {
 							runtimeToolLockViolatedThisTurn = true;
 							applyRuntimeToolLock(activeRuntimeToolLock);
-							const correctiveMessage = activeRuntimeToolLock === "answer_now"
-								? "Runtime control: Answer now from the evidence already gathered. No more tool calls are needed for this turn."
-								: "Runtime control: One targeted read is the only remaining tool step for this turn. Do not run another grep, find, ls, webSearch, or webFetch.";
+							const correctiveMessage =
+								activeRuntimeToolLock === "answer_now"
+									? "Runtime control: Answer now from the evidence already gathered. No more tool calls are needed for this turn."
+									: "Runtime control: One targeted read is the only remaining tool step for this turn. Do not run another grep, find, ls, webSearch, or webFetch.";
 							if (correctiveMessage !== lastRuntimeSteerSent) {
 								lastRuntimeSteerSent = correctiveMessage;
 								void session
@@ -597,7 +633,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 										},
 										{ deliverAs: "steer" },
 									)
-									.catch(() => {});
+									.catch((error) => {
+										console.error("[PrintMode] Failed to send tool-lock corrective:", error);
+									});
 							}
 						}
 					}
@@ -606,7 +644,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					const toolName = normalizeToolName(event.toolName);
 					const args = pendingToolArgs.get(event.toolCallId);
 					pendingToolArgs.delete(event.toolCallId);
-					const filePath = extractTrackedFileFromToolResult(toolName, args, event.result, session.sessionManager.getCwd());
+					const filePath = extractTrackedFileFromToolResult(
+						toolName,
+						args,
+						event.result,
+						session.sessionManager.getCwd(),
+					);
 					const toolOutcome: ToolOutcome = {
 						tool: toolName,
 						success: !event.isError,
@@ -635,10 +678,17 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 									},
 									{ deliverAs: "followUp" },
 								)
-								.catch(() => {});
+								.catch((error) => {
+									console.error("[PrintMode] Failed to queue tool validation recovery:", error);
+								});
 						}
 					}
-					if (!finalAssistantSeenThisPrompt && activeRuntimeToolLock === "read_then_answer" && toolName === "read" && toolOutcome.success) {
+					if (
+						!finalAssistantSeenThisPrompt &&
+						activeRuntimeToolLock === "read_then_answer" &&
+						toolName === "read" &&
+						toolOutcome.success
+					) {
 						sendRuntimeControlMessage(
 							"answer_now",
 							"Runtime control: The targeted read already completed. Answer now from the local evidence you have. No more tool calls are needed for this turn.",
@@ -650,13 +700,23 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						fileAccessHistory: currentTurnFileAccessHistory,
 						userPrompt: activePromptText,
 					};
-					pendingRuntimePromptAddendum = buildLocalEvidencePromptAddendum(steeringContext);
-					const runtimeControl = buildLocalEvidenceControl(steeringContext);
-					if (!finalAssistantSeenThisPrompt && runtimeControl && shouldSendDecisiveRuntimeControl(runtimeControl.mode)) {
+					pendingRuntimePromptAddendum = isPromptSteeringEnabled()
+						? buildLocalEvidencePromptAddendum(steeringContext)
+						: undefined;
+					const runtimeControl = isPromptSteeringEnabled()
+						? buildLocalEvidenceControl(steeringContext)
+						: undefined;
+					if (
+						!finalAssistantSeenThisPrompt &&
+						runtimeControl &&
+						shouldSendDecisiveRuntimeControl(runtimeControl.mode)
+					) {
 						sendRuntimeControlMessage(runtimeControl.mode, runtimeControl.message);
 						break;
 					}
-					const runtimeAddendum = buildLocalEvidencePromptAddendum(steeringContext);
+					const runtimeAddendum = isPromptSteeringEnabled()
+						? buildLocalEvidencePromptAddendum(steeringContext)
+						: undefined;
 					if (!runtimeAddendum) {
 						break;
 					}
@@ -675,7 +735,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 								},
 								{ deliverAs: "followUp" },
 							)
-							.catch(() => {});
+							.catch((error) => {
+								console.error("[PrintMode] Failed to send runtime prompt addendum:", error);
+							});
 					}
 					break;
 				}
@@ -692,6 +754,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		await rebindSession();
+		// Resolve vision capability before the first prompt so turn 1's tool
+		// list is correct even on single-slot local servers (a fire-and-forget
+		// probe would queue behind the first generation and time out).
+		await session.ensureVisionCapabilityResolved?.();
 		debugLogger = new SessionDebugLogger({
 			session: session,
 			projectRoot: session.sessionManager.getCwd(),
@@ -722,7 +788,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					console.error(
 						classifiedFailure
 							? `${classifiedFailure.message}\n${classifiedFailure.recoveryHint}`
-							: (assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`),
+							: assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`,
 					);
 					exitCode = 1;
 				} else {
@@ -744,7 +810,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe?.();
 		debugLogger?.dispose();
 		if (!exitedAfterFinalAssistant) {
-			await (session as XmlRecoverableSession).abort?.().catch(() => {});
+			await (session as XmlRecoverableSession).abort?.().catch((error) => {
+				console.error("[PrintMode] Failed to abort session during cleanup:", error);
+			});
 		}
 		await runtimeHost.dispose();
 		await flushRawStdout();

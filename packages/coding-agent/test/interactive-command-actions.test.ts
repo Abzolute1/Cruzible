@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
-import { dispatchInteractiveBuiltinCommand, type InteractiveBuiltinCommandActions } from "../src/modes/interactive/interactive-command-actions.js";
+import {
+	dispatchInteractiveBuiltinCommand,
+	type InteractiveBuiltinCommandActions,
+} from "../src/modes/interactive/interactive-command-actions.js";
 
 function createActions(): InteractiveBuiltinCommandActions {
 	return {
@@ -19,6 +22,7 @@ function createActions(): InteractiveBuiltinCommandActions {
 		handleWorkspaceCommand: vi.fn(),
 		handleChangelogCommand: vi.fn(),
 		handleHotkeysCommand: vi.fn(),
+		handleTodoCommand: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showTreeSelector: vi.fn(),
 		showOAuthSelector: vi.fn(async () => {}),
@@ -31,6 +35,7 @@ function createActions(): InteractiveBuiltinCommandActions {
 		handleReloadCommand: vi.fn(async () => {}),
 		handleArminSaysHi: vi.fn(),
 		showSessionSelector: vi.fn(),
+		toggleVerboseMode: vi.fn(),
 		shutdown: vi.fn(async () => {}),
 	};
 }
@@ -78,6 +83,15 @@ describe("interactive-command-actions", () => {
 		await dispatchInteractiveBuiltinCommand({ kind: "plan", action: "show" }, actions);
 
 		expect(actions.handlePlanCommand).toHaveBeenCalledWith({ kind: "plan", action: "show" });
+		expect(actions.clearEditor).toHaveBeenCalledOnce();
+	});
+
+	test("dispatches todo through the dedicated todo handler", async () => {
+		const actions = createActions();
+
+		await dispatchInteractiveBuiltinCommand({ kind: "todo" }, actions);
+
+		expect(actions.handleTodoCommand).toHaveBeenCalledOnce();
 		expect(actions.clearEditor).toHaveBeenCalledOnce();
 	});
 });

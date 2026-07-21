@@ -21,8 +21,6 @@
  * Then use /model to select custom-anthropic/claude-sonnet-4-5
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-import type { ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
 import {
 	type Api,
 	type AssistantMessage,
@@ -44,6 +42,8 @@ import {
 	type ToolResultMessage,
 } from "@ag1/ai";
 import type { ExtensionAPI } from "@ag1/coding-agent";
+import Anthropic from "@anthropic-ai/sdk";
+import type { ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
 
 // =============================================================================
 // OAuth Implementation (copied from packages/ai/src/utils/oauth/anthropic.ts)

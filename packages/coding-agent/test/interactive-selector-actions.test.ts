@@ -1,6 +1,9 @@
-import { describe, expect, test, vi } from "vitest";
 import type { Model } from "@ag1/ai";
-import { performInteractiveModelSwitch, renameInteractiveSession } from "../src/modes/interactive/interactive-selector-actions.js";
+import { describe, expect, test, vi } from "vitest";
+import {
+	performInteractiveModelSwitch,
+	renameInteractiveSession,
+} from "../src/modes/interactive/interactive-selector-actions.js";
 
 const { openSessionManager } = vi.hoisted(() => ({
 	openSessionManager: vi.fn(),

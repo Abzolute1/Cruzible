@@ -1,23 +1,24 @@
 import { describe, expect, test } from "vitest";
 import {
 	buildFallbackInteractivePlanArtifact,
+	buildInteractivePlanArtifactFromSubmission,
 	buildPlanClarificationPrompt,
 	buildPlanExecutionPrompt,
-	buildPlanStepExecutionPrompt,
 	buildPlanRevisionPrompt,
+	buildPlanStepExecutionPrompt,
 	extractInteractivePlanArtifact,
 	formatInteractivePlanArtifact,
 	formatInteractivePlanHistory,
 	getAnsweredClarificationCount,
-	getCompletedStepCount,
 	getClarificationAnswers,
+	getCompletedStepCount,
+	getInteractivePlanArtifacts,
+	getLatestInteractivePlanArtifact,
 	getLatestInteractivePlanStepExecutionRecord,
 	getNextInteractivePlanStep,
 	getNextInteractivePlanStepIndex,
-	getInteractivePlanArtifacts,
-	getLatestInteractivePlanArtifact,
-	type InteractivePlanArtifact,
 	INTERACTIVE_PLAN_ARTIFACT_TYPE,
+	type InteractivePlanArtifact,
 	markInteractivePlanStepComplete,
 	parseInteractivePlanStepExecutionReview,
 	recordInteractivePlanStepExecutionReview,
@@ -133,14 +134,15 @@ Clarifying Questions
 		expect(artifact).toBeTruthy();
 		expect(artifact?.status).toBe("clarifying");
 		expect(artifact?.steps).toEqual([]);
-		expect(artifact?.openQuestions).toEqual([
-			"Target language?",
-			"Platform/interface?",
-			"Key features needed?",
-		]);
+		expect(artifact?.openQuestions).toEqual(["Target language?", "Platform/interface?", "Key features needed?"]);
 		expect(artifact?.clarificationOptionSets?.[0]).toEqual(["Python", "TypeScript", "something else"]);
 		expect(artifact?.clarificationOptionSets?.[1]).toEqual(["terminal", "desktop GUI", "web browser"]);
-		expect(artifact?.clarificationOptionSets?.[2]).toEqual(["basic movement only", "food", "animation", "persistence too"]);
+		expect(artifact?.clarificationOptionSets?.[2]).toEqual([
+			"basic movement only",
+			"food",
+			"animation",
+			"persistence too",
+		]);
 	});
 
 	test("reclassifies question-like steps into clarifying interview state", () => {
@@ -158,12 +160,7 @@ Steps:
 		expect(artifact).toBeTruthy();
 		expect(artifact?.status).toBe("clarifying");
 		expect(artifact?.steps).toEqual([]);
-		expect(artifact?.openQuestions).toEqual([
-			"Target language?",
-			"Interface type?",
-			"Platform?",
-			"Features scope?",
-		]);
+		expect(artifact?.openQuestions).toEqual(["Target language?", "Interface type?", "Platform?", "Features scope?"]);
 		expect(artifact?.clarificationOptionSets?.[0]).toEqual(["Python", "JavaScript", "Another language"]);
 		expect(artifact?.clarificationOptionSets?.[2]).toEqual(["Desktop", "web browser", "mobile"]);
 	});
@@ -268,7 +265,13 @@ Open Questions
 		expect(artifact).toBeTruthy();
 		expect(artifact?.status).toBe("clarifying");
 		expect(artifact?.openQuestions).toEqual(["Target language?", "Target interface/platform?", "Feature scope?"]);
-		expect(artifact?.clarificationOptionSets?.[0]).toEqual(["Python", "JavaScript/TypeScript", "C++", "Rust", "Other"]);
+		expect(artifact?.clarificationOptionSets?.[0]).toEqual([
+			"Python",
+			"JavaScript/TypeScript",
+			"C++",
+			"Rust",
+			"Other",
+		]);
 	});
 
 	test("does not start the fallback interview when foundational choices are already present", () => {
@@ -278,9 +281,9 @@ Open Questions
 
 	test("starts the fallback interview for wrapper phrases like enter planmode for a generic game", () => {
 		expect(shouldStartWithFallbackPlanningInterview("Hey, let's enter planmode for a snake game!")).toBe(true);
-		expect(shouldStartWithFallbackPlanningInterview("Start planning mode for a browser snake game in TypeScript")).toBe(
-			false,
-		);
+		expect(
+			shouldStartWithFallbackPlanningInterview("Start planning mode for a browser snake game in TypeScript"),
+		).toBe(false);
 	});
 
 	test("normalizes wrapper phrasing down to the actual planning goal", () => {
@@ -384,11 +387,7 @@ Clarifying Questions
 
 		expect(artifact).toBeTruthy();
 		expect(artifact?.status).toBe("clarifying");
-		expect(artifact?.openQuestions).toEqual([
-			"Target language?",
-			"Target interface/platform?",
-			"Feature scope?",
-		]);
+		expect(artifact?.openQuestions).toEqual(["Target language?", "Target interface/platform?", "Feature scope?"]);
 		expect(artifact?.clarificationOptionSets?.[1]).toEqual(["Terminal", "Desktop GUI", "Web browser", "Mobile"]);
 	});
 
@@ -510,9 +509,9 @@ Clarifying Questions
 			steps: [],
 			openQuestions: ["Should runtime bootstrap stay in the same file?"],
 		};
-		expect(buildPlanClarificationPrompt(clarifyingArtifact, "Keep runtime bootstrap in the same file for now")).toContain(
-			"User clarification:",
-		);
+		expect(
+			buildPlanClarificationPrompt(clarifyingArtifact, "Keep runtime bootstrap in the same file for now"),
+		).toContain("User clarification:");
 		expect(formatInteractivePlanHistory([artifact])).toContain("Plan History");
 		expect(formatInteractivePlanHistory([artifact])).toContain("v2 · accepted");
 		expect(formatInteractivePlanHistory([artifact])).toContain("Progress: 1/2 complete");
@@ -531,7 +530,9 @@ Clarifying Questions
 		expect(getClarificationAnswers(answered)).toEqual(["Use TypeScript.", ""]);
 		expect(getAnsweredClarificationCount(answered)).toBe(1);
 		expect(formatInteractivePlanArtifact(answered)).toContain("Clarification Answers");
-		expect(buildPlanClarificationPrompt(answered, "Q1 answered, Q2 still open")).toContain("Saved interview answers:");
+		expect(buildPlanClarificationPrompt(answered, "Q1 answered, Q2 still open")).toContain(
+			"Saved interview answers:",
+		);
 		expect(buildPlanClarificationPrompt(answered, "Q1 answered, Q2 still open")).toContain("A1: Use TypeScript.");
 	});
 
@@ -578,7 +579,7 @@ Added the execution promotion path and kept the plan artifact update logic intac
 		expect(formatInteractivePlanArtifact(recorded)).toContain("Recent Execution Review");
 	});
 
-	test("rejects execution reviews that omit required headings", () => {
+	test("salvages execution reviews that omit optional headings", () => {
 		const artifact = createArtifactForStatusTest({
 			status: "executing",
 			executionStepIndex: 1,
@@ -595,8 +596,26 @@ Added the execution promotion path and kept the plan artifact update logic intac
 ## Files Touched
 - src/modes/interactive/interactive-mode.ts`;
 
-		expect(parseInteractivePlanStepExecutionReview(assistantText, 1, "Add execute promotion")).toBeUndefined();
-		expect(recordInteractivePlanStepExecutionReview(artifact, 1, assistantText)).toBe(artifact);
+		const record = parseInteractivePlanStepExecutionReview(assistantText, 1, "Add execute promotion");
+		expect(record?.status).toBe("reviewed");
+		expect(record?.filesTouched).toEqual(["src/modes/interactive/interactive-mode.ts"]);
+		expect(record?.verification).toEqual([]);
+		expect(record?.remaining).toEqual([]);
+		expect(record?.blockers).toEqual([]);
+		expect(recordInteractivePlanStepExecutionReview(artifact, 1, assistantText)).not.toBe(artifact);
+	});
+
+	test("rejects execution reviews missing status or summary", () => {
+		const withoutSummary = `## Execution Status
+completed
+
+## Files Touched
+- src/a.ts`;
+		expect(parseInteractivePlanStepExecutionReview(withoutSummary, 1, "Add execute promotion")).toBeUndefined();
+
+		const withoutStatus = `## Execution Summary
+Did the work.`;
+		expect(parseInteractivePlanStepExecutionReview(withoutStatus, 1, "Add execute promotion")).toBeUndefined();
 	});
 
 	test("marks and reopens plan steps", () => {
@@ -620,23 +639,95 @@ Added the execution promotion path and kept the plan artifact update logic intac
 			],
 		});
 
+		// Marking the last open step flips the plan to the completed terminal state
 		const completed = markInteractivePlanStepComplete(artifact, 1);
-		expect(completed.status).toBe("accepted");
+		expect(completed.status).toBe("completed");
 		expect(completed.completedStepIndexes).toEqual([0, 1]);
 		expect(completed.executionStepIndex).toBeUndefined();
 		expect(getLatestInteractivePlanStepExecutionRecord(completed, 1)?.status).toBe("completed");
 		expect(getNextInteractivePlanStepIndex(completed)).toBeUndefined();
 
 		const reopened = reopenInteractivePlanStep(completed, 0);
+		expect(reopened.status).toBe("accepted");
 		expect(reopened.completedStepIndexes).toEqual([1]);
 		expect(getLatestInteractivePlanStepExecutionRecord(reopened, 0)?.status).toBe("reopened");
 		expect(getNextInteractivePlanStepIndex(reopened)).toBe(0);
 	});
+
+	test("marks steps without flipping to completed while steps remain open", () => {
+		const artifact = createArtifactForStatusTest({ status: "executing", executionStepIndex: 0 });
+		const updated = markInteractivePlanStepComplete(artifact, 0);
+		expect(updated.status).toBe("accepted");
+		expect(updated.completedStepIndexes).toEqual([0]);
+		expect(getNextInteractivePlanStepIndex(updated)).toBe(1);
+	});
+
+	test("agent review saying completed auto-advances the step and completes the plan", () => {
+		const artifact = createArtifactForStatusTest({
+			status: "executing",
+			completedStepIndexes: [0],
+			executionStepIndex: 1,
+			executionStep: "Add execute promotion",
+		});
+		const assistantText = `## Execution Status
+completed
+
+## Execution Summary
+Promotion path implemented and verified.`;
+		const updated = recordInteractivePlanStepExecutionReview(artifact, 1, assistantText);
+		expect(updated.completedStepIndexes).toEqual([0, 1]);
+		expect(updated.status).toBe("completed");
+		expect(updated.executionStepIndex).toBeUndefined();
+	});
+
+	test("agent review without completion keeps the step open", () => {
+		const artifact = createArtifactForStatusTest({
+			status: "executing",
+			executionStepIndex: 1,
+			executionStep: "Add execute promotion",
+		});
+		const assistantText = `## Execution Status
+reviewed
+
+## Execution Summary
+Partial progress, more to do.`;
+		const updated = recordInteractivePlanStepExecutionReview(artifact, 1, assistantText);
+		expect(updated.completedStepIndexes ?? []).toEqual([]);
+		expect(updated.status).toBe("executing");
+	});
+
+	test("builds artifacts from structured submit_plan payloads", () => {
+		const draft = buildInteractivePlanArtifactFromSubmission({
+			goal: "Improve planning mode",
+			submission: {
+				summary: "Structured capture.",
+				steps: ["Persist plan artifacts", "Add execute promotion"],
+				verification: ["Run plan tests"],
+			},
+		});
+		expect(draft?.status).toBe("draft");
+		expect(draft?.steps).toEqual(["Persist plan artifacts", "Add execute promotion"]);
+		expect(draft?.verification).toEqual(["Run plan tests"]);
+		expect(draft?.rawPlan).toContain("1. Persist plan artifacts");
+
+		const clarifying = buildInteractivePlanArtifactFromSubmission({
+			goal: "a snake game",
+			submission: {
+				summary: "Need foundational choices first.",
+				openQuestions: [{ question: "Target language?", options: ["Python", "TypeScript"] }],
+			},
+		});
+		expect(clarifying?.status).toBe("clarifying");
+		expect(clarifying?.openQuestions).toEqual(["Target language?"]);
+		expect(clarifying?.clarificationOptionSets).toEqual([["Python", "TypeScript"]]);
+
+		expect(
+			buildInteractivePlanArtifactFromSubmission({ goal: "x", submission: { summary: "nothing" } }),
+		).toBeUndefined();
+	});
 });
 
-function createArtifactForStatusTest(
-	overrides: Partial<InteractivePlanArtifact> = {},
-): InteractivePlanArtifact {
+function createArtifactForStatusTest(overrides: Partial<InteractivePlanArtifact> = {}): InteractivePlanArtifact {
 	return {
 		version: 1,
 		planId: "plan_status",

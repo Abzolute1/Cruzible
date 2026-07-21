@@ -306,6 +306,10 @@ async function runSingleAgent(
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				// Name the child's debug log like a built-in subagent run
+				// (subagent_<datetime>_<name>_<model>) instead of an unrelated
+				// top-level session, so delegated work stays recognizable.
+				env: { ...process.env, AG1_DEBUG_SESSION_NAME: agent.name },
 			});
 			let buffer = "";
 

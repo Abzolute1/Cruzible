@@ -74,8 +74,12 @@ stack: tests/session-store.test.mjs:22:10
 	});
 
 	test("classifies syntax, import, timeout, and unrelated failures", () => {
-		expect(classifyVerificationFailure("SyntaxError: Unexpected token ':' at src/config-parser.mjs:4").kind).toBe("syntax");
-		expect(classifyVerificationFailure("Error [ERR_MODULE_NOT_FOUND]: Cannot find module './missing.js'").kind).toBe("import");
+		expect(classifyVerificationFailure("SyntaxError: Unexpected token ':' at src/config-parser.mjs:4").kind).toBe(
+			"syntax",
+		);
+		expect(classifyVerificationFailure("Error [ERR_MODULE_NOT_FOUND]: Cannot find module './missing.js'").kind).toBe(
+			"import",
+		);
 		expect(classifyVerificationFailure("Command timed out after 30000ms").kind).toBe("timeout");
 		expect(
 			classifyVerificationFailure("not ok 1 tests/unrelated.test.mjs AssertionError", {

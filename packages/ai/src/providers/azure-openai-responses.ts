@@ -102,14 +102,16 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) delete (block as { index?: number }).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });

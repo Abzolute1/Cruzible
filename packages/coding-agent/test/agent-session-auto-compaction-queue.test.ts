@@ -143,11 +143,16 @@ describe("AgentSession auto-compaction queue resume", () => {
 		)._runAutoCompaction.bind(session);
 
 		await runAutoCompaction("threshold", false);
-		session.agent.state.messages.push({
-			role: "user",
-			content: [{ type: "text", text: "newer prompt" }],
-			timestamp: Date.now() + 1,
-		});
+		// Agent.state.messages is copy-on-read: assign through the setter so the
+		// mutation reaches the live transcript (a bare .push() mutates a discarded copy).
+		session.agent.state.messages = [
+			...session.agent.state.messages,
+			{
+				role: "user",
+				content: [{ type: "text", text: "newer prompt" }],
+				timestamp: Date.now() + 1,
+			},
+		];
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(continueSpy).not.toHaveBeenCalled();

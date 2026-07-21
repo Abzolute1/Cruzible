@@ -3,7 +3,7 @@
 // Wires cost tracking and budget status into AG1's AgentSession lifecycle.
 // Provides: cost tracking, budget status reporting, and behavioral prompt injection.
 
-import type { AssistantMessage } from "@ag1/ai";
+import type { AssistantMessage, Model } from "@ag1/ai";
 import type { AgentSessionEvent, AgentSessionEventListener } from "../agent-session.js";
 import { AUTON_BEHAVIORAL_PROMPT } from "./behavioral-prompt.js";
 import { type CompactionPolicy, selectCompactionPolicy } from "./compaction-policy.js";
@@ -47,7 +47,6 @@ export class AutonHook {
 	private compactionPolicy: CompactionPolicy | null;
 	private turnCount = 0;
 	private session: { unsubscribe?: () => void } | null = null;
-	private _eventHandler: AgentSessionEventListener | null = null;
 	private _budgetCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 	// Config
@@ -79,7 +78,10 @@ export class AutonHook {
 	}
 
 	/** Bind to a session — wires the message_end handler into the session lifecycle */
-	bindSession(session: { subscribe: (listener: AgentSessionEventListener) => () => void }): void {
+	bindSession(session: { subscribe: (listener: AgentSessionEventListener) => () => void; model?: Model<any> }): void {
+		// The model's declared rates make the budget hard-stop real: without them
+		// every pricing path is an estimate and --max-cost never enforces.
+		this.costTracker.setDeclaredModelCost(session.model?.cost);
 		const handler: AgentSessionEventListener = (event: AgentSessionEvent) => {
 			if (
 				event.type === "message_end" &&
@@ -102,7 +104,6 @@ export class AutonHook {
 			}
 		};
 		const unsubscribe = session.subscribe(handler);
-		this._eventHandler = handler;
 		this.session = { unsubscribe };
 	}
 
@@ -234,7 +235,6 @@ export class AutonHook {
 		}
 
 		// Clear references
-		this._eventHandler = null;
 		this.session = null;
 
 		// Reset turn counter
@@ -300,19 +300,14 @@ export function attachAutonHook(
 		) {
 			const msg = (event as { message: AssistantMessage }).message;
 			if (msg.usage) {
-				hook.recordUsage(
-					msg.usage.input,
-					msg.usage.output,
-					msg.usage.cacheRead ?? 0,
-					msg.usage.cacheWrite ?? 0,
-				);
+				hook.recordUsage(msg.usage.input, msg.usage.output, msg.usage.cacheRead ?? 0, msg.usage.cacheWrite ?? 0);
 			}
 		}
 	};
 	const unsubscribe = runtime.session.subscribe(handler);
 
 	// Store unsubscribe for cleanup
-	(hook as unknown as Record<string, { unsubscribe?: () => void } | null>)["session"] = { unsubscribe };
+	(hook as unknown as Record<string, { unsubscribe?: () => void } | null>).session = { unsubscribe };
 
 	// Append behavioral prompt if enabled
 	if (hook.enableBehavioralPrompt) {

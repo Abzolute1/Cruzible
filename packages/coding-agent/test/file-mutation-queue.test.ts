@@ -1,9 +1,10 @@
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.js";
 import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.js";
+import { writeFileAtomically } from "../src/core/tools/file-mutation-transaction.js";
 import { createWriteTool } from "../src/core/tools/write.js";
 
 function delay(ms: number): Promise<void> {
@@ -83,6 +84,45 @@ describe("withFileMutationQueue", () => {
 		]);
 
 		expect(order).toEqual(["target:start", "target:end", "alias:start", "alias:end"]);
+	});
+});
+
+describe("writeFileAtomically", () => {
+	it("keeps existing content when aborted before mutation", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "abort.txt");
+		await writeFile(filePath, "original\n", "utf8");
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(writeFileAtomically(filePath, "replacement\n", controller.signal)).rejects.toThrow(
+			"Operation aborted",
+		);
+
+		await expect(readFile(filePath, "utf8")).resolves.toBe("original\n");
+	});
+
+	it("preserves existing file permissions", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "mode.txt");
+		await writeFile(filePath, "before\n", "utf8");
+		await chmod(filePath, 0o744);
+
+		await writeFileAtomically(filePath, "after\n");
+
+		expect((await stat(filePath)).mode & 0o777).toBe(0o744);
+		await expect(readFile(filePath, "utf8")).resolves.toBe("after\n");
+	});
+
+	it("removes temp files when replacement fails", async () => {
+		const dir = await createTempDir();
+		const targetPath = join(dir, "target.txt");
+		await mkdir(targetPath);
+
+		await expect(writeFileAtomically(targetPath, "content\n")).rejects.toBeInstanceOf(Error);
+
+		const entries = await readdir(dir);
+		expect(entries.filter((entry) => entry.startsWith(".target.txt.") && entry.endsWith(".tmp"))).toEqual([]);
 	});
 });
 

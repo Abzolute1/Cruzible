@@ -2,18 +2,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@ag1/agent-core";
 import { Text } from "@ag1/tui";
-import type { SessionStats } from "../../core/agent-session.js";
-import type { AgentSessionEvent } from "../../core/agent-session.js";
-import type { SessionDebugArtifacts } from "../../core/session-debug-logger.js";
-import type { AutonomousRunResult } from "../../core/auton/runner.js";
-import type { PreparedAutonomousWorkspace, ActivatedAutonomousWorkspace } from "../../core/auton/workspace.js";
+import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.js";
+import type { ActivatedAutonomousWorkspace, PreparedAutonomousWorkspace } from "../../core/auton/workspace.js";
 import { getRecentResearchArtifacts } from "../../core/research-artifacts.js";
-import { buildInteractiveDebugReport } from "./interactive-debug-report.js";
+import type { SessionDebugArtifacts } from "../../core/session-debug-logger.js";
 import {
 	formatAutonomousWorkspaceSummary,
 	formatResearchArtifactsSummary,
 	formatSessionInfo,
 } from "./interactive-command-presenters.js";
+import { buildInteractiveDebugReport } from "./interactive-debug-report.js";
 import { theme } from "./theme/theme.js";
 
 type XmlFallbackEvent = Extract<AgentSessionEvent, { type: "xml_tool_call" }>;
@@ -130,7 +128,9 @@ export function renderInteractiveDebugLogStatus(options: {
 			[
 				theme.fg("accent", "✓ Debug log written"),
 				theme.fg("muted", options.debugLogPath),
-				options.artifacts?.sessionDir ? theme.fg("muted", `Session artifacts: ${options.artifacts.sessionDir}`) : undefined,
+				options.artifacts?.sessionDir
+					? theme.fg("muted", `Session artifacts: ${options.artifacts.sessionDir}`)
+					: undefined,
 			]
 				.filter(Boolean)
 				.join("\n"),

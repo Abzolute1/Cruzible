@@ -9,12 +9,12 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createJiti } from "@mariozechner/jiti";
 import * as _bundledPiAgentCore from "@ag1/agent-core";
 import * as _bundledPiAi from "@ag1/ai";
 import * as _bundledPiAiOauth from "@ag1/ai/oauth";
 import type { KeyId } from "@ag1/tui";
 import * as _bundledPiTui from "@ag1/tui";
+import { createJiti } from "@mariozechner/jiti";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
@@ -26,6 +26,8 @@ import * as _bundledPiCodingAgent from "../../index.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
+import { isStdoutTakenOver } from "../output-guard.js";
+import { SettingsManager } from "../settings-manager.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
 import type {
 	Extension,
@@ -34,10 +36,14 @@ import type {
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MessageRenderer,
+	ProjectTrustPrompt,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.js";
+
+// Re-exported to preserve this module's public surface (the types live in types.js).
+export type { LoadExtensionsResult, ProjectTrustPrompt } from "./types.js";
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary) */
 const VIRTUAL_MODULES: Record<string, unknown> = {
@@ -368,15 +374,102 @@ export async function loadExtensionFromFactory(
 }
 
 /**
+ * Workspace trust gate for PROJECT-local extensions.
+ *
+ * Everything under the project config dir (e.g. <cwd>/.ag1) is attacker-controlled
+ * when a repo is cloned, so extensions living there only execute when the project
+ * is trusted. Trust is resolved in order:
+ * 1. explicit option (SDK callers/tests),
+ * 2. AG1_TRUST_PROJECT env override (1/true/yes = force-trust, 0/false/no = force-disable),
+ * 3. trustedProjects in the USER settings (never project settings — those ship with the repo).
+ *
+ * Global extensions (user agentDir) and explicitly configured CLI paths are unaffected.
+ * Untrusted project extensions are skipped with a warning (never auto-executed, never
+ * prompted from here); interactive mode consumes LoadExtensionsResult.pendingTrustPrompt
+ * to ask the user once — on accept it calls trustProject() and reloads, on decline the
+ * extensions stay skipped.
+ */
+export interface LoadExtensionsOptions {
+	/** Explicit workspace-trust override for project-local extensions */
+	trustProject?: boolean;
+	/** Agent dir used to look up trusted projects in user settings (defaults to getAgentDir()) */
+	agentDir?: string;
+}
+
+function getEnvProjectTrust(): boolean | undefined {
+	const value = process.env.AG1_TRUST_PROJECT;
+	if (!value) return undefined;
+	const normalized = value.toLowerCase();
+	if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
+	if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+	return undefined;
+}
+
+function isPathWithin(child: string, parent: string): boolean {
+	const relative = path.relative(parent, child);
+	return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isProjectTrusted(cwd: string, agentDir: string, projectConfigDir: string, explicitTrust?: boolean): boolean {
+	if (explicitTrust !== undefined) return explicitTrust;
+	const envTrust = getEnvProjectTrust();
+	if (envTrust !== undefined) return envTrust;
+	try {
+		return SettingsManager.create(cwd, agentDir).isProjectTrusted(projectConfigDir);
+	} catch {
+		return false;
+	}
+}
+
+/** Record a project config dir as trusted in the USER settings (workspace trust). */
+export async function trustProject(
+	projectConfigDir: string,
+	cwd: string = process.cwd(),
+	agentDir: string = getAgentDir(),
+): Promise<void> {
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	settingsManager.addTrustedProject(projectConfigDir);
+	// Settings writes are queued asynchronously; flush so a reload right after
+	// trusting actually sees the project as trusted.
+	await settingsManager.flush();
+}
+
+/**
  * Load extensions from paths.
  */
-export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
+export async function loadExtensions(
+	paths: string[],
+	cwd: string,
+	eventBus?: EventBus,
+	options?: LoadExtensionsOptions,
+): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
 
-	for (const extPath of paths) {
+	let pathsToLoad = paths;
+	let pendingTrustPrompt: ProjectTrustPrompt | undefined;
+	const projectConfigDir = getProjectConfigDir(cwd);
+	const projectLocalPaths = paths.filter((p) => isPathWithin(resolvePath(p, cwd), projectConfigDir));
+	if (
+		projectLocalPaths.length > 0 &&
+		!isProjectTrusted(cwd, options?.agentDir ?? getAgentDir(), projectConfigDir, options?.trustProject)
+	) {
+		const skipped = new Set(projectLocalPaths);
+		pathsToLoad = paths.filter((p) => !skipped.has(p));
+		pendingTrustPrompt = { projectConfigDir, extensionPaths: projectLocalPaths };
+		const warning =
+			`Skipped ${projectLocalPaths.length} project-local extension(s) under ${projectConfigDir}: ` +
+			"project is not trusted. Trust the project in interactive mode, add it to trustedProjects " +
+			"in user settings, or set AG1_TRUST_PROJECT=1 to load project extensions.";
+		errors.push({ path: projectConfigDir, error: warning });
+		if (!isStdoutTakenOver()) {
+			console.error(`Warning: ${warning}`);
+		}
+	}
+
+	for (const extPath of pathsToLoad) {
 		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
 
 		if (error) {
@@ -393,6 +486,7 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		extensions,
 		errors,
 		runtime,
+		...(pendingTrustPrompt ? { pendingTrustPrompt } : {}),
 	};
 }
 
@@ -403,16 +497,20 @@ interface Ag1Manifest {
 	prompts?: string[];
 }
 
-function readAg1Manifest(packageJsonPath: string): Ag1Manifest | null {
+type LoaderDiagnostic = { path: string; error: string };
+
+function readAg1Manifest(packageJsonPath: string): { manifest: Ag1Manifest | null; error: string | null } {
 	try {
 		const content = fs.readFileSync(packageJsonPath, "utf-8");
 		const pkg = JSON.parse(content);
 		if (pkg.ag1 && typeof pkg.ag1 === "object") {
-			return pkg.ag1 as Ag1Manifest;
+			return { manifest: pkg.ag1 as Ag1Manifest, error: null };
 		}
-		return null;
-	} catch {
-		return null;
+		return { manifest: null, error: null };
+	} catch (error) {
+		// A malformed package.json silently disabling a package's extensions is
+		// confusing; surface it as a loader diagnostic instead of returning null.
+		return { manifest: null, error: error instanceof Error ? error.message : String(error) };
 	}
 }
 
@@ -429,11 +527,14 @@ function isExtensionFile(name: string): boolean {
  *
  * Returns resolved paths or null if no entry points found.
  */
-function resolveExtensionEntries(dir: string): string[] | null {
+function resolveExtensionEntries(dir: string, diagnostics?: LoaderDiagnostic[]): string[] | null {
 	// Check for package.json with "ag1" field first
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readAg1Manifest(packageJsonPath);
+		const { manifest, error } = readAg1Manifest(packageJsonPath);
+		if (error) {
+			diagnostics?.push({ path: packageJsonPath, error: `Failed to parse extension manifest: ${error}` });
+		}
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -471,7 +572,7 @@ function resolveExtensionEntries(dir: string): string[] | null {
  *
  * No recursion beyond one level. Complex packages must use package.json manifest.
  */
-function discoverExtensionsInDir(dir: string): string[] {
+function discoverExtensionsInDir(dir: string, diagnostics?: LoaderDiagnostic[]): string[] {
 	if (!fs.existsSync(dir)) {
 		return [];
 	}
@@ -492,13 +593,17 @@ function discoverExtensionsInDir(dir: string): string[] {
 
 			// 2 & 3. Subdirectories
 			if (entry.isDirectory() || entry.isSymbolicLink()) {
-				const entries = resolveExtensionEntries(entryPath);
+				const entries = resolveExtensionEntries(entryPath, diagnostics);
 				if (entries) {
 					discovered.push(...entries);
 				}
 			}
 		}
-	} catch {
+	} catch (error) {
+		diagnostics?.push({
+			path: dir,
+			error: `Failed to read extensions directory: ${error instanceof Error ? error.message : String(error)}`,
+		});
 		return [];
 	}
 
@@ -513,9 +618,11 @@ export async function discoverAndLoadExtensions(
 	cwd: string,
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
+	options?: LoadExtensionsOptions,
 ): Promise<LoadExtensionsResult> {
 	const allPaths: string[] = [];
 	const seen = new Set<string>();
+	const discoveryDiagnostics: LoaderDiagnostic[] = [];
 
 	const addPaths = (paths: string[]) => {
 		for (const p of paths) {
@@ -529,29 +636,31 @@ export async function discoverAndLoadExtensions(
 
 	// 1. Project-local extensions: cwd/<configDir>/extensions/ (with legacy fallback)
 	const localExtDir = path.join(getProjectConfigDir(cwd), "extensions");
-	addPaths(discoverExtensionsInDir(localExtDir));
+	addPaths(discoverExtensionsInDir(localExtDir, discoveryDiagnostics));
 
 	// 2. Global extensions: agentDir/extensions/
 	const globalExtDir = path.join(agentDir, "extensions");
-	addPaths(discoverExtensionsInDir(globalExtDir));
+	addPaths(discoverExtensionsInDir(globalExtDir, discoveryDiagnostics));
 
 	// 3. Explicitly configured paths
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, cwd);
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
 			// Check for package.json with AG1 manifest or index.ts
-			const entries = resolveExtensionEntries(resolved);
+			const entries = resolveExtensionEntries(resolved, discoveryDiagnostics);
 			if (entries) {
 				addPaths(entries);
 				continue;
 			}
 			// No explicit entries - discover individual files in directory
-			addPaths(discoverExtensionsInDir(resolved));
+			addPaths(discoverExtensionsInDir(resolved, discoveryDiagnostics));
 			continue;
 		}
 
 		addPaths([resolved]);
 	}
 
-	return loadExtensions(allPaths, cwd, eventBus);
+	const result = await loadExtensions(allPaths, cwd, eventBus, { ...options, agentDir });
+	result.errors.push(...discoveryDiagnostics);
+	return result;
 }

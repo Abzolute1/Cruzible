@@ -4,12 +4,20 @@
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "../../extensions/types.js";
-import { deriveResearchCompressionProfile, formatSearchTranscriptContent, truncateResearchSnippet } from "../../tools/research-output.js";
+import {
+	deriveResearchCompressionProfile,
+	formatSearchTranscriptContent,
+	truncateResearchSnippet,
+} from "../../tools/research-output.js";
+
 const DEFAULT_MAX_RESULTS = 3;
 const MAX_RESULT_PREVIEW = 5;
 const MAX_SNIPPET_CHARS = 140;
 const CACHE_TTL_MS = 15 * 60 * 1000;
-const searchCache = new Map<string, { results: Array<{ title: string; url: string; snippet: string }>; timestamp: number }>();
+const searchCache = new Map<
+	string,
+	{ results: Array<{ title: string; url: string; snippet: string }>; timestamp: number }
+>();
 
 function parseDuckDuckgoResults(html: string): Array<{ title: string; url: string; snippet: string }> {
 	const results: Array<{ title: string; url: string; snippet: string }> = [];
@@ -55,12 +63,19 @@ function parseDuckDuckgoResults(html: string): Array<{ title: string; url: strin
 const webSearchParamsSchema = Type.Object({
 	query: Type.String({ description: "Search query" }),
 	maxResults: Type.Optional(
-		Type.Number({ default: DEFAULT_MAX_RESULTS, description: `Maximum number of results to return (default ${DEFAULT_MAX_RESULTS})` }),
+		Type.Number({
+			default: DEFAULT_MAX_RESULTS,
+			description: `Maximum number of results to return (default ${DEFAULT_MAX_RESULTS})`,
+		}),
 	),
 });
 type WebSearchParams = Static<typeof webSearchParamsSchema>;
 
-export const webSearchToolDefinition: ToolDefinition<typeof webSearchParamsSchema, Record<string, unknown>, undefined> = {
+export const webSearchToolDefinition: ToolDefinition<
+	typeof webSearchParamsSchema,
+	Record<string, unknown>,
+	undefined
+> = {
 	name: "webSearch",
 	label: "webSearch",
 	description: "Search the web using DuckDuckGo. Returns search results with titles, URLs, and snippets.",
@@ -121,7 +136,9 @@ export const webSearchToolDefinition: ToolDefinition<typeof webSearchParamsSchem
 				// Check for rate limiting or CAPTCHA
 				if (html.includes("One more step") || html.includes("captcha") || html.includes("verify you are human")) {
 					return {
-						content: [{ type: "text", text: "Error: DuckDuckGo rate limiting detected. Please try again later." }],
+						content: [
+							{ type: "text", text: "Error: DuckDuckGo rate limiting detected. Please try again later." },
+						],
 						details: { query, sourceUrls: [] },
 					};
 				}

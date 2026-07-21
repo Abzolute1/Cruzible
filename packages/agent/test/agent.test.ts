@@ -1,6 +1,6 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@ag1/ai";
-import { describe, expect, it } from "vitest";
-import { Agent } from "../src/index.js";
+import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel, type Message } from "@ag1/ai";
+import { describe, expect, it, vi } from "vitest";
+import { Agent, type AgentEvent, type AgentMessage } from "../src/index.js";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -239,11 +239,14 @@ describe("Agent", () => {
 		expect(agent.state.messages).toEqual(messages);
 		expect(agent.state.messages).not.toBe(messages); // Should be a copy
 
-		// Test appendMessage
-		const newMessage = { role: "assistant" as const, content: [{ type: "text" as const, text: "Hi" }] };
-		agent.state.messages.push(newMessage as any);
-		expect(agent.state.messages).toHaveLength(2);
-		expect(agent.state.messages[1]).toBe(newMessage);
+		// Reads return copies: mutating a returned array must not affect internal state
+		const toolsCopy = agent.state.tools;
+		toolsCopy.push({ name: "other" } as any);
+		expect(agent.state.tools).toHaveLength(1);
+
+		const messagesCopy = agent.state.messages;
+		messagesCopy.push({ role: "assistant", content: [{ type: "text", text: "Hi" }] } as any);
+		expect(agent.state.messages).toHaveLength(1);
 
 		// Test clearMessages
 		agent.state.messages = [];
@@ -459,5 +462,226 @@ describe("Agent", () => {
 
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
+	});
+
+	it("should emit the full message lifecycle when the run fails", async () => {
+		const agent = new Agent({
+			streamFn: () => {
+				throw new Error("stream factory exploded");
+			},
+		});
+
+		const events: AgentEvent[] = [];
+		agent.subscribe((event) => {
+			events.push(event);
+		});
+
+		await agent.prompt("hello");
+
+		const types = events.map((event) => event.type);
+		expect(types.filter((type) => type === "agent_end")).toHaveLength(1);
+
+		const messageStartIndex = types.lastIndexOf("message_start");
+		const messageEndIndex = types.lastIndexOf("message_end");
+		const turnEndIndex = types.indexOf("turn_end");
+		const agentEndIndex = types.indexOf("agent_end");
+		expect(messageStartIndex).toBeGreaterThan(-1);
+		expect(messageStartIndex).toBeLessThan(messageEndIndex);
+		expect(messageEndIndex).toBeLessThan(turnEndIndex);
+		expect(turnEndIndex).toBeLessThan(agentEndIndex);
+
+		const failureMessage =
+			events[messageEndIndex].type === "message_end" ? events[messageEndIndex].message : undefined;
+		expect(failureMessage?.role).toBe("assistant");
+		if (failureMessage?.role === "assistant") {
+			expect(failureMessage.stopReason).toBe("error");
+			expect(failureMessage.errorMessage).toBe("stream factory exploded");
+		}
+
+		// The failure message lands in the transcript like a normal turn
+		const lastMessage = agent.state.messages[agent.state.messages.length - 1];
+		expect(lastMessage.role).toBe("assistant");
+		expect(agent.state.errorMessage).toBe("stream factory exploded");
+	});
+
+	it("should omit failed empty assistant messages from the provider context on the next run", async () => {
+		let shouldThrow = true;
+		const seenByProvider: AgentMessage[][] = [];
+		const agent = new Agent({
+			convertToLlm: (messages) => {
+				seenByProvider.push(messages.slice());
+				return messages.filter(
+					(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+				) as Message[];
+			},
+			streamFn: () => {
+				if (shouldThrow) {
+					throw new Error("stream factory exploded");
+				}
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				});
+				return stream;
+			},
+		});
+
+		await agent.prompt("first");
+		// Transcript keeps the failure message for display/persistence
+		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+
+		shouldThrow = false;
+		await agent.prompt("second");
+
+		const lastCallMessages = seenByProvider[seenByProvider.length - 1];
+		const failedEmptyAssistant = lastCallMessages.filter(
+			(message) =>
+				message.role === "assistant" &&
+				message.errorMessage !== undefined &&
+				message.content.every((block) => block.type === "text" && block.text.trim() === ""),
+		);
+		expect(failedEmptyAssistant).toHaveLength(0);
+	});
+
+	it("should isolate throwing listeners from the run and other listeners", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const agent = new Agent({
+				streamFn: () => {
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+					});
+					return stream;
+				},
+			});
+
+			const seen: string[] = [];
+			agent.subscribe(() => {
+				throw new Error("listener exploded");
+			});
+			agent.subscribe((event) => {
+				seen.push(event.type);
+			});
+
+			await expect(agent.prompt("hello")).resolves.toBeUndefined();
+
+			// The run completed normally and the second listener saw every event
+			expect(seen).toContain("agent_end");
+			expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+			expect(agent.state.errorMessage).toBeUndefined();
+			expect(errorSpy).toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("should throw when reset() called while streaming", async () => {
+		let abortSignal: AbortSignal | undefined;
+		const agent = new Agent({
+			streamFn: (_model, _context, options) => {
+				abortSignal = options?.signal;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (abortSignal?.aborted) {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const firstPrompt = agent.prompt("First message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(agent.state.isStreaming).toBe(true);
+
+		expect(() => agent.reset()).toThrow(
+			"Agent is processing a run. Abort the run and wait for completion before resetting.",
+		);
+
+		agent.abort();
+		await firstPrompt.catch(() => {});
+		expect(agent.state.isStreaming).toBe(false);
+		expect(() => agent.reset()).not.toThrow();
+		expect(agent.state.messages).toEqual([]);
+	});
+
+	it("should throw when prompt() is called with an empty message array", async () => {
+		const agent = new Agent();
+
+		await expect(agent.prompt([])).rejects.toThrow(
+			"Cannot prompt with an empty message array. Provide at least one message.",
+		);
+		expect(agent.state.isStreaming).toBe(false);
+		expect(agent.state.messages).toEqual([]);
+	});
+
+	it("should give each failure message its own usage object", async () => {
+		const agent = new Agent({
+			streamFn: () => {
+				throw new Error("boom");
+			},
+		});
+
+		await agent.prompt("one");
+		await agent.prompt("two");
+
+		const failureMessages = agent.state.messages.filter(
+			(message): message is AssistantMessage => message.role === "assistant" && message.errorMessage !== undefined,
+		);
+		expect(failureMessages).toHaveLength(2);
+		expect(failureMessages[0].usage).not.toBe(failureMessages[1].usage);
+
+		// Mutating one failure message's usage must not leak into the other
+		failureMessages[0].usage.input = 999;
+		failureMessages[0].usage.cost.total = 999;
+		expect(failureMessages[1].usage.input).toBe(0);
+		expect(failureMessages[1].usage.cost.total).toBe(0);
+	});
+
+	it("should not share the default model object between agents", () => {
+		const first = new Agent();
+		first.state.model.input.push("text");
+		first.state.model.cost.input = 1;
+
+		const second = new Agent();
+		expect(second.state.model.input).toEqual([]);
+		expect(second.state.model.cost.input).toBe(0);
+	});
+
+	it("continue() should resume from the last real message after a failed run", async () => {
+		let shouldThrow = true;
+		const agent = new Agent({
+			streamFn: () => {
+				if (shouldThrow) {
+					throw new Error("stream factory exploded");
+				}
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("recovered") });
+				});
+				return stream;
+			},
+		});
+
+		await agent.prompt("first");
+		// Transcript tail is the failed empty assistant message
+		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+
+		shouldThrow = false;
+		await expect(agent.continue()).resolves.toBeUndefined();
+
+		const lastMessage = agent.state.messages[agent.state.messages.length - 1];
+		expect(lastMessage.role).toBe("assistant");
+		if (lastMessage.role === "assistant") {
+			expect(lastMessage.stopReason).toBe("stop");
+			expect(lastMessage.errorMessage).toBeUndefined();
+		}
 	});
 });

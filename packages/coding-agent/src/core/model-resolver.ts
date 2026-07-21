@@ -36,6 +36,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"opencode-go": "kimi-k2.5",
 	"kimi-coding": "kimi-k2-thinking",
 	nvidia: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+	"nvidia-nim": "nvidia/nemotron-3-ultra-550b-a55b",
 	local: "lm-studio",
 };
 

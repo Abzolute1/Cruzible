@@ -101,26 +101,6 @@ export class SandboxIframe extends LitElement {
 			isStandalone: false,
 		});
 
-		// Validate HTML before loading
-		const validationError = this.validateHtml(completeHtml);
-		if (validationError) {
-			console.error("HTML validation failed:", validationError);
-			// Show error in iframe instead of crashing
-			this.iframe?.remove();
-			this.iframe = document.createElement("iframe");
-			this.iframe.style.cssText = "width: 100%; height: 100%; border: none;";
-			this.iframe.srcdoc = `
-				<html>
-				<body style="font-family: monospace; padding: 20px; background: #fff; color: #000;">
-					<h3 style="color: #c00;">HTML Validation Error</h3>
-					<pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap;">${validationError}</pre>
-				</body>
-				</html>
-			`;
-			this.appendChild(this.iframe);
-			return;
-		}
-
 		// Remove previous iframe if exists
 		this.iframe?.remove();
 
@@ -155,7 +135,7 @@ export class SandboxIframe extends LitElement {
 					chromeAPI.tabs.create({ url: e.data.url });
 				} else {
 					// Fallback for non-extension context
-					window.open(e.data.url, "_blank");
+					window.open(e.data.url, "_blank", "noopener");
 				}
 			}
 		};
@@ -221,7 +201,7 @@ export class SandboxIframe extends LitElement {
 		const externalUrlHandler = (e: MessageEvent) => {
 			if (e.data.type === "open-external-url" && e.source === this.iframe?.contentWindow) {
 				// Fallback for non-extension context
-				window.open(e.data.url, "_blank");
+				window.open(e.data.url, "_blank", "noopener");
 			}
 		};
 		window.addEventListener("message", externalUrlHandler);
@@ -317,7 +297,7 @@ export class SandboxIframe extends LitElement {
 				signal.addEventListener("abort", abortHandler);
 			}
 
-			// Timeout handler (30 seconds)
+			// Timeout handler (120 seconds)
 			const timeoutId = setTimeout(() => {
 				if (!completed) {
 					completed = true;
@@ -336,13 +316,6 @@ export class SandboxIframe extends LitElement {
 				isHtmlArtifact,
 				isStandalone: false,
 			});
-
-			// 5. Validate HTML before sending to sandbox
-			const validationError = this.validateHtml(completeHtml);
-			if (validationError) {
-				reject(new Error(`HTML validation failed: ${validationError}`));
-				return;
-			}
 
 			if (this.sandboxUrlProvider) {
 				// Browser extension mode: wait for sandbox-ready
@@ -406,27 +379,6 @@ export class SandboxIframe extends LitElement {
 				this.appendChild(this.iframe);
 			}
 		});
-	}
-
-	/**
-	 * Validate HTML using DOMParser - returns error message if invalid, null if valid
-	 * Note: JavaScript syntax validation is done in sandbox.js to avoid CSP restrictions
-	 */
-	private validateHtml(html: string): string | null {
-		try {
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(html, "text/html");
-
-			// Check for parser errors
-			const parserError = doc.querySelector("parsererror");
-			if (parserError) {
-				return parserError.textContent || "Unknown parse error";
-			}
-
-			return null;
-		} catch (error: any) {
-			return error.message || "Unknown validation error";
-		}
 	}
 
 	/**

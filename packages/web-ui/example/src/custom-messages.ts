@@ -1,7 +1,7 @@
-import { Alert } from "@mariozechner/mini-lit/dist/Alert.js";
 import type { Message } from "@ag1/ai";
 import type { AgentMessage, MessageRenderer } from "@ag1/web-ui";
 import { defaultConvertToLlm, registerMessageRenderer } from "@ag1/web-ui";
+import { Alert } from "@mariozechner/mini-lit/dist/Alert.js";
 import { html } from "lit";
 
 // ============================================================================

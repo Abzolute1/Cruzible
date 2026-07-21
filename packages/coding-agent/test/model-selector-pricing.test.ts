@@ -11,10 +11,8 @@ function renderComponentText(component: { render: (width: number) => string[] },
 
 function createModel(overrides: Partial<Model<any>> & Pick<Model<any>, "id" | "provider" | "name">): Model<any> {
 	return {
-		id: overrides.id,
-		provider: overrides.provider,
-		name: overrides.name,
 		api: {} as never,
+		baseUrl: "https://example.invalid",
 		contextWindow: 128_000,
 		maxTokens: 8192,
 		reasoning: true,

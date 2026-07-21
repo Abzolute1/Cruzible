@@ -9,11 +9,14 @@ import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "
 
 const baseSegmenter = getSegmenter();
 
-/** Regex matching paste markers like `[paste #1 +123 lines]` or `[paste #2 1234 chars]`. */
-const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/g;
+/** Regex matching paste markers like `[paste #1 +123 lines]` or `[paste #2 1234 chars]`.
+ *  The suffix is required: markers created by the editor always carry one, and
+ *  requiring it keeps typed literal text like "[paste #1]" from being mistaken
+ *  for a live paste marker. */
+const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))\]/g;
 
 /** Non-global version for single-segment testing. */
-const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]$/;
+const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))\]$/;
 
 /** Check if a segment is a paste marker (i.e. was merged by segmentWithMarkers). */
 function isPasteMarker(segment: string): boolean {
@@ -711,7 +714,6 @@ export class Editor implements Component, Focusable {
 			(data.charCodeAt(0) === 10 && data.length > 1) ||
 			data === "\x1b\r" ||
 			data === "\x1b[13;2~" ||
-			(data.length > 1 && data.includes("\x1b") && data.includes("\r")) ||
 			(data === "\n" && data.length === 1)
 		) {
 			if (this.shouldSubmitOnBackslashEnter(data, kb)) {
@@ -907,7 +909,7 @@ export class Editor implements Component, Focusable {
 	private expandPasteMarkers(text: string): string {
 		let result = text;
 		for (const [pasteId, pasteContent] of this.pastes) {
-			const markerRegex = new RegExp(`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))?\\]`, "g");
+			const markerRegex = new RegExp(`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))\\]`, "g");
 			result = result.replace(markerRegex, () => pasteContent);
 		}
 		return result;
@@ -2076,12 +2078,12 @@ export class Editor implements Component, Focusable {
 		if (debounceMs > 0) {
 			this.autocompleteDebounceTimer = setTimeout(() => {
 				this.autocompleteDebounceTimer = undefined;
-				void this.startAutocompleteRequest(startToken, options);
+				void this.startAutocompleteRequest(startToken, options).catch(() => {});
 			}, debounceMs);
 			return;
 		}
 
-		void this.startAutocompleteRequest(startToken, options);
+		void this.startAutocompleteRequest(startToken, options).catch(() => {});
 	}
 
 	private async startAutocompleteRequest(
@@ -2090,7 +2092,11 @@ export class Editor implements Component, Focusable {
 	): Promise<void> {
 		const previousTask = this.autocompleteRequestTask;
 		this.autocompleteRequestTask = (async () => {
-			await previousTask;
+			try {
+				await previousTask;
+			} catch {
+				// A rejected predecessor must not poison the chain
+			}
 			if (startToken !== this.autocompleteStartToken || !this.autocompleteProvider) {
 				return;
 			}
@@ -2102,7 +2108,17 @@ export class Editor implements Component, Focusable {
 			const snapshotLine = this.state.cursorLine;
 			const snapshotCol = this.state.cursorCol;
 
-			await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			try {
+				await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			} catch {
+				// A failing provider (e.g. extension getArgumentCompletions/getSuggestions
+				// throwing) must not kill autocomplete for the rest of the session.
+				if (this.autocompleteAbort === controller) {
+					this.autocompleteAbort = undefined;
+				}
+				this.clearAutocompleteUi();
+				this.tui.requestRender();
+			}
 		})();
 		await this.autocompleteRequestTask;
 	}
@@ -2129,7 +2145,8 @@ export class Editor implements Component, Focusable {
 		if (!this.autocompleteProvider) return;
 
 		const suggestions = await this.autocompleteProvider.getSuggestions(
-			this.state.lines,
+			// Pass a copy: providers (including extensions) must not mutate editor content
+			[...this.state.lines],
 			this.state.cursorLine,
 			this.state.cursorCol,
 			{ signal: controller.signal, force: options.force },

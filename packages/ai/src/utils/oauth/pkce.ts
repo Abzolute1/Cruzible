@@ -32,3 +32,16 @@ export async function generatePKCE(): Promise<{ verifier: string; challenge: str
 
 	return { verifier, challenge };
 }
+
+/**
+ * Generate a random OAuth state parameter.
+ * Must be independent of the PKCE verifier: the state ends up in the redirect
+ * URL alongside the authorization code, so reusing the verifier would nullify
+ * PKCE's interception protection. Uses Web Crypto API for cross-platform
+ * compatibility.
+ */
+export function generateState(): string {
+	const bytes = new Uint8Array(16);
+	crypto.getRandomValues(bytes);
+	return base64urlEncode(bytes);
+}

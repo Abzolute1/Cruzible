@@ -54,23 +54,13 @@ function formatToolArgs(args: Record<string, unknown>): string {
 
 		// For other values, format them
 		if (typeof value === "string") {
-			// Multi-line strings get indented
-			if (value.includes("\n")) {
-				lines.push(value);
-			} else {
-				lines.push(value);
-			}
+			lines.push(value);
 		} else {
 			lines.push(JSON.stringify(value));
 		}
 	}
 
 	return lines.join("\n");
-}
-
-// User messages
-export function logUserMessage(ctx: LogContext, text: string): void {
-	console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} ${text}`));
 }
 
 // Tool execution
@@ -138,27 +128,6 @@ export function logResponse(ctx: LogContext, text: string): void {
 	console.log(chalk.dim(indented));
 }
 
-// Attachments
-export function logDownloadStart(ctx: LogContext, filename: string, localPath: string): void {
-	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↓ Downloading attachment`));
-	console.log(chalk.dim(`           ${filename} → ${localPath}`));
-}
-
-export function logDownloadSuccess(ctx: LogContext, sizeKB: number): void {
-	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✓ Downloaded (${sizeKB.toLocaleString()} KB)`));
-}
-
-export function logDownloadError(ctx: LogContext, filename: string, error: string): void {
-	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ Download failed`));
-	console.log(chalk.dim(`           ${filename}: ${error}`));
-}
-
-// Control
-export function logStopRequest(ctx: LogContext): void {
-	console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} stop`));
-	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ⊗ Stop requested - aborting`));
-}
-
 // System
 export function logInfo(message: string): void {
 	console.log(chalk.blue(`${timestamp()} [system] ${message}`));
@@ -173,16 +142,6 @@ export function logWarning(message: string, details?: string): void {
 			.join("\n");
 		console.log(chalk.dim(indented));
 	}
-}
-
-export function logAgentError(ctx: LogContext | "system", error: string): void {
-	const context = ctx === "system" ? "[system]" : formatContext(ctx);
-	console.log(chalk.yellow(`${timestamp()} ${context} ✗ Agent error`));
-	const indented = error
-		.split("\n")
-		.map((line) => `           ${line}`)
-		.join("\n");
-	console.log(chalk.dim(indented));
 }
 
 // Usage summary
@@ -250,10 +209,6 @@ export function logStartup(workingDir: string, sandbox: string): void {
 export function logConnected(): void {
 	console.log("⚡️ Mom bot connected and listening!");
 	console.log("");
-}
-
-export function logDisconnected(): void {
-	console.log("Mom bot disconnected.");
 }
 
 // Backfill

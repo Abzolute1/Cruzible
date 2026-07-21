@@ -73,7 +73,11 @@ export function getLatestRuntimeHealthSnapshot(entries: SessionEntry[]): Runtime
 	return undefined;
 }
 
-export function getRecentRuntimeHealthSnapshots(entries: SessionEntry[], limit = 3, modelId?: string): RuntimeHealthSnapshot[] {
+export function getRecentRuntimeHealthSnapshots(
+	entries: SessionEntry[],
+	limit = 3,
+	modelId?: string,
+): RuntimeHealthSnapshot[] {
 	const snapshots: RuntimeHealthSnapshot[] = [];
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
@@ -86,7 +90,10 @@ export function getRecentRuntimeHealthSnapshots(entries: SessionEntry[], limit =
 	return snapshots.reverse();
 }
 
-export function deriveRuntimeStabilizationProfile(entries: SessionEntry[], modelId?: string): RuntimeStabilizationProfile {
+export function deriveRuntimeStabilizationProfile(
+	entries: SessionEntry[],
+	modelId?: string,
+): RuntimeStabilizationProfile {
 	const snapshots = getRecentRuntimeHealthSnapshots(entries, 5, modelId);
 	if (snapshots.length === 0) {
 		return {
@@ -101,7 +108,9 @@ export function deriveRuntimeStabilizationProfile(entries: SessionEntry[], model
 		.map((snapshot) => snapshot.lastDegradedTurnEvent)
 		.filter((event): event is RuntimeHealthDegradedTurnEvent => Boolean(event))
 		.filter(isStabilizationRelevantDegradedTurn);
-	const criticalXmlFallbacks = snapshots.filter((snapshot) => snapshot.lastXmlFallbackEvent?.severity === "critical").length;
+	const criticalXmlFallbacks = snapshots.filter(
+		(snapshot) => snapshot.lastXmlFallbackEvent?.severity === "critical",
+	).length;
 	const criticalDegradedTurns = relevantDegradedTurns.filter((event) => event.severity === "critical").length;
 	const degradedTurns = relevantDegradedTurns.length;
 	const reasons: string[] = [];
@@ -168,16 +177,18 @@ function isRuntimeHealthSnapshot(value: unknown): value is RuntimeHealthSnapshot
 }
 
 function areRuntimeHealthSnapshotsEquivalent(a: RuntimeHealthSnapshot, b: RuntimeHealthSnapshot): boolean {
-	return JSON.stringify({
-		xmlFallbackCount: a.xmlFallbackCount,
-		degradedTurnCount: a.degradedTurnCount,
-		lastXmlFallbackEvent: a.lastXmlFallbackEvent,
-		lastDegradedTurnEvent: a.lastDegradedTurnEvent,
-	}) ===
+	return (
+		JSON.stringify({
+			xmlFallbackCount: a.xmlFallbackCount,
+			degradedTurnCount: a.degradedTurnCount,
+			lastXmlFallbackEvent: a.lastXmlFallbackEvent,
+			lastDegradedTurnEvent: a.lastDegradedTurnEvent,
+		}) ===
 		JSON.stringify({
 			xmlFallbackCount: b.xmlFallbackCount,
 			degradedTurnCount: b.degradedTurnCount,
 			lastXmlFallbackEvent: b.lastXmlFallbackEvent,
 			lastDegradedTurnEvent: b.lastDegradedTurnEvent,
-		});
+		})
+	);
 }

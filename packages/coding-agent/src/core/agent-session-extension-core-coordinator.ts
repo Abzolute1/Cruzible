@@ -1,9 +1,9 @@
 import type { ThinkingLevel } from "@ag1/agent-core";
 import type { Model } from "@ag1/ai";
+import type { CompactOptions, ContextUsage, ExtensionRunner, ToolInfo } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
-import type { CompactOptions, ContextUsage, ExtensionRunner, ToolInfo } from "./extensions/index.js";
 
 export interface AgentSessionExtensionCoreCoordinatorOptions {
 	runner: ExtensionRunner;

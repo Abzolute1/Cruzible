@@ -41,7 +41,7 @@ import type {
 	ToolResultMessage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseFinalToolCallJson, parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampReasoning } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
@@ -182,7 +182,11 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 				} else if (item.contentBlockStop) {
 					handleContentBlockStop(item.contentBlockStop, blocks, output, stream);
 				} else if (item.messageStop) {
-					output.stopReason = mapStopReason(item.messageStop.stopReason);
+					const stopReasonResult = mapStopReason(item.messageStop.stopReason);
+					output.stopReason = stopReasonResult.stopReason;
+					if (stopReasonResult.errorMessage) {
+						output.errorMessage = stopReasonResult.errorMessage;
+					}
 				} else if (item.metadata) {
 					handleMetadata(item.metadata, model, output);
 				} else if (item.internalServerException) {
@@ -202,8 +206,11 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "error" || output.stopReason === "aborted") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -411,11 +418,14 @@ function handleContentBlockStop(
 		case "thinking":
 			stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 			break;
-		case "toolCall":
-			block.arguments = parseStreamingJson(block.partialJson);
+		case "toolCall": {
+			const parsedArgs = parseFinalToolCallJson(block.partialJson);
+			block.arguments = parsedArgs.arguments;
+			if (parsedArgs.malformed) block.malformedArguments = true;
 			delete (block as Block).partialJson;
 			stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 			break;
+		}
 	}
 }
 
@@ -717,18 +727,21 @@ function convertToolConfig(
 	return { tools: bedrockTools, toolChoice: bedrockToolChoice };
 }
 
-function mapStopReason(reason: string | undefined): StopReason {
+function mapStopReason(reason: string | undefined): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
 	switch (reason) {
 		case BedrockStopReason.END_TURN:
 		case BedrockStopReason.STOP_SEQUENCE:
-			return "stop";
+			return { stopReason: "stop" };
 		case BedrockStopReason.MAX_TOKENS:
 		case BedrockStopReason.MODEL_CONTEXT_WINDOW_EXCEEDED:
-			return "length";
+			return { stopReason: "length" };
 		case BedrockStopReason.TOOL_USE:
-			return "toolUse";
+			return { stopReason: "toolUse" };
 		default:
-			return "error";
+			return { stopReason: "error", errorMessage: `Provider stop_reason: ${reason}` };
 	}
 }
 

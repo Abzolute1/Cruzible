@@ -35,7 +35,13 @@ type MockAssistantResponse = {
 		reasons?: string[];
 		recoveryHint?: string;
 	};
-	toolOutcomes?: Array<{ tool: string; success: boolean; detail?: string; file?: string; metadata?: Record<string, unknown> }>;
+	toolOutcomes?: Array<{
+		tool: string;
+		success: boolean;
+		detail?: string;
+		file?: string;
+		metadata?: Record<string, unknown>;
+	}>;
 	outputTokens?: number;
 };
 
@@ -46,8 +52,20 @@ function createRuntime(
 	},
 ) {
 	const subscribers: Array<(event: any) => void> = [];
-	const toolHistory: Array<{ tool: string; success: boolean; detail?: string; file?: string; metadata?: Record<string, unknown> }> = [];
-	const fileHistory: Array<{ tool: string; success: boolean; detail?: string; file?: string; metadata?: Record<string, unknown> }> = [];
+	const toolHistory: Array<{
+		tool: string;
+		success: boolean;
+		detail?: string;
+		file?: string;
+		metadata?: Record<string, unknown>;
+	}> = [];
+	const fileHistory: Array<{
+		tool: string;
+		success: boolean;
+		detail?: string;
+		file?: string;
+		metadata?: Record<string, unknown>;
+	}> = [];
 	const availableToolNames = new Set(options?.availableToolNames ?? []);
 	const sessionManager = {
 		appendCustomEntry: vi.fn(),
@@ -258,13 +276,21 @@ describe("runAutonomousSession", () => {
 			{
 				text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`. It archives benchmark run JSON artifacts into the benchmark history/archive flow.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "read", success: true, file: "scripts/harness-benchmark-archive.mjs", detail: "read archive command" }],
+				toolOutcomes: [
+					{
+						tool: "read",
+						success: true,
+						file: "scripts/harness-benchmark-archive.mjs",
+						detail: "read archive command",
+					},
+				],
 			},
 		]);
 
 		const result = await runAutonomousSession({
 			runtimeHost,
-			userMessage: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			userMessage:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 			projectRoot: "/tmp",
 			config: { enableNudges: false },
 			getToolCallHistory: () => toolHistory,
@@ -316,7 +342,9 @@ describe("runAutonomousSession", () => {
 		});
 
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("local inspection or review task");
-		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not edit files unless the user explicitly asks for a fix");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain(
+			"Do not edit files unless the user explicitly asks for a fix",
+		);
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("answer with those findings and stop");
 	});
 
@@ -329,7 +357,14 @@ describe("runAutonomousSession", () => {
 			{
 				text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "read", success: true, file: "scripts/harness-benchmark-archive.mjs", detail: "read archive command" }],
+				toolOutcomes: [
+					{
+						tool: "read",
+						success: true,
+						file: "scripts/harness-benchmark-archive.mjs",
+						detail: "read archive command",
+					},
+				],
 			},
 		]);
 
@@ -382,7 +417,9 @@ Constraints:
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("make your very next tool call a direct `read`");
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("Treat `.` as the workspace root");
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("emit one concrete edit immediately");
-		expect(session.prompt.mock.calls[0]?.[0]).toContain("run the intended verification command exactly once, verbatim (`node --test`)");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain(
+			"run the intended verification command exactly once, verbatim (`node --test`)",
+		);
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not rewrite it to a narrower path, append extra args");
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not create or edit SUMMARY.md");
 	});
@@ -459,7 +496,12 @@ Constraints:
 				stopReason: "stop",
 				toolOutcomes: [
 					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read parser" },
-					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{
+						tool: "edit",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "preserved explicit falsey values",
+					},
 					{ tool: "bash", success: true, detail: "node --test" },
 				],
 			},
@@ -475,7 +517,9 @@ Constraints:
 		});
 
 		expect(session.prompt).toHaveBeenCalledTimes(2);
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("The concrete implementation target is already known as `src/config-parser.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain(
+			"The concrete implementation target is already known as `src/config-parser.mjs`",
+		);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not use ls, find, grep, or bash discovery again");
 		expect(result.stopReason).toBe("complete");
 	});
@@ -508,7 +552,12 @@ Constraints:
 				text: "I added the regression test and verification passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "added explicit zero-limit regression test",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -779,7 +828,9 @@ Constraints:
 				{
 					text: "I inspected the local version banner implementation.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "inspected banner logic" }],
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "inspected banner logic" },
+					],
 				},
 				{
 					text: "I updated src/version-banner.mjs and node --test passed.",
@@ -814,7 +865,12 @@ Constraints:
 					text: "I read the provided docs excerpt and inspected the local request helper.",
 					stopReason: "stop",
 					toolOutcomes: [
-						{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read local migration note" },
+						{
+							tool: "read",
+							success: true,
+							file: "reference/abort-signal-timeout.md",
+							detail: "read local migration note",
+						},
 						{ tool: "read", success: true, file: "src/request.mjs", detail: "inspected request helper" },
 					],
 				},
@@ -881,8 +937,12 @@ Constraints:
 
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("This is a single-file precision patch.");
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not guess wildcard or glob paths like `tests/*.test.js`");
-		expect(session.prompt.mock.calls[0]?.[0]).toContain("do not turn the top-level listing into more subdirectory `ls` calls");
-		expect(session.prompt.mock.calls[0]?.[0]).toContain("Do not inspect `generated/`, `reference/`, `cli/`, or sibling directories");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain(
+			"do not turn the top-level listing into more subdirectory `ls` calls",
+		);
+		expect(session.prompt.mock.calls[0]?.[0]).toContain(
+			"Do not inspect `generated/`, `reference/`, `cli/`, or sibling directories",
+		);
 		expect(result.stopReason).toBe("complete");
 	});
 
@@ -913,7 +973,9 @@ Constraints:
 		});
 
 		expect(session.prompt.mock.calls[0]?.[0]).toContain("`reference/abort-signal-timeout.md`");
-		expect(session.prompt.mock.calls[0]?.[0]).toContain("read that exact file before any directory listing or other discovery");
+		expect(session.prompt.mock.calls[0]?.[0]).toContain(
+			"read that exact file before any directory listing or other discovery",
+		);
 		expect(result.stopReason).toBe("complete");
 	});
 
@@ -922,14 +984,31 @@ Constraints:
 			{
 				text: "I read the failing test first.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "read", success: true, file: "tests/config-parser.test.mjs", detail: "read failing parser test" }],
+				toolOutcomes: [
+					{
+						tool: "read",
+						success: true,
+						file: "tests/config-parser.test.mjs",
+						detail: "read failing parser test",
+					},
+				],
 			},
 			{
 				text: "I updated src/config-parser.mjs and node --test passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read matching implementation file" },
-					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{
+						tool: "read",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "read matching implementation file",
+					},
+					{
+						tool: "edit",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "preserved explicit falsey values",
+					},
 					{ tool: "bash", success: true, detail: "node --test" },
 				],
 			},
@@ -970,7 +1049,12 @@ Constraints:
 				text: "I read the reference, patched the implementation, and node --test passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read named local reference" },
+					{
+						tool: "read",
+						success: true,
+						file: "reference/abort-signal-timeout.md",
+						detail: "read named local reference",
+					},
 					{ tool: "read", success: true, file: "src/request.mjs", detail: "read implementation file" },
 					{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout helper" },
 					{ tool: "bash", success: true, detail: "node --test" },
@@ -997,7 +1081,9 @@ Constraints:
 
 		expect(session.prompt).toHaveBeenCalledTimes(2);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("`reference/abort-signal-timeout.md`");
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("Read that exact file now before any more ls, find, grep, or bash discovery");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain(
+			"Read that exact file now before any more ls, find, grep, or bash discovery",
+		);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("instead of guessing alternate extensions or using globs");
 		expect(result.stopReason).toBe("complete");
 	});
@@ -1008,7 +1094,12 @@ Constraints:
 				text: "I read the reference, request helper, and then a helper file.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "reference/abort-signal-timeout.md", detail: "read named local reference" },
+					{
+						tool: "read",
+						success: true,
+						file: "reference/abort-signal-timeout.md",
+						detail: "read named local reference",
+					},
 					{ tool: "read", success: true, file: "src/request.mjs", detail: "read request helper implementation" },
 					{ tool: "read", success: true, file: "src/fake-fetch.mjs", detail: "read helper dependency" },
 				],
@@ -1017,7 +1108,12 @@ Constraints:
 				text: "I patched src/request.mjs and node --test passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated request helper to AbortSignal.timeout" },
+					{
+						tool: "edit",
+						success: true,
+						file: "src/request.mjs",
+						detail: "migrated request helper to AbortSignal.timeout",
+					},
 					{ tool: "bash", success: true, detail: "node --test" },
 				],
 			},
@@ -1057,11 +1153,21 @@ Constraints:
 				text: "I read the verifier script, updated the patch and regression test, and the checks passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "scripts/check-regression-test.mjs", detail: "read verifier script" },
+					{
+						tool: "read",
+						success: true,
+						file: "scripts/check-regression-test.mjs",
+						detail: "read verifier script",
+					},
 					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
 					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
 					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added verifier-compatible regression test" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "added verifier-compatible regression test",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -1086,7 +1192,9 @@ Constraints:
 		});
 
 		expect(session.prompt).toHaveBeenCalledTimes(2);
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("custom verifier script at `scripts/check-regression-test.mjs`");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain(
+			"custom verifier script at `scripts/check-regression-test.mjs`",
+		);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("exact regression-test expectations");
 		expect(result.stopReason).toBe("complete");
 	});
@@ -1105,12 +1213,18 @@ Constraints:
 				toolOutcomes: [
 					{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "read regression test file" },
 					{ tool: "read", success: true, file: "src/search-url.mjs", detail: "read implementation file" },
-					{ tool: "read", success: true, file: "scripts/check-regression-test.mjs", detail: "read verifier script" },
+					{
+						tool: "read",
+						success: true,
+						file: "scripts/check-regression-test.mjs",
+						detail: "read verifier script",
+					},
 					{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
 					{
 						tool: "bash",
 						success: false,
-						detail: "node --test && node scripts/check-regression-test.mjs — missing regression test for explicit zero limit",
+						detail:
+							"node --test && node scripts/check-regression-test.mjs — missing regression test for explicit zero limit",
 					},
 				],
 			},
@@ -1118,7 +1232,12 @@ Constraints:
 				text: "Task complete. I updated the regression test, reran the checks, and no further changes are needed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added verifier-compatible regression test" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "added verifier-compatible regression test",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -1164,7 +1283,12 @@ Constraints:
 				text: "I added the regression test and node --test passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "added explicit zero-limit regression test",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -1200,15 +1324,30 @@ Constraints:
 				text: "I read the test and the implementation file.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "tests/config-parser.test.mjs", detail: "read failing parser test" },
-					{ tool: "read", success: true, file: "src/config-parser.mjs", detail: "read matching implementation file" },
+					{
+						tool: "read",
+						success: true,
+						file: "tests/config-parser.test.mjs",
+						detail: "read failing parser test",
+					},
+					{
+						tool: "read",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "read matching implementation file",
+					},
 				],
 			},
 			{
 				text: "I updated src/config-parser.mjs and node --test passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" },
+					{
+						tool: "edit",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "preserved explicit falsey values",
+					},
 					{ tool: "bash", success: true, detail: "node --test" },
 				],
 			},
@@ -1243,7 +1382,12 @@ Constraints:
 				text: "I read the test and source file.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "tests/version-banner.test.mjs", detail: "read staging banner test" },
+					{
+						tool: "read",
+						success: true,
+						file: "tests/version-banner.test.mjs",
+						detail: "read staging banner test",
+					},
 					{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "read banner implementation" },
 				],
 			},
@@ -1288,14 +1432,21 @@ Constraints:
 				text: "I read the test and source file.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "read", success: true, file: "tests/version-banner.test.mjs", detail: "read staging banner test" },
+					{
+						tool: "read",
+						success: true,
+						file: "tests/version-banner.test.mjs",
+						detail: "read staging banner test",
+					},
 					{ tool: "read", success: true, file: "src/version-banner.mjs", detail: "read banner implementation" },
 				],
 			},
 			{
 				text: "I tried the edit, but it did not apply.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "edit", success: false, file: "src/version-banner.mjs", detail: "invalid edit command" }],
+				toolOutcomes: [
+					{ tool: "edit", success: false, file: "src/version-banner.mjs", detail: "invalid edit command" },
+				],
 			},
 			{
 				text: "Updated src/version-banner.mjs and node --test passed.",
@@ -1317,7 +1468,7 @@ Constraints:
 			"The intended verification command is: `node --test`",
 		].join("\n");
 
-		const result = await runAutonomousSession({
+		await runAutonomousSession({
 			runtimeHost,
 			userMessage,
 			projectRoot: "/tmp",
@@ -1327,10 +1478,16 @@ Constraints:
 		});
 
 		expect(session.prompt).toHaveBeenCalledTimes(3);
-		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("The previous edit on `src/version-banner.mjs` did not apply");
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain(
+			"The previous edit on `src/version-banner.mjs` did not apply",
+		);
 		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Do not reread other files");
-		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Emit one valid edit tool call on `src/version-banner.mjs` now");
-		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain("Use one native `edit` tool call with `path` and an `edits` array");
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain(
+			"Emit one valid edit tool call on `src/version-banner.mjs` now",
+		);
+		expect(session.prompt.mock.calls.at(-1)?.[0]).toContain(
+			"Use one native `edit` tool call with `path` and an `edits` array",
+		);
 	});
 
 	test("resumes an interrupted autonomous run from the saved control state", async () => {
@@ -1360,6 +1517,7 @@ Constraints:
 				costSummary: "$0.0004 | 20 in / 40 out",
 				budgetStatus: {
 					costUsed: 0.0004,
+					costAuthoritative: false,
 					tokensUsed: 40,
 					turnsUsed: 2,
 					exceeded: { cost: false, tokens: false, turns: false },
@@ -1390,12 +1548,15 @@ Constraints:
 						lane: "research",
 						planRevision: 1,
 						executionAttempts: 1,
-						handoffSummary: "Research evidence is sufficient. Stop browsing and synthesize the answer from the saved sources.",
+						handoffSummary:
+							"Research evidence is sufficient. Stop browsing and synthesize the answer from the saved sources.",
 					},
 					resume: {
 						mode: "resume_summarize",
-						resumeInstruction: "Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
-						resumeReason: "The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
+						resumeInstruction:
+							"Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
+						resumeReason:
+							"The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
 						lastStableCheckpoint: "Fetched React — https://react.dev/",
 					},
 					research: {
@@ -1418,8 +1579,10 @@ Constraints:
 					taskJournal: {
 						activeSubtask: "Finalize and report verified completion",
 						nextAction: "Stop and present the verified result",
-						plannedNextStep: "Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
-						stepRationale: "The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
+						plannedNextStep:
+							"Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
+						stepRationale:
+							"The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
 						expectedVerification: "Cite supporting source URLs such as https://react.dev/",
 						intentStatus: "pending",
 						lastIntentOutcome: undefined,
@@ -1439,6 +1602,7 @@ Constraints:
 					lastVerificationDetail: undefined,
 					verificationFailures: [],
 					residualRisks: [],
+					discoveredFiles: [],
 				},
 			},
 			getToolCallHistory: () => toolHistory,
@@ -1454,7 +1618,7 @@ Constraints:
 	});
 
 	test("tracks structured run ledger state across mutations, verification, and risks", async () => {
-		const { runtimeHost, session, toolHistory, fileHistory, sessionManager } = createRuntime([
+		const { runtimeHost, toolHistory, fileHistory, sessionManager } = createRuntime([
 			{
 				text: "I updated the auth retry path, but remaining browser coverage is still a risk.",
 				stopReason: "stop",
@@ -1483,7 +1647,9 @@ Constraints:
 		expect(result.ledger.status).toBe("complete");
 		expect(result.ledger.taskJournal.activeSubtask).toBe("Finalize and report verified completion");
 		expect(result.ledger.taskJournal.nextAction).toBe("Stop and present the verified result");
-		expect(result.ledger.taskJournal.plannedNextStep).toBe("Summarize the verified result and note any residual risks.");
+		expect(result.ledger.taskJournal.plannedNextStep).toBe(
+			"Summarize the verified result and note any residual risks.",
+		);
 		expect(result.ledger.taskJournal.stepRationale).toBe(
 			"Verification is satisfied, so the remaining work is reporting clearly and stopping.",
 		);
@@ -1522,7 +1688,12 @@ Constraints:
 				stopReason: "stop",
 				toolOutcomes: [
 					{ tool: "edit", success: true, file: "src/auth.ts", detail: "updated retry logic" },
-					{ tool: "bash", success: false, detail: "npm test", metadata: { outputPreview: "missing regression test for explicit zero limit" } },
+					{
+						tool: "bash",
+						success: false,
+						detail: "npm test",
+						metadata: { outputPreview: "missing regression test for explicit zero limit" },
+					},
 				],
 			},
 			{
@@ -1544,10 +1715,16 @@ Constraints:
 		expect(result.ledger.currentFocus).toContain("Running verification");
 		expect(result.ledger.progressDetail).toBe("npm test");
 		expect(result.ledger.verificationAttempts).toBe(2);
-		expect(result.ledger.verificationFailures).toContain("failed verification: npm test — missing regression test for explicit zero limit");
-		expect(result.ledger.residualRisks).toContain("failed verification: npm test — missing regression test for explicit zero limit");
+		expect(result.ledger.verificationFailures).toContain(
+			"failed verification: npm test — missing regression test for explicit zero limit",
+		);
+		expect(result.ledger.residualRisks).toContain(
+			"failed verification: npm test — missing regression test for explicit zero limit",
+		);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("Recover from the blocker before doing anything else");
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("verification failed: missing regression test for explicit zero limit");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain(
+			"verification failed: missing regression test for explicit zero limit",
+		);
 		const blockerSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
 			.find(
@@ -1582,7 +1759,7 @@ Constraints:
 
 - Stay inside this workspace.
 - The intended verification command is: \`node --test\``;
-		const { runtimeHost, session, toolHistory } = createRuntime([
+		const { runtimeHost, toolHistory } = createRuntime([
 			{
 				text: "I found the bug but the edit path was malformed.",
 				stopReason: "stop",
@@ -1653,7 +1830,12 @@ Constraints:
 				text: "Task complete. I updated the regression test, reran verification, and no further changes are needed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "matched verifier-required regression test wording" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "matched verifier-required regression test wording",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -1668,7 +1850,9 @@ Constraints:
 			getFileAccessHistory: () => fileHistory,
 		});
 
-		expect(session.prompt.mock.calls[1]?.[0]).toContain("Verification already identified the remaining regression-test mismatch");
+		expect(session.prompt.mock.calls[1]?.[0]).toContain(
+			"Verification already identified the remaining regression-test mismatch",
+		);
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("tests/search-url.test.mjs");
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("Do not reread or rediscover files first");
 		expect(sessionManager.appendCustomEntry.mock.calls.length).toBeGreaterThan(0);
@@ -1701,7 +1885,9 @@ Constraints:
 		const preTurnSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
 			.find((snapshot: any) => snapshot?.phase === "pre_turn" && snapshot?.ledger?.taskJournal?.plannedNextStep);
-		expect(preTurnSnapshot?.ledger?.taskJournal?.plannedNextStep).toBe("Patch src/auth.ts now. Do not rediscover files first.");
+		expect(preTurnSnapshot?.ledger?.taskJournal?.plannedNextStep).toBe(
+			"Patch src/auth.ts now. Do not rediscover files first.",
+		);
 		expect(preTurnSnapshot?.ledger?.taskJournal?.stepRationale).toBe(
 			"The run already has the relevant implementation context in hand, so the next step should be a direct code change rather than more inspection.",
 		);
@@ -1749,6 +1935,7 @@ Constraints:
 				costSummary: "$0.0008 | 40 in / 80 out",
 				budgetStatus: {
 					costUsed: 0.0008,
+					costAuthoritative: false,
 					tokensUsed: 80,
 					turnsUsed: 4,
 					exceeded: { cost: false, tokens: false, turns: false },
@@ -1775,7 +1962,7 @@ Constraints:
 					status: "running",
 					turnsObserved: 4,
 					planner: {
-						phase: "implementing",
+						phase: "executing",
 						lane: "generic",
 						planRevision: 1,
 						executionAttempts: 1,
@@ -1802,6 +1989,7 @@ Constraints:
 					verificationSatisfied: false,
 					verificationFailures: [],
 					residualRisks: [],
+					discoveredFiles: [],
 					resume: {
 						mode: "resume_execute",
 						resumeInstruction: "Run the latest verification and summarize the result",
@@ -2054,7 +2242,12 @@ Constraints:
 				text: "I added the regression test and verification passed.",
 				stopReason: "stop",
 				toolOutcomes: [
-					{ tool: "edit", success: true, file: "tests/search-url.test.mjs", detail: "added explicit zero-limit regression test" },
+					{
+						tool: "edit",
+						success: true,
+						file: "tests/search-url.test.mjs",
+						detail: "added explicit zero-limit regression test",
+					},
 					{ tool: "bash", success: true, detail: "node --test && node scripts/check-regression-test.mjs" },
 				],
 			},
@@ -2303,7 +2496,9 @@ Constraints:
 		});
 
 		expect(session.prompt).toHaveBeenCalledTimes(3);
-		expect(session.prompt.mock.calls[2]?.[0]).toContain("Summarize the verified result, note any residual risks, and stop.");
+		expect(session.prompt.mock.calls[2]?.[0]).toContain(
+			"Summarize the verified result, note any residual risks, and stop.",
+		);
 		expect(session.prompt.mock.calls[2]?.[0]).toContain("Do not call any more tools");
 		expect(result.stopReason).toBe("complete");
 		expect(result.ledger.verificationSatisfied).toBe(true);
@@ -2315,7 +2510,14 @@ Constraints:
 			{
 				text: "I updated the config parser implementation.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "edit", success: true, file: "src/config-parser.mjs", detail: "preserved explicit falsey values" }],
+				toolOutcomes: [
+					{
+						tool: "edit",
+						success: true,
+						file: "src/config-parser.mjs",
+						detail: "preserved explicit falsey values",
+					},
+				],
 			},
 			{
 				text: "Updated src/config-parser.mjs to preserve explicit falsey values, and node --test passed.",
@@ -2423,7 +2625,9 @@ Constraints:
 				{
 					text: "I updated the dashboard layout.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "edit", success: true, file: "src/dashboard.tsx", detail: "updated dashboard spacing" }],
+					toolOutcomes: [
+						{ tool: "edit", success: true, file: "src/dashboard.tsx", detail: "updated dashboard spacing" },
+					],
 				},
 				{
 					text: "The updated dashboard recapture is clean and has no runtime issues.",
@@ -2553,7 +2757,12 @@ Constraints:
 					text: "Task complete. I fixed the visual issues and verified the updated UI.",
 					stopReason: "stop",
 					toolOutcomes: [
-						{ tool: "edit", success: true, file: "src/homepage.tsx", detail: "fixed hydration mismatch handling" },
+						{
+							tool: "edit",
+							success: true,
+							file: "src/homepage.tsx",
+							detail: "fixed hydration mismatch handling",
+						},
 						{
 							tool: "screenshot_url",
 							success: true,
@@ -2599,7 +2808,9 @@ Constraints:
 				{
 					text: "I inspected the landing page structure and identified the first UI change.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "read", success: true, file: "src/homepage.tsx", detail: "read landing page layout" }],
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "src/homepage.tsx", detail: "read landing page layout" },
+					],
 				},
 				{
 					text: "I captured the baseline and updated the hero layout.",
@@ -2632,7 +2843,10 @@ Constraints:
 		expect(session.prompt.mock.calls[1]?.[0]).toContain("render without console or network issues");
 		const baselineSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
-			.find((snapshot: any) => snapshot?.phase === "pre_turn" && snapshot?.ledger?.visualIteration?.phase === "baseline_capture");
+			.find(
+				(snapshot: any) =>
+					snapshot?.phase === "pre_turn" && snapshot?.ledger?.visualIteration?.phase === "baseline_capture",
+			);
 		expect(baselineSnapshot?.ledger?.taskJournal?.plannedNextStep).toContain("Capture a baseline screenshot");
 		expect(baselineSnapshot?.ledger?.visualTarget?.surface).toBe("landing page");
 		expect(result.ledger.visualIteration).toEqual(
@@ -2652,7 +2866,9 @@ Constraints:
 				{
 					text: "I inspected the checkout page and identified the first responsive fix.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "read", success: true, file: "src/checkout.tsx", detail: "read checkout layout" }],
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "src/checkout.tsx", detail: "read checkout layout" },
+					],
 				},
 				{
 					text: "Task complete. I verified the implementation and no further changes are needed.",
@@ -2695,7 +2911,9 @@ Constraints:
 				{
 					text: "I inspected the checkout page and identified the cart drawer issue.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "read", success: true, file: "src/checkout.tsx", detail: "read checkout cart drawer state" }],
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "src/checkout.tsx", detail: "read checkout cart drawer state" },
+					],
 				},
 				{
 					text: "I captured the checkout drawer and found the exact interaction flow needed.",
@@ -2774,22 +2992,30 @@ Constraints:
 				{
 					text: "I inspected the dashboard UI and found the target component.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "read", success: true, file: "src/dashboard.tsx", detail: "read dashboard layout" }],
+					toolOutcomes: [
+						{ tool: "read", success: true, file: "src/dashboard.tsx", detail: "read dashboard layout" },
+					],
 				},
 				{
 					text: "I captured the current dashboard.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "screenshot_url", success: true, detail: "http://localhost:3000/dashboard-before" }],
+					toolOutcomes: [
+						{ tool: "screenshot_url", success: true, detail: "http://localhost:3000/dashboard-before" },
+					],
 				},
 				{
 					text: "I updated the dashboard layout.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "edit", success: true, file: "src/dashboard.tsx", detail: "updated dashboard spacing" }],
+					toolOutcomes: [
+						{ tool: "edit", success: true, file: "src/dashboard.tsx", detail: "updated dashboard spacing" },
+					],
 				},
 				{
 					text: "Task complete. I verified the implementation and no further changes are needed.",
 					stopReason: "stop",
-					toolOutcomes: [{ tool: "screenshot_url", success: true, detail: "http://localhost:3000/dashboard-after" }],
+					toolOutcomes: [
+						{ tool: "screenshot_url", success: true, detail: "http://localhost:3000/dashboard-after" },
+					],
 				},
 			],
 			{ availableToolNames: ["screenshot_url", "interact_then_screenshot"] },
@@ -2809,7 +3035,10 @@ Constraints:
 		).toBe(true);
 		const recaptureSnapshot = sessionManager.appendCustomEntry.mock.calls
 			.map((call: any[]) => call[1])
-			.find((snapshot: any) => snapshot?.phase === "pre_turn" && snapshot?.ledger?.visualIteration?.phase === "recapture");
+			.find(
+				(snapshot: any) =>
+					snapshot?.phase === "pre_turn" && snapshot?.ledger?.visualIteration?.phase === "recapture",
+			);
 		expect(recaptureSnapshot?.ledger?.taskJournal?.plannedNextStep).toContain("Recapture the updated UI");
 		expect(result.ledger.visualIteration).toEqual(
 			expect.objectContaining({
@@ -2916,7 +3145,9 @@ Constraints:
 			{
 				text: "I updated src/request.mjs.",
 				stopReason: "stop",
-				toolOutcomes: [{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout handling" }],
+				toolOutcomes: [
+					{ tool: "edit", success: true, file: "src/request.mjs", detail: "migrated timeout handling" },
+				],
 			},
 			{
 				text: "Updated src/request.mjs and node --test passed.",
@@ -3096,9 +3327,7 @@ Constraints:
 		});
 
 		expect(result.stopReason).toBe("error");
-		expect(result.ledger.taskJournal.blockedReasons.join(" ")).toContain(
-			"critically degraded turns",
-		);
+		expect(result.ledger.taskJournal.blockedReasons.join(" ")).toContain("critically degraded turns");
 		expect(result.checkpointState.consecutiveCriticalDegradedTurnCount).toBe(3);
 	});
 });

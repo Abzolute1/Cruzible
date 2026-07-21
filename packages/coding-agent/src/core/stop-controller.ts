@@ -74,7 +74,8 @@ export function decideStop(input: StopDecisionInput): StopDecision {
 		return {
 			shouldStop: true,
 			finalAnswerOnly: true,
-			reason: "Controlled runtime: research task has enough sourced evidence. Provide the final answer with citations.",
+			reason:
+				"Controlled runtime: research task has enough sourced evidence. Provide the final answer with citations.",
 			label: "research_sources_sufficient",
 			nextAction: "final_answer",
 		};
@@ -162,4 +163,3 @@ export class StopController {
 		};
 	}
 }
-

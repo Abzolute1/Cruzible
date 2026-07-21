@@ -7,7 +7,7 @@
 
 import type { Server } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js";
-import { generatePKCE } from "./pkce.js";
+import { generatePKCE, generateState } from "./pkce.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthPrompt, OAuthProviderInterface } from "./types.js";
 
 type CallbackServerInfo = {
@@ -24,8 +24,8 @@ type NodeApis = {
 let nodeApis: NodeApis | null = null;
 let nodeApisPromise: Promise<NodeApis> | null = null;
 
-const decode = (s: string) => atob(s);
-const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
+// Public installed-app client ID (same one Claude Code uses); not a secret.
+const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CALLBACK_HOST = "127.0.0.1";
@@ -212,9 +212,17 @@ async function exchangeAuthorizationCode(
 	try {
 		tokenData = JSON.parse(responseBody) as { access_token: string; refresh_token: string; expires_in: number };
 	} catch (error) {
-		throw new Error(
-			`Token exchange returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
-		);
+		// Never embed the token response body: a successful response contains live secrets.
+		throw new Error(`Token exchange returned invalid JSON. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`);
+	}
+
+	if (
+		typeof tokenData?.access_token !== "string" ||
+		typeof tokenData?.refresh_token !== "string" ||
+		typeof tokenData?.expires_in !== "number"
+	) {
+		// Never embed the token response body: a successful response contains live secrets.
+		throw new Error(`Token exchange response missing required fields. url=${TOKEN_URL}`);
 	}
 
 	return {
@@ -232,9 +240,22 @@ export async function loginAnthropic(options: {
 	onPrompt: (prompt: OAuthPrompt) => Promise<string>;
 	onProgress?: (message: string) => void;
 	onManualCodeInput?: () => Promise<string>;
+	signal?: AbortSignal;
 }): Promise<OAuthCredentials> {
 	const { verifier, challenge } = await generatePKCE();
-	const server = await startCallbackServer(verifier);
+	// The OAuth state must be independent of the PKCE verifier: it is echoed back
+	// in the redirect URL alongside the code, so reusing the verifier would nullify
+	// PKCE's interception protection.
+	const expectedState = generateState();
+	const server = await startCallbackServer(expectedState);
+
+	// Wire cancellation: aborting unblocks the callback wait; the finally below closes the server.
+	const onAbort = () => server.cancelWait();
+	if (options.signal?.aborted) {
+		server.server.close();
+		throw new Error("Login cancelled");
+	}
+	options.signal?.addEventListener("abort", onAbort, { once: true });
 
 	let code: string | undefined;
 	let state: string | undefined;
@@ -249,7 +270,7 @@ export async function loginAnthropic(options: {
 			scope: SCOPES,
 			code_challenge: challenge,
 			code_challenge_method: "S256",
-			state: verifier,
+			state: expectedState,
 		});
 
 		options.onAuth({
@@ -284,11 +305,11 @@ export async function loginAnthropic(options: {
 				redirectUriForExchange = REDIRECT_URI;
 			} else if (manualInput) {
 				const parsed = parseAuthorizationInput(manualInput);
-				if (parsed.state && parsed.state !== verifier) {
+				if (parsed.state && parsed.state !== expectedState) {
 					throw new Error("OAuth state mismatch");
 				}
 				code = parsed.code;
-				state = parsed.state ?? verifier;
+				state = parsed.state ?? expectedState;
 			}
 
 			if (!code) {
@@ -298,11 +319,11 @@ export async function loginAnthropic(options: {
 				}
 				if (manualInput) {
 					const parsed = parseAuthorizationInput(manualInput);
-					if (parsed.state && parsed.state !== verifier) {
+					if (parsed.state && parsed.state !== expectedState) {
 						throw new Error("OAuth state mismatch");
 					}
 					code = parsed.code;
-					state = parsed.state ?? verifier;
+					state = parsed.state ?? expectedState;
 				}
 			}
 		} else {
@@ -314,17 +335,21 @@ export async function loginAnthropic(options: {
 			}
 		}
 
+		if (options.signal?.aborted) {
+			throw new Error("Login cancelled");
+		}
+
 		if (!code) {
 			const input = await options.onPrompt({
 				message: "Paste the authorization code or full redirect URL:",
 				placeholder: REDIRECT_URI,
 			});
 			const parsed = parseAuthorizationInput(input);
-			if (parsed.state && parsed.state !== verifier) {
+			if (parsed.state && parsed.state !== expectedState) {
 				throw new Error("OAuth state mismatch");
 			}
 			code = parsed.code;
-			state = parsed.state ?? verifier;
+			state = parsed.state ?? expectedState;
 		}
 
 		if (!code) {
@@ -338,6 +363,7 @@ export async function loginAnthropic(options: {
 		options.onProgress?.("Exchanging authorization code for tokens...");
 		return exchangeAuthorizationCode(code, state, verifier, redirectUriForExchange);
 	} finally {
+		options.signal?.removeEventListener("abort", onAbort);
 		server.server.close();
 	}
 }
@@ -366,9 +392,19 @@ export async function refreshAnthropicToken(refreshToken: string): Promise<OAuth
 			scope?: string;
 		};
 	} catch (error) {
+		// Never embed the token response body: a successful response contains live secrets.
 		throw new Error(
-			`Anthropic token refresh returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
+			`Anthropic token refresh returned invalid JSON. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`,
 		);
+	}
+
+	if (
+		typeof data?.access_token !== "string" ||
+		typeof data?.refresh_token !== "string" ||
+		typeof data?.expires_in !== "number"
+	) {
+		// Never embed the token response body: a successful response contains live secrets.
+		throw new Error(`Anthropic token refresh response missing required fields. url=${TOKEN_URL}`);
 	}
 
 	return {
@@ -389,6 +425,7 @@ export const anthropicOAuthProvider: OAuthProviderInterface = {
 			onPrompt: callbacks.onPrompt,
 			onProgress: callbacks.onProgress,
 			onManualCodeInput: callbacks.onManualCodeInput,
+			signal: callbacks.signal,
 		});
 	},
 

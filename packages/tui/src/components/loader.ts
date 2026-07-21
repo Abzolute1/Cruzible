@@ -31,6 +31,8 @@ export class Loader extends Text {
 			this.currentFrame = (this.currentFrame + 1) % this.frames.length;
 			this.updateDisplay();
 		}, 80);
+		// Don't keep the process alive just for the spinner if stop() is forgotten
+		this.intervalId.unref();
 	}
 
 	stop() {
@@ -45,9 +47,18 @@ export class Loader extends Text {
 		this.updateDisplay();
 	}
 
+	/** Optional live-stats suffix (e.g. generation tokens/rate/silence), appended on every redraw. */
+	setStatsProvider(provider: (() => string | undefined) | undefined) {
+		this.statsProvider = provider;
+		this.updateDisplay();
+	}
+
+	private statsProvider: (() => string | undefined) | undefined;
+
 	private updateDisplay() {
 		const frame = this.frames[this.currentFrame];
-		this.setText(`${this.spinnerColorFn(frame)} ${this.messageColorFn(this.message)}`);
+		const stats = this.statsProvider?.();
+		this.setText(`${this.spinnerColorFn(frame)} ${this.messageColorFn(this.message)}${stats ? ` ${stats}` : ""}`);
 		if (this.ui) {
 			this.ui.requestRender();
 		}

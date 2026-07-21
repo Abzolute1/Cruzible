@@ -85,7 +85,7 @@ describe("interactive-settings-selector", () => {
 			steeringMode: "one-at-a-time" as const,
 			followUpMode: "all" as const,
 			thinkingLevel: "low" as const,
-			getAvailableThinkingLevels: () => ["low", "medium"] as const,
+			getAvailableThinkingLevels: () => ["low", "medium"] as ("low" | "medium")[],
 			setAutoCompactionEnabled: vi.fn(),
 			setSteeringMode: vi.fn(),
 			setFollowUpMode: vi.fn(),

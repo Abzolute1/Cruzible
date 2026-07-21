@@ -5,15 +5,15 @@ import type { ContextUsage, ExtensionContext, ToolRenderResultOptions } from "..
 import {
 	detectResearchQueryIntent,
 	getResearchFetchOutcome,
-	rememberResearchUrlHints,
 	type ResearchQueryIntent,
+	rememberResearchUrlHints,
 	shouldUseRichResearchFetch,
 } from "./research-intent.js";
 import {
 	deriveResearchCompressionProfile,
 	formatSearchTranscriptContent,
-	truncateResearchSnippet,
 	type ResearchCoverageKind,
+	truncateResearchSnippet,
 } from "./research-output.js";
 
 const DEFAULT_MAX_RESULTS = 3;
@@ -309,7 +309,11 @@ const OFFICIAL_DOC_FALLBACKS: Array<{
 ];
 
 function scoreGeneralCurrentEventHost(host: string): number {
-	if (/(^|\.)(varonis\.com|arstechnica\.com|infoq\.com|thehackernews\.com|techradar\.com|bleepingcomputer\.com|wired\.com|theregister\.com)$/.test(host)) {
+	if (
+		/(^|\.)(varonis\.com|arstechnica\.com|infoq\.com|thehackernews\.com|techradar\.com|bleepingcomputer\.com|wired\.com|theregister\.com)$/.test(
+			host,
+		)
+	) {
 		return 4;
 	}
 	if (/(^|\.)(fortune\.com|reuters\.com|bloomberg\.com|ft\.com|wsj\.com)$/.test(host)) {
@@ -321,7 +325,11 @@ function scoreGeneralCurrentEventHost(host: string): number {
 	if (/(^|\.)(linkedin\.com|github\.com|raw\.githubusercontent\.com)$/.test(host)) {
 		return -8;
 	}
-	if (/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(host)) {
+	if (
+		/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(
+			host,
+		)
+	) {
 		return -6;
 	}
 	if (/(^|\.)(dev\.to|medium\.com|substack\.com)$/.test(host)) {
@@ -336,16 +344,29 @@ function scoreResearchSource(url: string, intent: ResearchQueryIntent): number {
 		const host = parsed.hostname.toLowerCase();
 		const path = parsed.pathname.toLowerCase();
 		let score = 0;
-		if (host.startsWith("docs.") || host.startsWith("developer.") || host.startsWith("api.") || host.startsWith("learn.")) {
+		if (
+			host.startsWith("docs.") ||
+			host.startsWith("developer.") ||
+			host.startsWith("api.") ||
+			host.startsWith("learn.")
+		) {
 			score += 5;
 		}
-		if (/(^|\.)(readthedocs\.io|mozilla\.org|react\.dev|nodejs\.org|python\.org|golang\.org|rust-lang\.org)$/.test(host)) {
+		if (
+			/(^|\.)(readthedocs\.io|mozilla\.org|react\.dev|nodejs\.org|python\.org|golang\.org|rust-lang\.org)$/.test(
+				host,
+			)
+		) {
 			score += 5;
 		}
 		if (/(docs|doc|reference|manual|guide|api|spec|specification|changelog|release)/.test(path)) {
 			score += 3;
 		}
-		if (/(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)/.test(host)) {
+		if (
+			/(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)/.test(
+				host,
+			)
+		) {
 			score -= 4;
 		}
 		if (/(duckduckgo\.com|google\.com|bing\.com)/.test(host)) {
@@ -366,7 +387,11 @@ function scoreResearchSource(url: string, intent: ResearchQueryIntent): number {
 			}
 		}
 		if (intent === "current_events") {
-			if (/(\/news\/|\/blog\/|\/release|\/releases\/|\/announcement|\/announcements\/|\/press\/|\/security\/|\/incident|\/advisory)/.test(path)) {
+			if (
+				/(\/news\/|\/blog\/|\/release|\/releases\/|\/announcement|\/announcements\/|\/press\/|\/security\/|\/incident|\/advisory)/.test(
+					path,
+				)
+			) {
 				score += 4;
 			}
 			if (/(leak|incident|breach|outage|security|advisory|analysis|report|202\d)/.test(path)) {
@@ -379,7 +404,12 @@ function scoreResearchSource(url: string, intent: ResearchQueryIntent): number {
 			if (/(\bnews\b|\bblog\b|\bpress\b|\bsecurity\b|\bincident\b|\badvisory\b)/.test(host)) {
 				score += 2;
 			}
-			if (host.startsWith("docs.") || host.startsWith("learn.") || host.startsWith("developer.") || /(docs|reference|manual|guide|api|spec)/.test(path)) {
+			if (
+				host.startsWith("docs.") ||
+				host.startsWith("learn.") ||
+				host.startsWith("developer.") ||
+				/(docs|reference|manual|guide|api|spec)/.test(path)
+			) {
 				score -= 4;
 			}
 			if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
@@ -435,11 +465,13 @@ function getResearchFetchRisk(url: string): ResearchFetchRisk {
 			return "medium";
 		}
 		if (
-			host.startsWith("docs.")
-			|| host.startsWith("developer.")
-			|| host.startsWith("api.")
-			|| /(^|\.)(github\.com|raw\.githubusercontent\.com|react\.dev|nodejs\.org|docs\.python\.org|www\.typescriptlang\.org|developer\.mozilla\.org|docs\.npmjs\.com)$/.test(host)
-			|| /(\/docs?\/|\/reference\/|\/api\/|\/manual\/)/.test(path)
+			host.startsWith("docs.") ||
+			host.startsWith("developer.") ||
+			host.startsWith("api.") ||
+			/(^|\.)(github\.com|raw\.githubusercontent\.com|react\.dev|nodejs\.org|docs\.python\.org|www\.typescriptlang\.org|developer\.mozilla\.org|docs\.npmjs\.com)$/.test(
+				host,
+			) ||
+			/(\/docs?\/|\/reference\/|\/api\/|\/manual\/)/.test(path)
 		) {
 			return "low";
 		}
@@ -461,10 +493,18 @@ function getResearchScoreReasons(
 		const path = parsed.pathname.toLowerCase();
 		const text = `${result.title}\n${result.snippet}\n${result.url}`.toLowerCase();
 		const queryTerms = extractSearchQueryTerms(query);
-		if (/(^|\.)(anthropic\.com|openai\.com|googleblog\.com|microsoft\.com|nvidia\.com|developer\.nvidia\.com|react\.dev|nodejs\.org|python\.org|typescriptlang\.org|www\.typescriptlang\.org|mozilla\.org|npmjs\.com|lmstudio\.ai)$/.test(host)) {
+		if (
+			/(^|\.)(anthropic\.com|openai\.com|googleblog\.com|microsoft\.com|nvidia\.com|developer\.nvidia\.com|react\.dev|nodejs\.org|python\.org|typescriptlang\.org|www\.typescriptlang\.org|mozilla\.org|npmjs\.com|lmstudio\.ai)$/.test(
+				host,
+			)
+		) {
 			reasons.push("official_domain");
 		}
-		if (host.startsWith("docs.") || host.startsWith("developer.") || /(\/docs?\/|\/reference\/|\/api\/|\/manual\/|\/learn\/)/.test(path)) {
+		if (
+			host.startsWith("docs.") ||
+			host.startsWith("developer.") ||
+			/(\/docs?\/|\/reference\/|\/api\/|\/manual\/|\/learn\/)/.test(path)
+		) {
 			reasons.push("docs_path");
 		}
 		if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
@@ -473,16 +513,31 @@ function getResearchScoreReasons(
 		if (/\b(202\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/.test(text)) {
 			reasons.push("recent_date_signal");
 		}
-		if (/(analysis|breakdown|deep-dive|postmortem|forensic|investigation|research|threat)/.test(path) || /\b(analysis|breakdown|postmortem|investigation|threat labs?)\b/.test(text)) {
+		if (
+			/(analysis|breakdown|deep-dive|postmortem|forensic|investigation|research|threat)/.test(path) ||
+			/\b(analysis|breakdown|postmortem|investigation|threat labs?)\b/.test(text)
+		) {
 			reasons.push("analysis_path");
 		}
-		if (/(^|\.)(varonis\.com|arstechnica\.com|infoq\.com|thehackernews\.com|techradar\.com|bleepingcomputer\.com|wired\.com|theregister\.com|krebsonsecurity\.com)$/.test(host)) {
+		if (
+			/(^|\.)(varonis\.com|arstechnica\.com|infoq\.com|thehackernews\.com|techradar\.com|bleepingcomputer\.com|wired\.com|theregister\.com|krebsonsecurity\.com)$/.test(
+				host,
+			)
+		) {
 			reasons.push("known_strong_tech_outlet");
 		}
-		if (/(^|\.)(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)$/.test(host)) {
+		if (
+			/(^|\.)(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)$/.test(
+				host,
+			)
+		) {
 			reasons.push("community_source_penalty");
 		}
-		if (/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(host)) {
+		if (
+			/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(
+				host,
+			)
+		) {
 			reasons.push("known_weak_domain_penalty");
 		}
 		const fetchOutcome = getResearchFetchOutcome(result.url);
@@ -509,10 +564,19 @@ function classifyResearchSource(url: string, intent: ResearchQueryIntent): Resea
 		const parsed = new URL(url);
 		const host = parsed.hostname.toLowerCase();
 		const path = parsed.pathname.toLowerCase();
-		if (/(^|\.)(anthropic\.com|openai\.com|googleblog\.com|microsoft\.com|nvidia\.com|developer\.nvidia\.com)$/.test(host)) {
+		if (
+			/(^|\.)(anthropic\.com|openai\.com|googleblog\.com|microsoft\.com|nvidia\.com|developer\.nvidia\.com)$/.test(
+				host,
+			)
+		) {
 			return "official";
 		}
-		if (host.startsWith("docs.") || host.startsWith("developer.") || host.startsWith("api.") || /(\/docs?\/|\/reference\/|\/api\/|\/manual\/)/.test(path)) {
+		if (
+			host.startsWith("docs.") ||
+			host.startsWith("developer.") ||
+			host.startsWith("api.") ||
+			/(\/docs?\/|\/reference\/|\/api\/|\/manual\/)/.test(path)
+		) {
 			return "docs";
 		}
 		if (/(^|\.)(github\.com|raw\.githubusercontent\.com|gitlab\.com|bitbucket\.org)$/.test(host)) {
@@ -521,13 +585,23 @@ function classifyResearchSource(url: string, intent: ResearchQueryIntent): Resea
 		if (/(^|\.)(dev\.to|medium\.com|substack\.com|reddit\.com|x\.com|twitter\.com|youtube\.com)$/.test(host)) {
 			return "community";
 		}
-		if (/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(host)) {
+		if (
+			/(^|\.)(tech-insider\.org|cybersecuritynews\.com|ccleaks\.com|aitoolanalysis\.com|beankinney\.com|osintteam\.blog|infosecwriteups\.com)$/.test(
+				host,
+			)
+		) {
 			return "weak";
 		}
-		if (intent === "current_events" && /(analysis|breakdown|deep-dive|postmortem|forensic|investigation|research|threat)/.test(path)) {
+		if (
+			intent === "current_events" &&
+			/(analysis|breakdown|deep-dive|postmortem|forensic|investigation|research|threat)/.test(path)
+		) {
 			return "analysis";
 		}
-		if (intent === "current_events" && /(\/news\/|\/article\/|\/articles\/|\/press\/|\/security\/|\/incident|\/advisory)/.test(path)) {
+		if (
+			intent === "current_events" &&
+			/(\/news\/|\/article\/|\/articles\/|\/press\/|\/security\/|\/incident|\/advisory)/.test(path)
+		) {
 			return "news";
 		}
 		return "general";
@@ -541,9 +615,11 @@ function normalizeDocsToken(token: string): string {
 }
 
 function prefersStrongestCurrentEventSources(query: string): boolean {
-	return /\b(strongest|best|authoritative|independent)\s+sources?\b/i.test(query)
-		|| /\bcite\b.*\bsources?\b/i.test(query)
-		|| /\bcorroborat(?:e|ion|ing)\b/i.test(query);
+	return (
+		/\b(strongest|best|authoritative|independent)\s+sources?\b/i.test(query) ||
+		/\bcite\b.*\bsources?\b/i.test(query) ||
+		/\bcorroborat(?:e|ion|ing)\b/i.test(query)
+	);
 }
 
 function normalizeCurrentEventsQuery(query: string): string {
@@ -575,8 +651,8 @@ function hasExactQuotedText(query: string): boolean {
 function extractLikelyErrorMessage(query: string): string | undefined {
 	if (hasExactQuotedText(query)) return undefined;
 	const match =
-		query.match(/\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Error|Exception):\s*[^!?\n]+/i)
-		?? query.match(/\b[A-Z][A-Za-z]+Error:\s*[^!?\n]+/);
+		query.match(/\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Error|Exception):\s*[^!?\n]+/i) ??
+		query.match(/\b[A-Z][A-Za-z]+Error:\s*[^!?\n]+/);
 	const value = match?.[0]?.replace(/\s+/g, " ").trim();
 	return value && value.length >= 12 ? value : undefined;
 }
@@ -605,7 +681,10 @@ function detectResearchCoverageKind(query: string, intent: ResearchQueryIntent):
 	if (/\b(?:release|changelog|migration|breaking changes?|upgrade guide|release notes?)\b/i.test(query)) {
 		return "release";
 	}
-	if (normalizeErrorSearchQuery(query) || /\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Exception|traceback|stack trace)\b/i.test(query)) {
+	if (
+		normalizeErrorSearchQuery(query) ||
+		/\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Exception|traceback|stack trace)\b/i.test(query)
+	) {
 		return "error";
 	}
 	if (intent === "docs_reference") return "docs";
@@ -623,7 +702,9 @@ function extractSearchQueryTerms(query: string): string[] {
 function buildGenericCurrentEventsQuery(query: string): string {
 	const terms = extractSearchQueryTerms(query);
 	if (terms.length === 0) return query.trim();
-	const hasDateSignal = terms.some((term) => /^20\d\d$/.test(term) || /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(term));
+	const hasDateSignal = terms.some(
+		(term) => /^20\d\d$/.test(term) || /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(term),
+	);
 	const suffix = hasDateSignal ? "" : ` ${new Date().getUTCFullYear()}`;
 	return `${terms.slice(0, 8).join(" ")}${suffix}`.trim();
 }
@@ -636,10 +717,7 @@ function buildWebSearchPlan(query: string, intent: ResearchQueryIntent): WebSear
 			originalQuery,
 			effectiveQuery: appendUniqueTerms(errorQuery, ["fix"]),
 			strategy: "error-message query preserves the exact error string and adds only targeted context",
-			followUpQueries: [
-				appendUniqueTerms(errorQuery, ["cause"]),
-				appendUniqueTerms(errorQuery, ["fix", "version"]),
-			],
+			followUpQueries: [appendUniqueTerms(errorQuery, ["cause"]), appendUniqueTerms(errorQuery, ["fix", "version"])],
 			freshness: "any",
 		};
 	}
@@ -731,7 +809,11 @@ function scoreStrongestCurrentEventHost(url: string): number {
 		const parsed = new URL(url);
 		const host = parsed.hostname.toLowerCase();
 		let score = 0;
-		if (/(^|\.)(varonis\.com|infoq\.com|thehackernews\.com|techradar\.com|arstechnica\.com|bleepingcomputer\.com|krebsonsecurity\.com|wired\.com|theregister\.com)$/.test(host)) {
+		if (
+			/(^|\.)(varonis\.com|infoq\.com|thehackernews\.com|techradar\.com|arstechnica\.com|bleepingcomputer\.com|krebsonsecurity\.com|wired\.com|theregister\.com)$/.test(
+				host,
+			)
+		) {
 			score += 5;
 		}
 		if (/(^|\.)(anthropic\.com|openai\.com|googleblog\.com|microsoft\.com|blog\.github\.com)$/.test(host)) {
@@ -740,7 +822,11 @@ function scoreStrongestCurrentEventHost(url: string): number {
 		if (/(^|\.)(fortune\.com|bloomberg\.com|reuters\.com|ft\.com|wsj\.com)$/.test(host)) {
 			score += 1;
 		}
-		if (/(^|\.)(tech-insider\.org|cybersecuritynews\.com|analyticsindiamag\.com|osintteam\.blog|infosecwriteups\.com)$/.test(host)) {
+		if (
+			/(^|\.)(tech-insider\.org|cybersecuritynews\.com|analyticsindiamag\.com|osintteam\.blog|infosecwriteups\.com)$/.test(
+				host,
+			)
+		) {
 			score -= 8;
 		}
 		if (/(^|\.)(dev\.to|medium\.com|substack\.com)$/.test(host)) {
@@ -774,8 +860,7 @@ function scoreDocsReferenceResultContent(
 		const parsed = new URL(result.url);
 		const host = parsed.hostname.toLowerCase();
 		const path = parsed.pathname.toLowerCase();
-		const isOpenAIPricingQuery =
-			/\bopenai\b/i.test(query) && /\bapi\b/i.test(query) && /\bpricing\b/i.test(query);
+		const isOpenAIPricingQuery = /\bopenai\b/i.test(query) && /\bapi\b/i.test(query) && /\bpricing\b/i.test(query);
 		if (isOpenAIPricingQuery) {
 			if (host === "developers.openai.com" && /\/api\/docs\/pricing\/?$/.test(path)) {
 				score += 20;
@@ -784,7 +869,9 @@ function scoreDocsReferenceResultContent(
 			} else if (host === "openai.com" && /\/api\/pricing\/?$/.test(path)) {
 				score += 6;
 			} else if (
-				/(^|\.)(aipricing\.guru|apicents\.com|pricepertoken\.com|llmpricingtable\.com|tokencalculator\.com)$/.test(host)
+				/(^|\.)(aipricing\.guru|apicents\.com|pricepertoken\.com|llmpricingtable\.com|tokencalculator\.com)$/.test(
+					host,
+				)
 			) {
 				score -= 12;
 			}
@@ -830,13 +917,23 @@ function scoreResearchResultContent(
 			score -= 3;
 		}
 		if (/\bclaude code\b/.test(query) && /\bleak\b/.test(query)) {
-			if (/\b(npm|registry|source map|sourcemap|map file|512[, ]?000|1[, ]?900|typescript source|source code)\b/.test(text)) {
+			if (
+				/\b(npm|registry|source map|sourcemap|map file|512[, ]?000|1[, ]?900|typescript source|source code)\b/.test(
+					text,
+				)
+			) {
 				score += 6;
 			}
-			if (!/\b(vulnerability|exploit|malware|attack|typosquatting)\b/.test(query) && /\b(vulnerability|exploit|malware|attack campaign|days after the leak|days after source leak)\b/.test(text)) {
+			if (
+				!/\b(vulnerability|exploit|malware|attack|typosquatting)\b/.test(query) &&
+				/\b(vulnerability|exploit|malware|attack campaign|days after the leak|days after source leak)\b/.test(text)
+			) {
 				score -= 8;
 			}
-			if (!/\b(plans|features|roadmap|buddy|undercover)\b/.test(query) && /\b(plans|feature flags|roadmap|undercover|buddy)\b/.test(text)) {
+			if (
+				!/\b(plans|features|roadmap|buddy|undercover)\b/.test(query) &&
+				/\b(plans|feature flags|roadmap|undercover|buddy)\b/.test(text)
+			) {
 				score -= 3;
 			}
 		}
@@ -861,7 +958,11 @@ function scoreResearchResultContent(
 				if (genericNewsPath.test(path) && !analysisTerms.test(text)) {
 					score -= 3;
 				}
-				if (/(^|\.)(varonis\.com|crowdstrike\.com|sentinelone\.com|unit42\.paloaltonetworks\.com|securelist\.com|mandiant\.com)$/.test(host)) {
+				if (
+					/(^|\.)(varonis\.com|crowdstrike\.com|sentinelone\.com|unit42\.paloaltonetworks\.com|securelist\.com|mandiant\.com)$/.test(
+						host,
+					)
+				) {
 					score += 2;
 				}
 			} catch {
@@ -963,7 +1064,14 @@ function renderWebSearchResult(
 			cacheHit?: boolean;
 			searchProvider?: string;
 			fallbackUsed?: boolean;
-			results?: Array<{ title?: string; url?: string; snippet?: string; authoritative?: boolean; sourceKind?: string; fetchRisk?: string }>;
+			results?: Array<{
+				title?: string;
+				url?: string;
+				snippet?: string;
+				authoritative?: boolean;
+				sourceKind?: string;
+				fetchRisk?: string;
+			}>;
 		};
 	},
 	options: ToolRenderResultOptions,
@@ -992,7 +1100,10 @@ function renderWebSearchResult(
 					const url = entry.url ?? "";
 					const authoritative = entry.authoritative === true ? ` ${theme.fg("muted", "[authoritative]")}` : "";
 					const sourceKind = entry.sourceKind ? ` ${theme.fg("muted", `[${entry.sourceKind}]`)}` : "";
-					const fetchRisk = entry.fetchRisk && entry.fetchRisk !== "low" ? ` ${theme.fg("muted", `[${entry.fetchRisk} fetch risk]`)}` : "";
+					const fetchRisk =
+						entry.fetchRisk && entry.fetchRisk !== "low"
+							? ` ${theme.fg("muted", `[${entry.fetchRisk} fetch risk]`)}`
+							: "";
 					const snippet = entry.snippet
 						? `\n   ${theme.fg("toolOutput", truncateResearchSnippet(entry.snippet, MAX_SNIPPET_CHARS))}`
 						: "";
@@ -1000,13 +1111,15 @@ function renderWebSearchResult(
 				})
 				.join("\n");
 		if (results.length > displayResults.length) {
-			text += `\n${theme.fg("muted", `... (${results.length - displayResults.length} more results)`)}`
+			text += `\n${theme.fg("muted", `... (${results.length - displayResults.length} more results)`)}`;
 		}
 	}
 	return new Text(text, 0, 0);
 }
 
-function getResearchCompressionProfile(ctx?: Pick<ExtensionContext, "getContextUsage">): ReturnType<typeof deriveResearchCompressionProfile> {
+function getResearchCompressionProfile(
+	ctx?: Pick<ExtensionContext, "getContextUsage">,
+): ReturnType<typeof deriveResearchCompressionProfile> {
 	const contextUsage: ContextUsage | undefined = ctx?.getContextUsage?.();
 	return deriveResearchCompressionProfile(contextUsage);
 }
@@ -1066,15 +1179,19 @@ function isUsableSearchResultUrl(url: string): boolean {
 
 function extractDuckDuckGoSnippet(segment: string): string {
 	const snippetMatch =
-		segment.match(/<a[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/i)
-		?? segment.match(/<div[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
-		?? segment.match(/<span[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+		segment.match(/<a[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/i) ??
+		segment.match(/<div[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i) ??
+		segment.match(/<span[^>]*class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
 	return snippetMatch?.[1] ? decodeSearchHtmlText(snippetMatch[1]) : "";
 }
 
 export function parseDuckDuckGoResultsForTests(html: string, maxResults: number): SearchResult[] {
 	const results: SearchResult[] = [];
-	const anchors = [...html.matchAll(/<a[^>]*class=["'][^"']*\bresult__a\b[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+	const anchors = [
+		...html.matchAll(
+			/<a[^>]*class=["'][^"']*\bresult__a\b[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+		),
+	];
 	for (const [index, match] of anchors.entries()) {
 		const normalizedUrl = normalizeSearchResultUrl(match[1]);
 		const title = decodeSearchHtmlText(match[2]);
@@ -1227,7 +1344,7 @@ async function braveSearch(request: SearchRequest): Promise<SearchProviderRespon
 			return { provider: "brave", results: [], attempts, error: "http_error" };
 		}
 
-		const data = await resp.json() as {
+		const data = (await resp.json()) as {
 			web?: {
 				results?: Array<{
 					title?: string;
@@ -1342,7 +1459,12 @@ async function providerSearch(
 		const response = await provider.search(request);
 		attempts.push(...response.attempts);
 		if (response.results.length > 0) {
-			searchCache.set(cacheKey, { results: response.results, attempts, provider: response.provider, timestamp: Date.now() });
+			searchCache.set(cacheKey, {
+				results: response.results,
+				attempts,
+				provider: response.provider,
+				timestamp: Date.now(),
+			});
 			return {
 				...response,
 				attempts,
@@ -1385,9 +1507,10 @@ async function executeWebSearch(
 	const cachedBefore = searchCache.get(providerCacheKey);
 	const cacheHit = isFreshSearchCacheEntry(cachedBefore);
 	const searchResponse = await providerSearch(request, query);
-	const fallbackResults = searchResponse.results.length === 0
-		? buildOfflineFallbackResults(plan.effectiveQuery, intent).slice(0, Math.min(maxResults, EXPANDED_RESULTS))
-		: [];
+	const fallbackResults =
+		searchResponse.results.length === 0
+			? buildOfflineFallbackResults(plan.effectiveQuery, intent).slice(0, Math.min(maxResults, EXPANDED_RESULTS))
+			: [];
 	const rawResults = searchResponse.results.length > 0 ? searchResponse.results : fallbackResults;
 	const rankedResults = diversifySearchResultHosts(
 		dedupeSearchResults(rankResearchResults(plan.effectiveQuery, rawResults)),
@@ -1414,7 +1537,9 @@ async function executeWebSearch(
 		searchAttempts: searchResponse.attempts,
 		fallbackUsed: fallbackResults.length > 0,
 		sourceUrls: rankedResults.map((result) => result.url),
-		preferredSourceUrls: rankedResults.filter((result) => result.authoritative || result.score >= 4).map((result) => result.url),
+		preferredSourceUrls: rankedResults
+			.filter((result) => result.authoritative || result.score >= 4)
+			.map((result) => result.url),
 		results: rankedResults.map((result) => ({
 			title: result.title,
 			url: result.url,
@@ -1484,7 +1609,10 @@ export const webSearchToolDefinition = {
 	parameters: Type.Object({
 		query: Type.String({ description: "Search query" }),
 		maxResults: Type.Optional(
-			Type.Number({ description: `Maximum results to return (default: ${DEFAULT_MAX_RESULTS})`, default: DEFAULT_MAX_RESULTS }),
+			Type.Number({
+				description: `Maximum results to return (default: ${DEFAULT_MAX_RESULTS})`,
+				default: DEFAULT_MAX_RESULTS,
+			}),
 		),
 	}),
 	promptSnippet: "Search the web for current information, documentation, or error messages",

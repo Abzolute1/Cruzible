@@ -59,6 +59,7 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
+	private modifyOtherKeysFallbackTimer: NodeJS.Timeout | undefined;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private writeLogPath = (() => {
@@ -185,10 +186,13 @@ export class ProcessTerminal implements Terminal {
 		this.setupStdinBuffer();
 		process.stdin.on("data", this.stdinDataHandler!);
 		process.stdout.write("\x1b[?u");
-		setTimeout(() => {
+		this.modifyOtherKeysFallbackTimer = setTimeout(() => {
+			this.modifyOtherKeysFallbackTimer = undefined;
 			if (!this._kittyProtocolActive && !this._modifyOtherKeysActive) {
-				process.stdout.write("\x1b[>4;2m");
+				// Set the flag before writing so stop() can always disable the mode,
+				// even if the write throws.
 				this._modifyOtherKeysActive = true;
+				process.stdout.write("\x1b[>4;2m");
 			}
 		}, 150);
 	}
@@ -261,6 +265,13 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		// Cancel a pending modifyOtherKeys fallback so it can't fire after the
+		// terminal has been restored and leave the parent shell in modifyOtherKeys mode
+		if (this.modifyOtherKeysFallbackTimer) {
+			clearTimeout(this.modifyOtherKeysFallbackTimer);
+			this.modifyOtherKeysFallbackTimer = undefined;
+		}
+
 		// Disable bracketed paste mode
 		process.stdout.write("\x1b[?2004l");
 
@@ -354,7 +365,10 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	setTitle(title: string): void {
-		// OSC 0;title BEL - set terminal window title
-		process.stdout.write(`\x1b]0;${title}\x07`);
+		// OSC 0;title BEL - set terminal window title.
+		// Strip control characters first: a BEL/ESC in the title would terminate
+		// the OSC sequence and smuggle arbitrary escape sequences to the terminal.
+		const sanitized = title.replace(/[\x00-\x1f\x7f]/g, "");
+		process.stdout.write(`\x1b]0;${sanitized}\x07`);
 	}
 }

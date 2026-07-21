@@ -4,8 +4,8 @@ import { allToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
 import { convertToPng } from "../../../utils/image-convert.js";
 import { theme } from "../theme/theme.js";
-import { keyHint } from "./keybinding-hints.js";
 import { buildConsoleHeader } from "./console-chrome.js";
+import { keyHint } from "./keybinding-hints.js";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
@@ -45,6 +45,13 @@ export class ToolExecutionComponent extends Container {
 	};
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
+	/** Verbose mode: full 3-line call/result blocks with expand hints. Condensed default: 2 lines. */
+	private verbose = false;
+
+	/** Tool name (for run-family grouping labels). */
+	get name(): string {
+		return this.toolName;
+	}
 
 	constructor(
 		toolName: string,
@@ -214,6 +221,16 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	/** True once a final (non-partial) result has been rendered — safe to collapse into a group. */
+	get isComplete(): boolean {
+		return this.result !== undefined && !this.isPartial;
+	}
+
+	setVerbose(verbose: boolean): void {
+		this.verbose = verbose;
+		this.updateDisplay();
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
@@ -235,10 +252,15 @@ export class ToolExecutionComponent extends Container {
 			this.contentBox.addChild(new Text(this.buildHeaderLine(), 0, 0));
 
 			if (this.shouldUseCompactBuiltInSummary()) {
-				const component = this.expanded ? this.renderExpandedCompactSummary() : this.renderCollapsedCompactSummary();
+				const component = this.expanded
+					? this.renderExpandedCompactSummary()
+					: this.renderCollapsedCompactSummary();
 				if (component) {
 					this.contentBox.addChild(new Spacer(1));
 					this.contentBox.addChild(component);
+					hasContent = true;
+				} else if (!this.verbose) {
+					// Condensed no-result state: header (with the call target) is enough to show.
 					hasContent = true;
 				}
 			} else {
@@ -347,7 +369,10 @@ export class ToolExecutionComponent extends Container {
 
 	private renderExpandedCompactSummary(): Component {
 		const lines: string[] = [];
-		lines.push(this.getNestedTargetLine(this.getCompactCallSummary()));
+		if (this.verbose) {
+			// Condensed headers already carry the call target; only repeat it in verbose.
+			lines.push(this.getNestedTargetLine(this.getCompactCallSummary()));
+		}
 		const resultSummary = this.getCompactResultSummary();
 		if (resultSummary) {
 			lines.push(theme.fg("text", resultSummary));
@@ -356,18 +381,23 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private renderCollapsedCompactSummary(): Component | undefined {
-		const lines: string[] = [];
 		const resultSummary = this.getCollapsedResultSummary();
-		if (resultSummary) {
-			const expandHint = this.shouldOfferExpansionHint() ? ` ${keyHint("app.tools.expand", "to expand")}` : "";
-			lines.push(theme.fg("text", resultSummary) + expandHint);
+		if (this.verbose) {
+			const lines: string[] = [];
+			if (resultSummary) {
+				const expandHint = this.shouldOfferExpansionHint() ? ` ${keyHint("app.tools.expand", "to expand")}` : "";
+				lines.push(theme.fg("text", resultSummary) + expandHint);
+			}
+			const callSummary = this.getCompactCallSummary();
+			if (callSummary) {
+				lines.push(this.getNestedTargetLine(callSummary));
+			}
+			if (lines.length === 0) return undefined;
+			return new Text(lines.join("\n"), 0, 0);
 		}
-		const callSummary = this.getCompactCallSummary();
-		if (callSummary) {
-			lines.push(this.getNestedTargetLine(callSummary));
-		}
-		if (lines.length === 0) return undefined;
-		return new Text(lines.join("\n"), 0, 0);
+		// Condensed: the call target already lives in the header line; one muted result line.
+		if (!resultSummary) return undefined;
+		return new Text(theme.fg("muted", `└ ${resultSummary}`), 0, 0);
 	}
 
 	private getCompactCallSummary(): string {
@@ -422,7 +452,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatCompactReadCall(): string {
-		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "(missing path)";
+		const path =
+			this.getStringArg("path") ?? this.getStringArg("file_path") ?? this.missingArgLabel("(missing path)");
 		const offset = this.args?.offset;
 		const limit = this.args?.limit;
 		const range =
@@ -433,23 +464,33 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatCompactWriteCall(): string {
-		const path = this.getStringArg("path") ?? this.getStringArg("file_path") ?? "(missing path)";
+		const path =
+			this.getStringArg("path") ?? this.getStringArg("file_path") ?? this.missingArgLabel("(missing path)");
 		const content = this.getStringArg("content") ?? this.getStringArg("newText") ?? "";
 		const lineCount = content ? content.split("\n").length : 0;
 		return `${path}${lineCount > 0 ? ` • ${lineCount} lines staged` : ""}`;
 	}
 
 	private formatCompactWebFetchCall(): string {
-		return this.getStringArg("url") ?? "(missing url)";
+		return this.getStringArg("url") ?? this.missingArgLabel("(missing url)");
 	}
 
 	private formatCompactWebSearchCall(): string {
-		return this.getStringArg("query") ?? "(missing query)";
+		return this.getStringArg("query") ?? this.missingArgLabel("(missing query)");
 	}
 
 	private formatCompactBashCall(): string {
-		const command = this.getStringArg("command") ?? "(missing command)";
+		const command = this.getStringArg("command");
+		if (command === undefined) return this.missingArgLabel("(missing command)");
 		return this.getCompactPreview(command, 1, 140) ?? command;
+	}
+
+	/**
+	 * While args are still streaming, a missing key usually just hasn't arrived
+	 * yet (models choose the key order) — show a neutral state, not an error.
+	 */
+	private missingArgLabel(label: string): string {
+		return this.argsComplete ? label : "receiving args…";
 	}
 
 	private formatCompactReadResult(): string | undefined {
@@ -513,7 +554,13 @@ export class ToolExecutionComponent extends Container {
 					searchProvider?: string;
 					searchProviderMode?: string;
 					fallbackUsed?: boolean;
-					results?: Array<{ title?: string; url?: string; sourceKind?: string; authoritative?: boolean; fetchRisk?: string }>;
+					results?: Array<{
+						title?: string;
+						url?: string;
+						sourceKind?: string;
+						authoritative?: boolean;
+						fetchRisk?: string;
+					}>;
 			  }
 			| undefined;
 		if (!details) return this.getCompactPreview(this.getTextOutput(), this.expanded ? 8 : 3);
@@ -602,11 +649,13 @@ export class ToolExecutionComponent extends Container {
 	private summarizeWebFetchResult(): string | undefined {
 		const url = this.getStringArg("url") ?? "page";
 		if (!this.result) return `Fetching ${url}`;
-		const details = this.result.details as {
-			title?: string;
-			status?: string;
-			coverage?: { kind?: string; present?: string[]; missing?: string[] };
-		} | undefined;
+		const details = this.result.details as
+			| {
+					title?: string;
+					status?: string;
+					coverage?: { kind?: string; present?: string[]; missing?: string[] };
+			  }
+			| undefined;
 		const suffix = details ? this.formatWebFetchSummarySuffix(details) : "";
 		if (details?.title) {
 			return `Fetched ${details.title}${suffix}`;
@@ -617,12 +666,14 @@ export class ToolExecutionComponent extends Container {
 	private summarizeWebSearchResult(): string | undefined {
 		const query = this.getStringArg("query") ?? "search";
 		if (!this.result) return `Searching ${query}`;
-		const details = this.result.details as {
-			resultCount?: number;
-			searchProvider?: string;
-			fallbackUsed?: boolean;
-			results?: Array<{ sourceKind?: string }>;
-		} | undefined;
+		const details = this.result.details as
+			| {
+					resultCount?: number;
+					searchProvider?: string;
+					fallbackUsed?: boolean;
+					results?: Array<{ sourceKind?: string }>;
+			  }
+			| undefined;
 		if (typeof details?.resultCount === "number") {
 			const sourceKind = details.results?.[0]?.sourceKind ? ` · top ${details.results[0].sourceKind}` : "";
 			const provider = details.searchProvider ? ` · ${details.searchProvider}` : "";
@@ -718,7 +769,9 @@ export class ToolExecutionComponent extends Container {
 			.map((line) => line.trimEnd())
 			.filter((line) => line.trim().length > 0);
 		if (normalized.length === 0) return undefined;
-		const limited = normalized.slice(0, maxLines).map((line) => (line.length > maxChars ? `${line.slice(0, maxChars - 1)}…` : line));
+		const limited = normalized
+			.slice(0, maxLines)
+			.map((line) => (line.length > maxChars ? `${line.slice(0, maxChars - 1)}…` : line));
 		if (!this.expanded && normalized.length > limited.length) {
 			limited.push(`… ${normalized.length - limited.length} more lines`);
 		}
@@ -745,10 +798,16 @@ export class ToolExecutionComponent extends Container {
 
 	private buildHeaderLine(): string {
 		const dot = theme.bold(theme.fg(this.getExecutionDotColor(), "●"));
-		return `${dot} ${buildConsoleHeader({
+		const header = buildConsoleHeader({
 			badge: this.toolName,
 			badgeColor: "text",
-		})}`;
+		});
+		if (this.verbose) return `${dot} ${header}`;
+		// Condensed: the call target (query, path, command, URL) is the informative part — put it
+		// in the header with accent color instead of a separate line below.
+		const target = this.getCompactCallSummary();
+		if (!target || target === this.toolName) return `${dot} ${header}`;
+		return `${dot} ${header} ${theme.fg("muted", "·")} ${theme.fg("accent", this.truncateInline(target, 100))}`;
 	}
 
 	private getExecutionDotColor(): "muted" | "success" | "error" {

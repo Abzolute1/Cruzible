@@ -1,11 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import {
 	AUTONOMOUS_RUN_SNAPSHOT_ENTRY_TYPE,
-	applyAutonomousLedgerEvents,
 	appendAutonomousRunSnapshotState,
+	applyAutonomousLedgerEvents,
 	buildAutonomousCompactionInstructions,
-	createAutonomousRunSnapshot,
 	createAutonomousRunLedger,
+	createAutonomousRunSnapshot,
 	createAutonomousRunSnapshotFromState,
 	formatAutonomousContinuationLedger,
 	formatAutonomousPromptLedger,
@@ -111,7 +111,8 @@ describe("autonomous ledger helpers", () => {
 			visualAssessment: {
 				target: "Dashboard",
 				latestJudgment: "fail",
-				summary: "latest visual verification for Dashboard found blocking issues: console errors: hydration mismatch; failed requests: GET /api/data — HTTP 500",
+				summary:
+					"latest visual verification for Dashboard found blocking issues: console errors: hydration mismatch; failed requests: GET /api/data — HTTP 500",
 				blockingIssues: ["console errors: hydration mismatch", "failed requests: GET /api/data — HTTP 500"],
 				lastEvaluatedDetail: "http://localhost:3000/dashboard",
 				basis: "screenshot_metadata",
@@ -121,6 +122,7 @@ describe("autonomous ledger helpers", () => {
 			lastVerificationDetail: undefined,
 			verificationFailures: ["failed verification: npm test"],
 			residualRisks: ["browser coverage remains thin"],
+			discoveredFiles: [],
 		});
 
 		expect(instructions).toContain("Goal: fix auth retry path");
@@ -150,6 +152,7 @@ describe("autonomous ledger helpers", () => {
 			stopReason: "complete",
 			budgetStatus: {
 				costUsed: 0.1,
+				costAuthoritative: false,
 				tokensUsed: 100,
 				turnsUsed: 3,
 				exceeded: { cost: false, tokens: false, turns: false },
@@ -190,7 +193,11 @@ describe("autonomous ledger helpers", () => {
 						{ key: "verify", title: "Verify latest changes", status: "completed" },
 						{ key: "summarize", title: "Summarize verified result", status: "completed" },
 					],
-					completedCheckpoints: ["relevant files inspected", "workspace changes applied", "verification passed: npm test"],
+					completedCheckpoints: [
+						"relevant files inspected",
+						"workspace changes applied",
+						"verification passed: npm test",
+					],
 					blockedReasons: [],
 				},
 				currentFocus: "Finished retry handling",
@@ -205,6 +212,7 @@ describe("autonomous ledger helpers", () => {
 				lastVerificationDetail: "npm test",
 				verificationFailures: [],
 				residualRisks: [],
+				discoveredFiles: [],
 			},
 		});
 
@@ -238,6 +246,7 @@ describe("autonomous ledger helpers", () => {
 			costSummary: "$0.0002 | 10 in / 20 out",
 			budgetStatus: {
 				costUsed: 0.0002,
+				costAuthoritative: false,
 				tokensUsed: 30,
 				turnsUsed: 1,
 				exceeded: { cost: false, tokens: false, turns: false },
@@ -292,6 +301,7 @@ describe("autonomous ledger helpers", () => {
 				lastVerificationDetail: undefined,
 				verificationFailures: [],
 				residualRisks: [],
+				discoveredFiles: [],
 			},
 		});
 		const sessionManager = { appendCustomEntry: vi.fn() };
@@ -593,7 +603,9 @@ describe("autonomous ledger helpers", () => {
 		expect(continuationLedger).toContain("Run ledger:");
 		expect(continuationLedger).toContain("Goal: research the latest React 19 docs");
 		expect(continuationLedger).toContain("Active subtask: Summarize the source-backed answer");
-		expect(continuationLedger).toContain("Planned next step: Summarize the source-backed answer and cite the supporting URLs.");
+		expect(continuationLedger).toContain(
+			"Planned next step: Summarize the source-backed answer and cite the supporting URLs.",
+		);
 		expect(continuationLedger).toContain("Research: sufficient | source https://react.dev/");
 		expect(continuationLedger).toContain("Verification: satisfied via Source URLs captured");
 		expect(continuationLedger).not.toContain("Planner handoff:");

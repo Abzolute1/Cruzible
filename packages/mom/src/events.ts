@@ -277,6 +277,13 @@ export class EventsWatcher {
 
 	private handleOneShot(filename: string, event: OneShotEvent): void {
 		const atTime = new Date(event.at).getTime();
+
+		if (Number.isNaN(atTime)) {
+			log.logWarning(`Invalid 'at' date for one-shot event '${event.at}', deleting: ${filename}`);
+			this.deleteFile(filename);
+			return;
+		}
+
 		const now = Date.now();
 
 		if (atTime <= now) {
@@ -286,7 +293,8 @@ export class EventsWatcher {
 			return;
 		}
 
-		const delay = atTime - now;
+		// Clamp to setTimeout's max (2^31-1 ms); larger delays would fire immediately
+		const delay = Math.min(atTime - now, 2147483647);
 		log.logInfo(`Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s`);
 
 		const timer = setTimeout(() => {
@@ -316,6 +324,17 @@ export class EventsWatcher {
 	}
 
 	private execute(filename: string, event: MomEvent, deleteAfter: boolean = true): void {
+		// Validate channel: events may only target channels the bot is actually in.
+		// Otherwise a crafted event file (or prompt injection writing one) could
+		// enqueue runs and post messages into any channel.
+		if (!this.slack.getChannel(event.channelId)) {
+			log.logWarning(`Event targets unknown channel ${event.channelId}, discarding: ${filename}`);
+			if (deleteAfter) {
+				this.deleteFile(filename);
+			}
+			return;
+		}
+
 		// Format the message
 		let scheduleInfo: string;
 		switch (event.type) {

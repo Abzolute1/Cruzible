@@ -1,5 +1,5 @@
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
-import { MissingSessionCwdError } from "../../core/session-cwd.js";
+import type { MissingSessionCwdError } from "../../core/session-cwd.js";
 import {
 	performInteractiveRuntimeReplacement,
 	performInteractiveRuntimeTransition,

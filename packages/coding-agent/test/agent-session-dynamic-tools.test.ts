@@ -201,22 +201,22 @@ describe("AgentSession dynamic tool registration", () => {
 
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("webSearch");
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("webFetch");
-			expect(session.getActiveToolNames()).toContain("webSearch");
-			expect(session.getActiveToolNames()).toContain("webFetch");
-			expect(session.systemPrompt).toContain("- webSearch: Search the web for current information, documentation, or error messages");
-			expect(session.systemPrompt).toContain("- webFetch: Fetch and read a URL directly");
-			expect(session.systemPrompt).toContain(
-				"For online research, use webSearch for candidate sources and webFetch for the best URL",
-			);
-			expect(session.systemPrompt).toContain(
-				"Prefer authoritative sources such as official docs, vendor docs, specs, and release notes",
-			);
-			expect(session.systemPrompt).toContain(
-				"Keep source URLs available when online information affects the answer",
-			);
+		expect(session.getActiveToolNames()).toContain("webSearch");
+		expect(session.getActiveToolNames()).toContain("webFetch");
+		expect(session.systemPrompt).toContain(
+			"- webSearch: Search the web for current information, documentation, or error messages",
+		);
+		expect(session.systemPrompt).toContain("- webFetch: Fetch and read a URL directly");
+		expect(session.systemPrompt).toContain(
+			"For online research, use webSearch for candidate sources and webFetch for the best URL",
+		);
+		expect(session.systemPrompt).toContain(
+			"Prefer authoritative sources such as official docs, vendor docs, specs, and release notes",
+		);
+		expect(session.systemPrompt).toContain("Keep source URLs available when online information affects the answer");
 
-			session.dispose();
-		});
+		session.dispose();
+	});
 
 	it("registers visual tools as callable built-ins for vision models without requiring extensions", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);

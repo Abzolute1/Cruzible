@@ -41,6 +41,7 @@ export type {
 	ContextEvent,
 	// Event Results
 	ContextEventResult,
+	ContextTokenAttribution,
 	ContextUsage,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
@@ -93,6 +94,7 @@ export type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
+	ProjectTrustPrompt,
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,

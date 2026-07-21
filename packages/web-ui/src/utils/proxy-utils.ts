@@ -10,6 +10,20 @@ import { streamSimple } from "@ag1/ai";
  */
 
 /**
+ * Anthropic OAuth credentials can be stored as a JSON blob
+ * ({ access, refresh, expires }) instead of a plain token.
+ */
+function isOAuthCredentialsJson(apiKey: string): boolean {
+	if (!apiKey.startsWith("{")) return false;
+	try {
+		const parsed = JSON.parse(apiKey);
+		return typeof parsed === "object" && parsed !== null && typeof parsed.access === "string";
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Check if a provider/API key combination requires a CORS proxy.
  *
  * @param provider - Provider name (e.g., "anthropic", "openai", "zai")
@@ -25,7 +39,7 @@ export function shouldUseProxyForProvider(provider: string, apiKey: string): boo
 		case "anthropic":
 			// Anthropic OAuth tokens (sk-ant-oat-*) require proxy
 			// Regular API keys (sk-ant-api-*) do NOT require proxy
-			return apiKey.startsWith("sk-ant-oat") || apiKey.startsWith("{");
+			return apiKey.startsWith("sk-ant-oat") || isOAuthCredentialsJson(apiKey);
 
 		case "openai-codex":
 			// Codex uses chatgpt.com/backend-api which has no CORS
@@ -47,6 +61,24 @@ export function shouldUseProxyForProvider(provider: string, apiKey: string): boo
 		// This allows new providers to work by default
 		default:
 			return false;
+	}
+}
+
+/**
+ * Validate a CORS proxy URL.
+ * Requires https: for non-localhost proxies; plain http: is only allowed
+ * for local development proxies (localhost / 127.0.0.1).
+ */
+export function isValidProxyUrl(url: string): boolean {
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol === "https:") return true;
+		if (parsed.protocol === "http:") {
+			return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+		}
+		return false;
+	} catch {
+		return false;
 	}
 }
 

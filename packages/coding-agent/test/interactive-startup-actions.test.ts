@@ -10,6 +10,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 describe("interactive-startup-actions", () => {
 	test("skips changelog display for resumed sessions and records fresh installs", () => {
 		const settings = {
+			getCollapseChangelog: vi.fn(() => false),
 			getLastChangelogVersion: vi.fn(() => undefined),
 			setLastChangelogVersion: vi.fn(),
 		};
@@ -37,10 +38,7 @@ describe("interactive-startup-actions", () => {
 	});
 
 	test("emits warnings/errors and replays initial prompts safely", async () => {
-		const prompt = vi
-			.fn()
-			.mockResolvedValueOnce(undefined)
-			.mockRejectedValueOnce(new Error("follow-up failed"));
+		const prompt = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("follow-up failed"));
 		const showWarning = vi.fn();
 		const showError = vi.fn();
 

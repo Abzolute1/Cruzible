@@ -11,7 +11,11 @@ import type { Tool, ToolCall } from "../types.js";
 // Chrome extensions with Manifest V3 don't allow eval/Function constructor
 const isBrowserExtension = typeof globalThis !== "undefined" && (globalThis as any).chrome?.runtime?.id !== undefined;
 
-function canUseRuntimeCodegen(): boolean {
+// Cache the result: CSP policy cannot change during process lifetime, and
+// `new Function` is too expensive to re-run on every tool-call validation.
+let runtimeCodegenAvailable: boolean | null = null;
+
+function probeRuntimeCodegen(): boolean {
 	if (isBrowserExtension) {
 		return false;
 	}
@@ -24,6 +28,13 @@ function canUseRuntimeCodegen(): boolean {
 	}
 }
 
+function canUseRuntimeCodegen(): boolean {
+	if (runtimeCodegenAvailable === null) {
+		runtimeCodegenAvailable = probeRuntimeCodegen();
+	}
+	return runtimeCodegenAvailable;
+}
+
 // Create a singleton AJV instance with formats only when runtime code generation is available.
 let ajv: any = null;
 if (canUseRuntimeCodegen()) {
@@ -32,12 +43,20 @@ if (canUseRuntimeCodegen()) {
 			allErrors: true,
 			strict: false,
 			coerceTypes: true,
+			// AJV's default logger dumps generated code to console.error when compilation
+			// fails (e.g. CSP-blocked codegen); the caller handles that via fallback instead.
+			logger: false,
 		});
 		addFormats(ajv);
 	} catch (_e) {
 		console.warn("AJV validation disabled due to CSP restrictions");
 	}
 }
+
+// Compiled AJV validators are expensive to create; cache them per schema object.
+// Tool definitions are long-lived and stable across calls, so a WeakMap keyed on
+// the parameters object is safe (entries vanish if the tool is garbage collected).
+const validatorCache = new WeakMap<object, any>();
 
 /**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
@@ -67,8 +86,21 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		return toolCall.arguments;
 	}
 
-	// Compile the schema.
-	const validate = ajv.compile(tool.parameters);
+	// Compile the schema (cached per schema object).
+	let validate = validatorCache.get(tool.parameters);
+	if (!validate) {
+		try {
+			validate = ajv.compile(tool.parameters);
+		} catch (e) {
+			// AJV compiles via `new Function`; if code generation turned out to be blocked
+			// after all (strict CSP), fall back to raw arguments like the probe path above.
+			if (!probeRuntimeCodegen()) {
+				return toolCall.arguments;
+			}
+			throw e;
+		}
+		validatorCache.set(tool.parameters, validate);
+	}
 
 	// Clone arguments so AJV can safely mutate for type coercion
 	const args = structuredClone(toolCall.arguments);
@@ -87,7 +119,12 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 			})
 			.join("\n") || "Unknown validation error";
 
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
+	// Truncate embedded arguments: they can contain secrets (e.g. Write tool on .env)
+	// and this message propagates into logs and session files.
+	const argsJson = JSON.stringify(toolCall.arguments, null, 2);
+	const truncatedArgs = argsJson.length > 500 ? `${argsJson.slice(0, 500)}… (truncated)` : argsJson;
+
+	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${truncatedArgs}`;
 
 	throw new Error(errorMessage);
 }

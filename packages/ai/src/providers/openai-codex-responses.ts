@@ -95,12 +95,25 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			reject(new Error("Request was aborted"));
 			return;
 		}
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => {
+		const onAbort = () => {
 			clearTimeout(timeout);
 			reject(new Error("Request was aborted"));
-		});
+		};
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		// `once: true` so the listener is dropped after abort; the timeout path removes it on success.
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
+}
+
+/**
+ * Create an error that must bypass the retry loop and surface immediately
+ * (non-retryable API errors, e.g. usage limit or auth failures).
+ */
+function terminalError(message: string): Error {
+	return Object.assign(new Error(message), { terminal: true });
 }
 
 // ============================================================================
@@ -218,22 +231,28 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						continue;
 					}
 
-					// Parse error for friendly message on final attempt or non-retryable error
+					// Parse error for friendly message on final attempt or non-retryable error.
+					// This path is only reached for non-retryable errors or after the final
+					// attempt, so the error is terminal and must not be retried below.
 					const fakeResponse = new Response(errorText, {
 						status: response.status,
 						statusText: response.statusText,
 					});
 					const info = await parseErrorResponse(fakeResponse);
-					throw new Error(info.friendlyMessage || info.message);
+					throw terminalError(info.friendlyMessage || info.message);
 				} catch (error) {
 					if (error instanceof Error) {
 						if (error.name === "AbortError" || error.message === "Request was aborted") {
 							throw new Error("Request was aborted");
 						}
 					}
+					// Terminal errors (non-retryable API errors, e.g. usage limit) surface immediately
+					if ((error as { terminal?: boolean } | null)?.terminal) {
+						throw error;
+					}
 					lastError = error instanceof Error ? error : new Error(String(error));
 					// Network errors are retryable
-					if (attempt < MAX_RETRIES && !lastError.message.includes("usage limit")) {
+					if (attempt < MAX_RETRIES) {
 						const delayMs = BASE_DELAY_MS * 2 ** attempt;
 						await sleep(delayMs, options?.signal);
 						continue;
@@ -476,6 +495,10 @@ interface CachedWebSocketConnection {
 
 const websocketSessionCache = new Map<string, CachedWebSocketConnection>();
 
+// Serializes acquireWebSocket per sessionId so concurrent acquires can't both
+// connect and overwrite each other's cache entry (leaking the loser's socket).
+const websocketSessionAcquireChains = new Map<string, Promise<void>>();
+
 type WebSocketConstructor = new (
 	url: string,
 	protocols?: string | string[] | { headers?: Record<string, string> },
@@ -518,6 +541,8 @@ function scheduleSessionWebSocketExpiry(sessionId: string, entry: CachedWebSocke
 	}
 	entry.idleTimer = setTimeout(() => {
 		if (entry.busy) return;
+		// A stale entry's timer must not evict a newer live mapping
+		if (websocketSessionCache.get(sessionId) !== entry) return;
 		closeWebSocketSilently(entry.socket, 1000, "idle_timeout");
 		websocketSessionCache.delete(sessionId);
 	}, SESSION_WEBSOCKET_CACHE_TTL_MS);
@@ -605,6 +630,32 @@ async function acquireWebSocket(
 		};
 	}
 
+	// Serialize per-session acquisition: two concurrent acquires must not both
+	// connect and race websocketSessionCache.set (the loser would leak).
+	const previous = websocketSessionAcquireChains.get(sessionId) ?? Promise.resolve();
+	let releaseLock!: () => void;
+	const current = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+	const tail = previous.then(() => current);
+	websocketSessionAcquireChains.set(sessionId, tail);
+	await previous;
+	try {
+		return await acquireSessionWebSocket(url, headers, sessionId, signal);
+	} finally {
+		releaseLock();
+		if (websocketSessionAcquireChains.get(sessionId) === tail) {
+			websocketSessionAcquireChains.delete(sessionId);
+		}
+	}
+}
+
+async function acquireSessionWebSocket(
+	url: string,
+	headers: Headers,
+	sessionId: string,
+	signal?: AbortSignal,
+): Promise<{ socket: WebSocketLike; release: (options?: { keep?: boolean }) => void }> {
 	const cached = websocketSessionCache.get(sessionId);
 	if (cached) {
 		if (cached.idleTimer) {
@@ -728,7 +779,10 @@ async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): Asy
 				queue.push(parsed);
 				wake();
 			} catch {}
-		})();
+		})().catch((error) => {
+			// Decode failures must not become unhandled rejections; skip the message
+			console.error("[openai-codex] failed to decode WebSocket message:", error);
+		});
 	};
 
 	const onError: WebSocketListener = (event) => {
@@ -857,7 +911,9 @@ function extractAccountId(token: string): string {
 	try {
 		const parts = token.split(".");
 		if (parts.length !== 3) throw new Error("Invalid token");
-		const payload = JSON.parse(atob(parts[1]));
+		// JWT uses base64url; strict atob implementations reject -/_ and unpadded input.
+		const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+		const payload = JSON.parse(atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4)));
 		const accountId = payload?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
 		if (!accountId) throw new Error("No account ID in token");
 		return accountId;

@@ -25,7 +25,7 @@ import type {
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseFinalToolCallJson, parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
@@ -82,8 +82,11 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -302,7 +305,11 @@ async function consumeChatStream(
 		if (!choice) continue;
 
 		if (choice.finishReason) {
-			output.stopReason = mapChatStopReason(choice.finishReason);
+			const finishReasonResult = mapChatStopReason(choice.finishReason);
+			output.stopReason = finishReasonResult.stopReason;
+			if (finishReasonResult.errorMessage) {
+				output.errorMessage = finishReasonResult.errorMessage;
+			}
 		}
 
 		const delta = choice.delta;
@@ -375,10 +382,7 @@ async function consumeChatStream(
 				finishCurrentBlock(currentBlock);
 				currentBlock = null;
 			}
-			const callId =
-				toolCall.id && toolCall.id !== "null"
-					? toolCall.id
-					: deriveMistralToolCallId(`toolcall:${toolCall.index ?? 0}`, 0);
+			const callId = toolCall.id || deriveMistralToolCallId(`toolcall:${toolCall.index ?? 0}`, 0);
 			const key = `${callId}:${toolCall.index || 0}`;
 			const existingIndex = toolBlocksByKey.get(key);
 			let block: (ToolCall & { partialArgs?: string }) | undefined;
@@ -423,7 +427,9 @@ async function consumeChatStream(
 		const block = output.content[index];
 		if (block.type !== "toolCall") continue;
 		const toolBlock = block as ToolCall & { partialArgs?: string };
-		toolBlock.arguments = parseStreamingJson<Record<string, unknown>>(toolBlock.partialArgs);
+		const parsedArgs = parseFinalToolCallJson<Record<string, unknown>>(toolBlock.partialArgs);
+		toolBlock.arguments = parsedArgs.arguments;
+		if (parsedArgs.malformed) toolBlock.malformedArguments = true;
 		delete toolBlock.partialArgs;
 		stream.push({
 			type: "toolcall_end",
@@ -567,19 +573,22 @@ function mapToolChoice(
 	};
 }
 
-function mapChatStopReason(reason: string | null): StopReason {
-	if (reason === null) return "stop";
+function mapChatStopReason(reason: string | null): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
+	if (reason === null) return { stopReason: "stop" };
 	switch (reason) {
 		case "stop":
-			return "stop";
+			return { stopReason: "stop" };
 		case "length":
 		case "model_length":
-			return "length";
+			return { stopReason: "length" };
 		case "tool_calls":
-			return "toolUse";
+			return { stopReason: "toolUse" };
 		case "error":
-			return "error";
+			return { stopReason: "error", errorMessage: `Provider finish_reason: ${reason}` };
 		default:
-			return "stop";
+			return { stopReason: "stop" };
 	}
 }

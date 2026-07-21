@@ -119,6 +119,58 @@ describe("AgentSession compaction characterization", () => {
 		await expect(compactPromise).rejects.toThrow("Compaction cancelled");
 	});
 
+	it("fails manual compaction instead of hanging when summarization never resolves", async () => {
+		process.env.AG1_COMPACTION_TIMEOUT_MS = "50";
+		try {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.prompt("one");
+			await harness.session.prompt("two");
+			const messagesBefore = harness.session.messages.length;
+
+			// A provider that accepts the request and never settles — and never
+			// observes the abort signal either. The timeout must still fire.
+			harness.faux.setResponses([() => new Promise<AssistantMessage>(() => {})]);
+
+			await expect(harness.session.compact()).rejects.toThrow(/timed out/);
+
+			const ends = harness.eventsOfType("compaction_end");
+			expect(ends.at(-1)?.aborted).toBe(false);
+			expect(ends.at(-1)?.errorMessage).toMatch(/timed out/);
+			expect(harness.session.messages.length).toBe(messagesBefore);
+		} finally {
+			delete process.env.AG1_COMPACTION_TIMEOUT_MS;
+		}
+	});
+
+	it("auto compaction timeout emits compaction_end and does not hang the session", async () => {
+		process.env.AG1_COMPACTION_TIMEOUT_MS = "50";
+		try {
+			const harness = await createHarness({
+				settings: { compaction: { keepRecentTokens: 1 } },
+			});
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+			await harness.session.prompt("first");
+			await harness.session.prompt("second");
+
+			harness.faux.setResponses([
+				() => new Promise<AssistantMessage>(() => {}),
+				() => new Promise<AssistantMessage>(() => {}),
+			]);
+			const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+
+			// Resolves (does not hang) despite the unresponsive summarization call.
+			await sessionInternals._runAutoCompaction("threshold", false);
+
+			const ends = harness.eventsOfType("compaction_end");
+			expect(ends.at(-1)?.errorMessage).toMatch(/Auto-compaction failed: .*timed out/);
+		} finally {
+			delete process.env.AG1_COMPACTION_TIMEOUT_MS;
+		}
+	});
+
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({

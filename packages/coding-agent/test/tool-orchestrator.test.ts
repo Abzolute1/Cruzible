@@ -215,7 +215,11 @@ describe("tool-orchestrator", () => {
 			toolName: "bash",
 			args: { command: "node --test" },
 			isError: true,
-			result: { content: [{ type: "text", text: "AssertionError: expected false to be true tests/config-parser.test.mjs:4" }] },
+			result: {
+				content: [
+					{ type: "text", text: "AssertionError: expected false to be true tests/config-parser.test.mjs:4" },
+				],
+			},
 		});
 
 		expect(orchestrator.getNextActionHint()).toContain("edit src/config-parser.mjs");
@@ -249,7 +253,12 @@ describe("tool-orchestrator", () => {
 				args: { command: "node --test" },
 				isError: true,
 				result: {
-					content: [{ type: "text", text: `AssertionError: expected false to be true tests/config-parser.test.mjs:${line === "first" ? 4 : 8}` }],
+					content: [
+						{
+							type: "text",
+							text: `AssertionError: expected false to be true tests/config-parser.test.mjs:${line === "first" ? 4 : 8}`,
+						},
+					],
 				},
 			});
 		}

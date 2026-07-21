@@ -48,12 +48,7 @@ describe("visual screenshot engine", () => {
 			},
 		});
 
-		const promise = runScreenshot(
-			"http://localhost:3000",
-			[{ type: "wait", ms: 5_000 }],
-			{},
-			controller.signal,
-		);
+		const promise = runScreenshot("http://localhost:3000", [{ type: "wait", ms: 5_000 }], {}, controller.signal);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		controller.abort();
 

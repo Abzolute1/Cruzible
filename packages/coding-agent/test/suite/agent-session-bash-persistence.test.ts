@@ -35,7 +35,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(getEntryTypes(harness)).toContain("message");
 	});
 
-	it("defers bash results while streaming and flushes them before the next prompt", async () => {
+	it("defers bash results while streaming and flushes them when the run ends", async () => {
 		let releaseToolExecution: (() => void) | undefined;
 		const toolRelease = new Promise<void>((resolve) => {
 			releaseToolExecution = resolve;
@@ -85,8 +85,11 @@ describe("AgentSession bash and persistence characterization", () => {
 		releaseToolExecution?.();
 		await firstPrompt;
 
-		expect(harness.session.hasPendingBashMessages).toBe(true);
-		expect(harness.session.messages.some((message) => message.role === "bashExecution")).toBe(false);
+		// Pending bash messages now flush when the run ends (turn_end/agent_end, see
+		// agent-session-event-loop-coordinator.ts and agent-session-bash-coordinator.test.ts),
+		// so they land in live state and persistence before any next prompt.
+		expect(harness.session.hasPendingBashMessages).toBe(false);
+		expect(harness.session.messages.some((message) => message.role === "bashExecution")).toBe(true);
 
 		await harness.session.prompt("next turn");
 

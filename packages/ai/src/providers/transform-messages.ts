@@ -168,5 +168,22 @@ export function transformMessages<TApi extends Api>(
 		}
 	}
 
+	// History may end with an assistant message containing tool calls (e.g. crash/abort
+	// mid-turn). Flush any remaining orphaned tool calls so APIs don't reject them.
+	if (pendingToolCalls.length > 0) {
+		for (const tc of pendingToolCalls) {
+			if (!existingToolResultIds.has(tc.id)) {
+				result.push({
+					role: "toolResult",
+					toolCallId: tc.id,
+					toolName: tc.name,
+					content: [{ type: "text", text: "No result provided" }],
+					isError: true,
+					timestamp: Date.now(),
+				} as ToolResultMessage);
+			}
+		}
+	}
+
 	return result;
 }

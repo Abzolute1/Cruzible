@@ -15,7 +15,11 @@ describe("interactive-command-parser", () => {
 		expect(parseInteractiveBuiltinCommand("/plan routes")).toEqual({ kind: "plan", action: "routes" });
 		expect(parseInteractiveBuiltinCommand("/plan review")).toEqual({ kind: "plan", action: "review" });
 		expect(parseInteractiveBuiltinCommand("/plan interview")).toEqual({ kind: "plan", action: "interview" });
-		expect(parseInteractiveBuiltinCommand("/plan interview 2")).toEqual({ kind: "plan", action: "interview", revision: 2 });
+		expect(parseInteractiveBuiltinCommand("/plan interview 2")).toEqual({
+			kind: "plan",
+			action: "interview",
+			revision: 2,
+		});
 		expect(parseInteractiveBuiltinCommand("/plan planner-model")).toEqual({
 			kind: "plan",
 			action: "planner-model",
@@ -30,6 +34,16 @@ describe("interactive-command-parser", () => {
 			kind: "plan",
 			action: "executor-model",
 			modelRef: "clear",
+		});
+		expect(parseInteractiveBuiltinCommand("/plan verifier-model")).toEqual({
+			kind: "plan",
+			action: "verifier-model",
+			modelRef: undefined,
+		});
+		expect(parseInteractiveBuiltinCommand("/plan verifier-model local/lm-studio")).toEqual({
+			kind: "plan",
+			action: "verifier-model",
+			modelRef: "local/lm-studio",
 		});
 		expect(parseInteractiveBuiltinCommand("/plan answer clarify the CLI compatibility expectations")).toEqual({
 			kind: "plan",
@@ -47,7 +61,11 @@ describe("interactive-command-parser", () => {
 		expect(parseInteractiveBuiltinCommand("/plan reject")).toEqual({ kind: "plan", action: "reject" });
 		expect(parseInteractiveBuiltinCommand("/plan reject 2")).toEqual({ kind: "plan", action: "reject", revision: 2 });
 		expect(parseInteractiveBuiltinCommand("/plan execute")).toEqual({ kind: "plan", action: "execute" });
-		expect(parseInteractiveBuiltinCommand("/plan execute 2")).toEqual({ kind: "plan", action: "execute", revision: 2 });
+		expect(parseInteractiveBuiltinCommand("/plan execute 2")).toEqual({
+			kind: "plan",
+			action: "execute",
+			revision: 2,
+		});
 		expect(parseInteractiveBuiltinCommand("/plan next")).toEqual({ kind: "plan", action: "next" });
 		expect(parseInteractiveBuiltinCommand("/plan next 2")).toEqual({ kind: "plan", action: "next", revision: 2 });
 		expect(parseInteractiveBuiltinCommand("/plan step 2")).toEqual({ kind: "plan", action: "step", stepIndex: 1 });
@@ -66,7 +84,11 @@ describe("interactive-command-parser", () => {
 			revision: 3,
 			stepIndex: 1,
 		});
-		expect(parseInteractiveBuiltinCommand("/plan reopen 1")).toEqual({ kind: "plan", action: "reopen", stepIndex: 0 });
+		expect(parseInteractiveBuiltinCommand("/plan reopen 1")).toEqual({
+			kind: "plan",
+			action: "reopen",
+			stepIndex: 0,
+		});
 		expect(parseInteractiveBuiltinCommand("/plan reopen 3 1")).toEqual({
 			kind: "plan",
 			action: "reopen",
@@ -157,7 +179,11 @@ describe("interactive-command-parser", () => {
 		expect(parseInteractiveBuiltinCommand("/plan done")).toBeUndefined();
 		expect(parseInteractiveBuiltinCommand("/plan done x")).toBeUndefined();
 		expect(parseInteractiveBuiltinCommand("/plan step")).toBeUndefined();
-		expect(parseInteractiveBuiltinCommand("/plan answer")).toEqual({ kind: "plan", action: "answer", feedback: undefined });
+		expect(parseInteractiveBuiltinCommand("/plan answer")).toEqual({
+			kind: "plan",
+			action: "answer",
+			feedback: undefined,
+		});
 		expect(parseInteractiveBuiltinCommand("/plan routes extra")).toBeUndefined();
 	});
 });

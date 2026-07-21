@@ -5,10 +5,15 @@
  * directly (no re-cloning) since they are already detached.
  */
 export class UndoStack<S> {
+	private static readonly MAX_ENTRIES = 200;
+
 	private stack: S[] = [];
 
-	/** Push a deep clone of the given state onto the stack. */
+	/** Push a deep clone of the given state onto the stack, dropping the oldest snapshot when full. */
 	push(state: S): void {
+		if (this.stack.length >= UndoStack.MAX_ENTRIES) {
+			this.stack.shift();
+		}
 		this.stack.push(structuredClone(state));
 	}
 

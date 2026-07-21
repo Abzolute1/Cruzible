@@ -1,4 +1,7 @@
 import assert from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { type Component, TUI } from "../src/tui.js";
@@ -140,6 +143,26 @@ describe("TUI resize handling", () => {
 		assert.ok(tui.fullRedraws > initialRedraws, "Width change should trigger full redraw");
 
 		tui.stop();
+	});
+
+	it("does not erase terminal scrollback on resize-triggered full redraw", () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// Render frames directly: requestRender() is throttled by a timer that
+		// flush() does not wait for, which would make the test non-deterministic.
+		component.lines = ["Line 0", "Line 1", "Line 2"];
+		(tui as unknown as { doRender(): void }).doRender();
+		terminal.clearWrites();
+
+		// Width change forces a full redraw with clear
+		terminal.resize(60, 10);
+		(tui as unknown as { doRender(): void }).doRender();
+
+		assert.ok(terminal.getWrites().includes("\x1b[2J"), "Full redraw should clear the screen");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Full redraw must not erase the terminal scrollback");
 	});
 });
 
@@ -505,5 +528,74 @@ describe("TUI differential rendering", () => {
 		]);
 
 		tui.stop();
+	});
+});
+
+describe("TUI width overflow", () => {
+	it("truncates over-wide lines instead of crashing", async () => {
+		const terminal = new VirtualTerminal(20, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// Render frames directly: requestRender() is throttled by a timer that
+		// flush() does not wait for, which would make the test non-deterministic.
+		component.lines = ["Line 0", "Line 1"];
+		(tui as unknown as { doRender(): void }).doRender();
+		await terminal.flush();
+
+		// Capture the overflow note to keep test output clean
+		const errors: string[] = [];
+		const originalError = console.error;
+		console.error = (...args: unknown[]) => {
+			errors.push(args.map(String).join(" "));
+		};
+		try {
+			component.lines = ["Line 0", "x".repeat(30)];
+			// Render directly instead of waiting for the throttled render timer
+			(tui as unknown as { doRender(): void }).doRender();
+			await terminal.flush();
+		} finally {
+			console.error = originalError;
+		}
+
+		assert.strictEqual(errors.length, 1, "Width overflow should log a single-line note");
+		assert.strictEqual(terminal.getViewport()[1], "x".repeat(20), "Over-wide line truncated to terminal width");
+
+		// Rendering continues normally after an overflow
+		component.lines = ["Line 0", "short"];
+		(tui as unknown as { doRender(): void }).doRender();
+		await terminal.flush();
+		assert.ok(terminal.getViewport()[1]?.includes("short"), "TUI keeps rendering after an overflow");
+	});
+
+	it("writes an annotated crash log and rethrows on unexpected render errors", async () => {
+		const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ag1-tui-test-"));
+		try {
+			await withEnv({ HOME: tmpHome }, async () => {
+				class ThrowingComponent implements Component {
+					render(_width: number): string[] {
+						throw new Error("boom");
+					}
+					invalidate(): void {}
+				}
+
+				const terminal = new VirtualTerminal(40, 10);
+				const tui = new TUI(terminal);
+				tui.addChild(new ThrowingComponent());
+
+				// Call the guarded render entry point directly so the rethrow is catchable
+				assert.throws(() => (tui as unknown as { doRender(): void }).doRender(), /boom/);
+
+				const crashLog = fs.readFileSync(path.join(tmpHome, ".ag1", "agent", "ag1-crash.log"), "utf8");
+				assert.ok(
+					crashLog.split("\n")[0]!.includes("sensitive session content"),
+					"Crash log first line should warn about sensitive session content",
+				);
+				assert.ok(crashLog.includes("boom"), "Crash log should include the original error");
+			});
+		} finally {
+			fs.rmSync(tmpHome, { recursive: true, force: true });
+		}
 	});
 });

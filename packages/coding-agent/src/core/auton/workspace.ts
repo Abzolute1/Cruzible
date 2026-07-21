@@ -1,14 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+	chmodSync,
+	closeSync,
 	copyFileSync,
 	cpSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
-	realpathSync,
-	readlinkSync,
+	openSync,
 	readdirSync,
-	readFileSync,
+	readlinkSync,
+	readSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -181,7 +184,11 @@ export function diffAutonomousWorkspace(workspace: PreparedAutonomousWorkspace):
 			modified.push(relativePath);
 			continue;
 		}
-		if (sandboxEntry.kind === "file" && sourceEntry.kind === "file" && !buffersEqual(sourceEntry.content, sandboxEntry.content)) {
+		if (
+			sandboxEntry.kind === "file" &&
+			sourceEntry.kind === "file" &&
+			(sandboxEntry.size !== sourceEntry.size || sandboxEntry.hash !== sourceEntry.hash)
+		) {
 			modified.push(relativePath);
 		}
 	}
@@ -234,16 +241,18 @@ export function promoteAutonomousWorkspace(
 }
 
 function sanitizePathForDir(targetPath: string): string {
-	return targetPath
-		.replace(/^[A-Za-z]:/, "")
-		.replace(/[\\/]+/g, "__")
-		.replace(/[^A-Za-z0-9._-]/g, "_")
-		.replace(/^_+/, "") || basename(targetPath) || "workspace";
+	return (
+		targetPath
+			.replace(/^[A-Za-z]:/, "")
+			.replace(/[\\/]+/g, "__")
+			.replace(/[^A-Za-z0-9._-]/g, "_")
+			.replace(/^_+/, "") ||
+		basename(targetPath) ||
+		"workspace"
+	);
 }
 
-async function detectGitWorkspace(
-	cwd: string,
-): Promise<{ repoRoot: string; isDirty: boolean } | undefined> {
+async function detectGitWorkspace(cwd: string): Promise<{ repoRoot: string; isDirty: boolean } | undefined> {
 	const rootResult = await execCommand("git", ["rev-parse", "--show-toplevel"], cwd, { timeout: 15000 });
 	if (rootResult.code !== 0) {
 		return undefined;
@@ -270,11 +279,7 @@ async function createGitWorktree(repoRoot: string, workspaceRoot: string): Promi
 	}
 }
 
-function copyWorkspaceTree(
-	sourceCwd: string,
-	workspaceRoot: string,
-	options: { excludedRoots?: string[] } = {},
-): void {
+function copyWorkspaceTree(sourceCwd: string, workspaceRoot: string, options: { excludedRoots?: string[] } = {}): void {
 	const normalizedSource = resolve(sourceCwd);
 	const sourceRootReal = realpathSync(normalizedSource);
 	const excludedRoots = (options.excludedRoots ?? []).map((entry) => resolve(entry));
@@ -302,6 +307,39 @@ function copyWorkspaceTree(
 	}
 }
 
+const HASH_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Hash a file's contents in bounded memory. The diff flow previously retained
+ * every file's full bytes in a Map — O(entire tree) memory, which OOMs on
+ * workspaces with large assets. Now: O(8 MB) regardless of tree size.
+ */
+function hashFileSync(path: string): string {
+	const hash = createHash("sha256");
+	const fd = openSync(path, "r");
+	try {
+		const chunk = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
+		let bytesRead = 0;
+		while ((bytesRead = readSync(fd, chunk, 0, HASH_CHUNK_BYTES, null)) > 0) {
+			hash.update(chunk.subarray(0, bytesRead));
+		}
+	} finally {
+		closeSync(fd);
+	}
+	return hash.digest("hex");
+}
+
+/**
+ * Copy a file and preserve its mode bits (executables must stay executable in
+ * the workspace). copyFileSync always creates a fresh inode, so a hardlinked
+ * source file's workspace copy is independent — agent writes inside the
+ * workspace can never propagate back through the link to host files.
+ */
+function copyFilePreservingMode(sourcePath: string, destPath: string): void {
+	copyFileSync(sourcePath, destPath);
+	chmodSync(destPath, lstatSync(sourcePath).mode);
+}
+
 function copyEntryRecursively(
 	sourcePath: string,
 	destPath: string,
@@ -327,7 +365,7 @@ function copyEntryRecursively(
 		}
 		const parentDir = resolve(destPath, "..");
 		mkdirSync(parentDir, { recursive: true });
-		copyFileSync(resolvedTarget, destPath);
+		copyFilePreservingMode(resolvedTarget, destPath);
 		return;
 	}
 
@@ -344,7 +382,7 @@ function copyEntryRecursively(
 	if (stats.isFile()) {
 		const parentDir = resolve(destPath, "..");
 		mkdirSync(parentDir, { recursive: true });
-		copyFileSync(sourcePath, destPath);
+		copyFilePreservingMode(sourcePath, destPath);
 	}
 }
 
@@ -376,11 +414,13 @@ function writeWorkspaceMetadata(options: {
 	);
 }
 
-type WorkspaceEntry =
-	| { kind: "file"; content: Buffer }
-	| { kind: "directory" };
+type WorkspaceEntry = { kind: "file"; size: number; hash: string } | { kind: "directory" };
 
-function collectWorkspaceEntries(root: string, current = root, entries = new Map<string, WorkspaceEntry>()): Map<string, WorkspaceEntry> {
+function collectWorkspaceEntries(
+	root: string,
+	current = root,
+	entries = new Map<string, WorkspaceEntry>(),
+): Map<string, WorkspaceEntry> {
 	for (const entry of readdirSync(current)) {
 		if (entry === ".git" || entry === ".ag1-autonomous-workspace.json") {
 			continue;
@@ -397,13 +437,8 @@ function collectWorkspaceEntries(root: string, current = root, entries = new Map
 			continue;
 		}
 		if (stats.isFile()) {
-			entries.set(relativePath, { kind: "file", content: readFileSync(absolutePath) });
+			entries.set(relativePath, { kind: "file", size: stats.size, hash: hashFileSync(absolutePath) });
 		}
 	}
 	return entries;
-}
-
-function buffersEqual(left: Buffer, right: Buffer): boolean {
-	if (left.length !== right.length) return false;
-	return left.equals(right);
 }

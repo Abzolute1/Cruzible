@@ -2,25 +2,25 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Args } from "../src/cli/args.js";
-import { ModelRegistry } from "../src/index.js";
+import type { Args } from "../src/cli/args.js";
 import { getDefaultSessionDir, SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import type { ModelRegistry } from "../src/index.js";
 import {
-	enforceExplicitRuntimeModel,
 	buildRuntimeCliOptions,
+	enforceExplicitRuntimeModel,
 	enforceRequestedStartupModel,
 	main,
-	prepareStartupModelsFile,
 	prepareStartupInput,
+	prepareStartupModelsFile,
 	resolveModel,
-	resolveSessionReference,
 	resolveSelectedTools,
+	resolveSessionReference,
 	resolveSessionStorageDir,
 	shouldUseRequestedStartupModel,
 	validateModeFlags,
-	validateToolFlags,
 	validateSessionFlags,
+	validateToolFlags,
 } from "../src/main.js";
 
 function createArgs(messages: string[] = []): Args {
@@ -185,10 +185,9 @@ describe("main CLI contract", () => {
 	it("maps explicit tool selection and no-tools consistently", () => {
 		const cwd = createTempDir("main-cli-tools");
 		cleanupPaths.push(cwd);
-		expect(resolveSelectedTools({ ...createArgs(), tools: ["read", "bash"] }, cwd)?.map((tool) => tool.name)).toEqual([
-			"read",
-			"bash",
-		]);
+		expect(resolveSelectedTools({ ...createArgs(), tools: ["read", "bash"] }, cwd)?.map((tool) => tool.name)).toEqual(
+			["read", "bash"],
+		);
 		expect(resolveSelectedTools({ ...createArgs(), noTools: true }, cwd)).toEqual([]);
 		expect(resolveSelectedTools(createArgs(), cwd)).toBeUndefined();
 	});
@@ -225,7 +224,7 @@ describe("main CLI contract", () => {
 			noThemes: true,
 			systemPrompt: "./system.txt",
 			appendSystemPrompt: "./append.txt",
-			unknownFlags: new Map([
+			unknownFlags: new Map<string, boolean | string>([
 				["experimental-flag", true],
 				["provider-mode", "strict"],
 			]),
@@ -235,7 +234,7 @@ describe("main CLI contract", () => {
 
 		expect(result.selectedToolNames).toEqual(["read", "webSearch"]);
 		expect(result.extensionFlagValues).toEqual(
-			new Map([
+			new Map<string, boolean | string>([
 				["experimental-flag", true],
 				["provider-mode", "strict"],
 			]),
@@ -315,7 +314,7 @@ describe("main CLI contract", () => {
 		});
 		expect(first.modelsData.providers.local).toBeDefined();
 		expect((first.modelsData.providers.local as any).models).toEqual([
-			expect.objectContaining({ id: "qwen-local", name: "qwen-local" }),
+			expect.objectContaining({ id: "qwen-local", name: "qwen-local", contextWindow: 128000 }),
 		]);
 
 		const second = await prepareStartupModelsFile({
@@ -325,7 +324,28 @@ describe("main CLI contract", () => {
 		});
 		expect(second.modelsData.providers.local).toBeDefined();
 		expect((second.modelsData.providers.local as any).models).toEqual([
-			expect.objectContaining({ id: "qwen-local", name: "qwen-local" }),
+			expect.objectContaining({ id: "qwen-local", name: "qwen-local", contextWindow: 128000 }),
+		]);
+	});
+
+	it("assigns conservative context windows to small detected local models", async () => {
+		const agentDir = createTempDir("main-cli-local-context-window");
+		cleanupPaths.push(agentDir);
+		const fetchImpl = vi.fn().mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ data: [{ id: "qwen/qwen3.5-9b" }, { id: "qwen3.5-35b-a3b" }] }),
+		});
+
+		const prepared = await prepareStartupModelsFile({
+			agentDir,
+			env: { AG1_HOME: agentDir, LM_STUDIO_URL: "http://127.0.0.1:1234" },
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+		const models = (prepared.modelsData.providers.local as any).models;
+
+		expect(models).toEqual([
+			expect.objectContaining({ id: "qwen/qwen3.5-9b", contextWindow: 32768 }),
+			expect.objectContaining({ id: "qwen3.5-35b-a3b", contextWindow: 65536 }),
 		]);
 	});
 

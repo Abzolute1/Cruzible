@@ -29,7 +29,7 @@ import type {
 } from "../types.js";
 import type { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseFinalToolCallJson, parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -410,7 +410,9 @@ export async function processResponsesStream<TApi extends Api>(
 			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
 				const previousPartialJson = currentBlock.partialJson;
 				currentBlock.partialJson = event.arguments;
-				currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+				const parsedArgs = parseFinalToolCallJson(currentBlock.partialJson);
+				currentBlock.arguments = parsedArgs.arguments;
+				if (parsedArgs.malformed) currentBlock.malformedArguments = true;
 
 				if (event.arguments.startsWith(previousPartialJson)) {
 					const delta = event.arguments.slice(previousPartialJson.length);
@@ -448,16 +450,17 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 				currentBlock = null;
 			} else if (item.type === "function_call") {
-				const args =
+				const parsedArgs =
 					currentBlock?.type === "toolCall" && currentBlock.partialJson
-						? parseStreamingJson(currentBlock.partialJson)
-						: parseStreamingJson(item.arguments || "{}");
+						? parseFinalToolCallJson(currentBlock.partialJson)
+						: parseFinalToolCallJson(item.arguments || "{}");
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: `${item.call_id}|${item.id}`,
 					name: item.name,
-					arguments: args,
+					arguments: parsedArgs.arguments,
 				};
+				if (parsedArgs.malformed) toolCall.malformedArguments = true;
 
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
@@ -485,12 +488,16 @@ export async function processResponsesStream<TApi extends Api>(
 				options.applyServiceTierPricing(output.usage, serviceTier);
 			}
 			// Map status to stop reason
-			output.stopReason = mapStopReason(response?.status);
+			const stopReasonResult = mapStopReason(response?.status);
+			output.stopReason = stopReasonResult.stopReason;
+			if (stopReasonResult.errorMessage) {
+				output.errorMessage = stopReasonResult.errorMessage;
+			}
 			if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
 				output.stopReason = "toolUse";
 			}
 		} else if (event.type === "error") {
-			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
+			throw new Error(`Error Code ${event.code}: ${event.message}`);
 		} else if (event.type === "response.failed") {
 			const error = event.response?.error;
 			const details = event.response?.incomplete_details;
@@ -504,20 +511,23 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 }
 
-function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): StopReason {
-	if (!status) return "stop";
+function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
+	if (!status) return { stopReason: "stop" };
 	switch (status) {
 		case "completed":
-			return "stop";
+			return { stopReason: "stop" };
 		case "incomplete":
-			return "length";
+			return { stopReason: "length" };
 		case "failed":
 		case "cancelled":
-			return "error";
+			return { stopReason: "error", errorMessage: `Provider response status: ${status}` };
 		// These two are wonky ...
 		case "in_progress":
 		case "queued":
-			return "stop";
+			return { stopReason: "stop" };
 		default: {
 			const _exhaustive: never = status;
 			throw new Error(`Unhandled stop reason: ${_exhaustive}`);

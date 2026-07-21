@@ -5,14 +5,7 @@ import type { RuntimeStabilizationProfile } from "../../core/runtime-health.js";
 import type { InteractivePlanArtifact } from "./interactive-plan-artifacts.js";
 import { theme } from "./theme/theme.js";
 
-const AUTONOMOUS_BROAD_SCOPE_DIR_NAMES = new Set([
-	"desktop",
-	"documents",
-	"downloads",
-	"pictures",
-	"videos",
-	"music",
-]);
+const AUTONOMOUS_BROAD_SCOPE_DIR_NAMES = new Set(["desktop", "documents", "downloads", "pictures", "videos", "music"]);
 
 const AUTONOMOUS_PROJECT_MARKERS = [
 	".git",

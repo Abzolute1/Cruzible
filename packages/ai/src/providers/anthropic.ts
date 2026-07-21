@@ -25,7 +25,7 @@ import type {
 	ToolResultMessage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseFinalToolCallJson, parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
@@ -383,7 +383,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							block.arguments = parseStreamingJson(block.partialJson);
+							const parsedArgs = parseFinalToolCallJson(block.partialJson);
+							block.arguments = parsedArgs.arguments;
+							if (parsedArgs.malformed) block.malformedArguments = true;
 							delete (block as any).partialJson;
 							stream.push({
 								type: "toolcall_end",
@@ -395,7 +397,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					}
 				} else if (event.type === "message_delta") {
 					if (event.delta.stop_reason) {
-						output.stopReason = mapStopReason(event.delta.stop_reason);
+						const stopReasonResult = mapStopReason(event.delta.stop_reason);
+						output.stopReason = stopReasonResult.stopReason;
+						if (stopReasonResult.errorMessage) {
+							output.errorMessage = stopReasonResult.errorMessage;
+						}
 					}
 					// Only update usage fields if present (not null).
 					// Preserves input_tokens from message_start when proxies omit it in message_delta.
@@ -422,8 +428,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -516,7 +525,9 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
 };
 
 function isOAuthToken(apiKey: string): boolean {
-	return apiKey.includes("sk-ant-oat");
+	// OAuth access tokens issued by claude.ai always carry this prefix; a plain
+	// API key that merely contains the fragment elsewhere must not be treated as OAuth.
+	return apiKey.startsWith("sk-ant-oat");
 }
 
 function createClient(
@@ -614,7 +625,10 @@ function buildParams(
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
 		messages: convertMessages(context.messages, model, isOAuthToken, cacheControl),
-		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
+		// Anthropic requires max_tokens. Unlike other providers (which omit the cap when
+		// the caller didn't set one), default to the model's full output budget rather
+		// than an arbitrary fraction of it.
+		max_tokens: options?.maxTokens || model.maxTokens,
 		stream: true,
 	};
 
@@ -882,22 +896,25 @@ function convertTools(tools: Tool[], isOAuthToken: boolean): Anthropic.Messages.
 	});
 }
 
-function mapStopReason(reason: Anthropic.Messages.StopReason | string): StopReason {
+function mapStopReason(reason: Anthropic.Messages.StopReason | string): {
+	stopReason: StopReason;
+	errorMessage?: string;
+} {
 	switch (reason) {
 		case "end_turn":
-			return "stop";
+			return { stopReason: "stop" };
 		case "max_tokens":
-			return "length";
+			return { stopReason: "length" };
 		case "tool_use":
-			return "toolUse";
+			return { stopReason: "toolUse" };
 		case "refusal":
-			return "error";
+			return { stopReason: "error", errorMessage: "Provider stop_reason: refusal" };
 		case "pause_turn": // Stop is good enough -> resubmit
-			return "stop";
+			return { stopReason: "stop" };
 		case "stop_sequence":
-			return "stop"; // We don't supply stop sequences, so this should never happen
+			return { stopReason: "stop" }; // We don't supply stop sequences, so this should never happen
 		case "sensitive": // Content flagged by safety filters (not yet in SDK types)
-			return "error";
+			return { stopReason: "error", errorMessage: "Provider stop_reason: sensitive" };
 		default:
 			// Handle unknown stop reasons gracefully (API may add new values)
 			throw new Error(`Unhandled stop reason: ${reason}`);

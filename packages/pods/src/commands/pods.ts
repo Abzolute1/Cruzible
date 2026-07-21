@@ -39,6 +39,17 @@ export const listPods = () => {
 };
 
 /**
+ * Extract the models path from a mount command, e.g.
+ * "mount -t nfs ... /mnt/sfs" -> "/mnt/sfs".
+ * Returns undefined when the last token is not an absolute path.
+ */
+export const modelsPathFromMount = (mount: string): string | undefined => {
+	const parts = mount.trim().split(" ");
+	const lastPart = parts[parts.length - 1];
+	return lastPart?.startsWith("/") ? lastPart : undefined;
+};
+
+/**
  * Setup a new pod
  */
 export const setupPod = async (
@@ -46,6 +57,12 @@ export const setupPod = async (
 	sshCmd: string,
 	options: { mount?: string; modelsPath?: string; vllm?: "release" | "nightly" | "gpt-oss" },
 ) => {
+	// Validate pod name (used as config key and in paths)
+	if (!/^[a-zA-Z0-9._-]+$/.test(name) || name === "__proto__") {
+		console.error(chalk.red(`Invalid pod name '${name}'. Use only letters, numbers, dots, underscores and dashes.`));
+		process.exit(1);
+	}
+
 	// Validate environment variables
 	const hfToken = process.env.HF_TOKEN;
 	const vllmApiKey = process.env.AG1_API_KEY;
@@ -68,8 +85,7 @@ export const setupPod = async (
 	if (!modelsPath && options.mount) {
 		// Extract path from mount command if not explicitly provided
 		// e.g., "mount -t nfs ... /mnt/sfs" -> "/mnt/sfs"
-		const parts = options.mount.split(" ");
-		modelsPath = parts[parts.length - 1];
+		modelsPath = modelsPathFromMount(options.mount);
 	}
 
 	if (!modelsPath) {
@@ -108,8 +124,19 @@ export const setupPod = async (
 	}
 	console.log(chalk.green("✓ Setup script copied"));
 
-	// Build setup command
-	let setupCmd = `bash /tmp/pod_setup.sh --models-path '${modelsPath}' --hf-token '${hfToken}' --vllm-api-key '${vllmApiKey}'`;
+	// Write secrets to a chmod-600 env file via stdin so they never appear in
+	// local or remote `ps` argv. pod_setup.sh sources this file.
+	console.log("Writing secrets to pod (via stdin)...");
+	const envContent = `HF_TOKEN='${hfToken}'\nAG1_API_KEY='${vllmApiKey}'\n`;
+	const envResult = await sshExec(sshCmd, "umask 077 && cat > /tmp/pod_setup.env", { input: envContent });
+	if (envResult.exitCode !== 0) {
+		console.error(chalk.red("Failed to write secrets env file"));
+		console.error(envResult.stderr);
+		process.exit(1);
+	}
+
+	// Build setup command (no secrets in argv)
+	let setupCmd = `bash /tmp/pod_setup.sh --models-path '${modelsPath}'`;
 	if (options.mount) {
 		setupCmd += ` --mount '${options.mount}'`;
 	}
@@ -124,6 +151,10 @@ export const setupPod = async (
 
 	// Use forceTTY to preserve colors from apt, pip, etc.
 	const exitCode = await sshExecStream(sshCmd, setupCmd, { forceTTY: true });
+
+	// Scrub the secrets env file (whether setup succeeded or failed)
+	await sshExec(sshCmd, "rm -f /tmp/pod_setup.env");
+
 	if (exitCode !== 0) {
 		console.error(chalk.red("\nSetup failed. Check the output above for errors."));
 		process.exit(1);
@@ -165,7 +196,11 @@ export const setupPod = async (
 
 	addPod(name, pod);
 	console.log("");
-	console.log(chalk.green(`✓ Pod '${name}' setup complete and set as active pod`));
+	if (loadConfig().active === name) {
+		console.log(chalk.green(`✓ Pod '${name}' setup complete and set as active pod`));
+	} else {
+		console.log(chalk.green(`✓ Pod '${name}' setup complete`));
+	}
 	console.log("");
 	console.log("You can now deploy models with:");
 	console.log(chalk.cyan(`  ag1-pods start <model> --name <name>`));

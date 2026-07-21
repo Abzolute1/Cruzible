@@ -109,14 +109,19 @@ function assertNoSymlinkTraversal(rootPath: string, targetPath: string): void {
 	}
 }
 
-export function resolveContainedPath(
-	filePath: string,
-	cwd: string,
-	options?: { allowMissing?: boolean },
-): string {
+/**
+ * Resolve a path and verify it stays inside the workspace (symlink-traversal safe).
+ * Missing targets are tolerated by design: resolution walks to the nearest existing
+ * ancestor, so callers that create new files (write) and callers that require
+ * existence (read/edit/ls — they emit their own "not found" errors) share one path.
+ */
+export function resolveContainedPath(filePath: string, cwd: string): string {
 	const normalizedCwd = resolvePath(cwd);
 	const workspaceRoot = realpathSync(normalizedCwd);
-	const resolvedPath = resolveToCwd(repairWorkspaceAbsoluteWithoutLeadingSlash(filePath, normalizedCwd), normalizedCwd);
+	const resolvedPath = resolveToCwd(
+		repairWorkspaceAbsoluteWithoutLeadingSlash(filePath, normalizedCwd),
+		normalizedCwd,
+	);
 
 	if (existsSync(resolvedPath)) {
 		assertNoSymlinkTraversal(normalizedCwd, resolvedPath);
@@ -147,13 +152,9 @@ export function resolveContainedPath(
 	return candidate;
 }
 
-export function isContainedPath(
-	filePath: string,
-	cwd: string,
-	options?: { allowMissing?: boolean },
-): boolean {
+export function isContainedPath(filePath: string, cwd: string): boolean {
 	try {
-		resolveContainedPath(filePath, cwd, options);
+		resolveContainedPath(filePath, cwd);
 		return true;
 	} catch {
 		return false;

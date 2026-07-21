@@ -1,8 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.js";
+import {
+	findMostRecentSession,
+	loadEntriesFromFile,
+	SessionManager,
+	SessionPersistenceError,
+} from "../../src/core/session-manager.js";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -130,8 +135,7 @@ describe("findMostRecentSession", () => {
 
 		writeFileSync(
 			malformed,
-			'{"type":"session","id":"bad","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
-				"not valid json\n",
+			'{"type":"session","id":"bad","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' + "not valid json\n",
 		);
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(valid, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
@@ -282,5 +286,89 @@ describe("SessionManager immediate persistence", () => {
 		expect(lines).toHaveLength(2);
 		expect(JSON.parse(lines[1]).type).toBe("message");
 		expect(JSON.parse(lines[1]).message.role).toBe("user");
+	});
+
+	it("removes the session write lock after persistence", () => {
+		const sm = SessionManager.create(tempDir, tempDir);
+		const sessionFile = sm.getSessionFile()!;
+
+		sm.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+
+		expect(existsSync(`${sessionFile}.lock`)).toBe(false);
+	});
+
+	it("recovers a stale session write lock", () => {
+		const sm = SessionManager.create(tempDir, tempDir);
+		const sessionFile = sm.getSessionFile()!;
+		const lockPath = `${sessionFile}.lock`;
+		mkdirSync(lockPath);
+		const staleTime = new Date(Date.now() - 10 * 60_000);
+		utimesSync(lockPath, staleTime, staleTime);
+
+		sm.appendMessage({ role: "user", content: "after stale lock", timestamp: 1 });
+
+		expect(existsSync(lockPath)).toBe(false);
+		const lines = readFileSync(sessionFile, "utf-8").trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(JSON.parse(lines[1]).message.content).toBe("after stale lock");
+	});
+
+	it("preserves entries written by another manager before rewriting", () => {
+		const first = SessionManager.create(tempDir, tempDir);
+		const sessionFile = first.getSessionFile()!;
+		const second = SessionManager.open(sessionFile, tempDir);
+
+		first.appendMessage({ role: "user", content: "from first manager", timestamp: 1 });
+		second.appendMessage({ role: "user", content: "from second manager", timestamp: 2 });
+
+		const lines = readFileSync(sessionFile, "utf-8").trim().split("\n");
+		const messages = lines
+			.map((line) => JSON.parse(line))
+			.filter((entry) => entry.type === "message")
+			.map((entry) => entry.message.content);
+		expect(messages).toContain("from first manager");
+		expect(messages).toContain("from second manager");
+	});
+
+	it("rejects unserializable entries before mutating state or disk", () => {
+		const sm = SessionManager.create(tempDir, tempDir);
+		const sessionFile = sm.getSessionFile()!;
+
+		expect(() => sm.appendCustomEntry("bad", { big: 1n })).toThrow(SessionPersistenceError);
+		expect(sm.getEntries()).toHaveLength(0);
+		expect(sm.getLeafId()).toBeNull();
+
+		// The failed append must not poison later appends.
+		const id = sm.appendMessage({ role: "user", content: "after failure", timestamp: 1 });
+		expect(sm.getEntries()).toHaveLength(1);
+		expect(sm.getLeafId()).toBe(id);
+
+		const lines = readFileSync(sessionFile, "utf-8").trim().split("\n");
+		expect(lines).toHaveLength(2); // header + the successful append only
+		expect(JSON.parse(lines[1]).message.content).toBe("after failure");
+	});
+
+	it("rejects circular extension details without poisoning the session", () => {
+		const sm = SessionManager.create(tempDir, tempDir);
+
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		expect(() => sm.appendCustomEntry("bad", circular)).toThrow(SessionPersistenceError);
+		expect(sm.getEntries()).toHaveLength(0);
+
+		sm.appendMessage({ role: "user", content: "still works", timestamp: 1 });
+		expect(sm.getEntries()).toHaveLength(1);
+	});
+
+	it("writes the header before the first append for explicit paths that do not exist yet", () => {
+		const explicitFile = join(tempDir, "explicit.jsonl");
+		const sm = SessionManager.open(explicitFile, tempDir);
+
+		sm.appendMessage({ role: "user", content: "hi", timestamp: 1 });
+
+		const lines = readFileSync(explicitFile, "utf-8").trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(JSON.parse(lines[0]).type).toBe("session");
+		expect(JSON.parse(lines[1]).type).toBe("message");
 	});
 });

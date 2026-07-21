@@ -1,7 +1,7 @@
 import type { Transport } from "@ag1/ai";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir, getProjectConfigDir, LEGACY_CONFIG_DIR_NAMES } from "../config.js";
 
@@ -67,6 +67,11 @@ export interface Settings {
 	defaultModel?: string;
 	planningModel?: string;
 	executionModel?: string;
+	verifierModel?: string;
+	/** Visual verification tools (screenshot_url, interact_then_screenshot, verify_ui):
+	 * "auto" (default) enables them only when the model declares vision capability,
+	 * "on" force-enables, "off" disables. */
+	visualTools?: "auto" | "on" | "off";
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	contextWindow?: number; // Custom context window override (tokens), survives session reloads
 	transport?: TransportSetting; // default: "sse"
@@ -77,6 +82,10 @@ export interface Settings {
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
+	/** When false (default), the UI runs condensed: thinking auto-collapses after streaming,
+	 * repeated tool calls group into timelines, and expand hints stay out of the way.
+	 * When true, everything renders in full (the pre-condensed behavior). */
+	verboseMode?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
@@ -99,6 +108,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
+	trustedProjects?: string[]; // USER settings only: project config dirs trusted to execute project-local extensions (workspace trust)
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -132,9 +142,123 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	return result;
 }
 
+type SettingsValueValidator = (value: unknown) => boolean;
+
+const isString = (value: unknown): value is string => typeof value === "string";
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+const isStringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every(isString);
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+const oneOf =
+	(...allowed: string[]) =>
+	(value: unknown): boolean =>
+		isString(value) && allowed.includes(value);
+const isPackageSourceArray = (value: unknown): boolean =>
+	Array.isArray(value) && value.every((entry) => isString(entry) || isPlainObject(entry));
+
+/** Expected shape for known settings keys; unknown keys pass through for forward compatibility. */
+const SETTINGS_VALUE_VALIDATORS: Record<string, SettingsValueValidator> = {
+	lastChangelogVersion: isString,
+	defaultProvider: isString,
+	defaultModel: isString,
+	planningModel: isString,
+	executionModel: isString,
+	verifierModel: isString,
+	defaultThinkingLevel: oneOf("off", "minimal", "low", "medium", "high", "xhigh"),
+	contextWindow: isFiniteNumber,
+	transport: oneOf("sse", "websocket", "auto"),
+	steeringMode: oneOf("all", "one-at-a-time"),
+	followUpMode: oneOf("all", "one-at-a-time"),
+	theme: isString,
+	compaction: isPlainObject,
+	branchSummary: isPlainObject,
+	retry: isPlainObject,
+	hideThinkingBlock: isBoolean,
+	verboseMode: isBoolean,
+	shellPath: isString,
+	quietStartup: isBoolean,
+	shellCommandPrefix: isString,
+	npmCommand: isStringArray,
+	collapseChangelog: isBoolean,
+	packages: isPackageSourceArray,
+	extensions: isStringArray,
+	skills: isStringArray,
+	prompts: isStringArray,
+	themes: isStringArray,
+	enableSkillCommands: isBoolean,
+	terminal: isPlainObject,
+	images: isPlainObject,
+	enabledModels: isStringArray,
+	doubleEscapeAction: oneOf("fork", "tree", "none"),
+	treeFilterMode: oneOf("default", "no-tools", "user-only", "labeled-only", "all"),
+	thinkingBudgets: isPlainObject,
+	editorPaddingX: isFiniteNumber,
+	autocompleteMaxVisible: isFiniteNumber,
+	showHardwareCursor: isBoolean,
+	markdown: isPlainObject,
+	sessionDir: isString,
+	trustedProjects: isStringArray,
+};
+
+/** Expected shape for known keys nested inside object-valued settings. */
+const NESTED_SETTINGS_VALIDATORS: Record<string, Record<string, SettingsValueValidator>> = {
+	compaction: { enabled: isBoolean, reserveTokens: isFiniteNumber, keepRecentTokens: isFiniteNumber },
+	branchSummary: { reserveTokens: isFiniteNumber, skipPrompt: isBoolean },
+	retry: {
+		enabled: isBoolean,
+		maxRetries: isFiniteNumber,
+		baseDelayMs: isFiniteNumber,
+		maxDelayMs: isFiniteNumber,
+	},
+	terminal: { showImages: isBoolean, clearOnShrink: isBoolean },
+	images: { autoResize: isBoolean, blockImages: isBoolean },
+	thinkingBudgets: {
+		minimal: isFiniteNumber,
+		low: isFiniteNumber,
+		medium: isFiniteNumber,
+		high: isFiniteNumber,
+	},
+	markdown: { codeBlockIndent: isString },
+};
+
+/**
+ * Drop mistyped settings values (e.g. `"retry": "nope"`) so they cannot flow into
+ * consumers. Unknown keys are kept for forward compatibility with newer versions.
+ * Lightweight counterpart to the models.json schema validation in model-registry.ts.
+ */
+function sanitizeSettings(settings: Record<string, unknown>, scope: SettingsScope): Settings {
+	const dropped: string[] = [];
+	for (const [key, value] of Object.entries(settings)) {
+		if (value === undefined) continue;
+		const validator = SETTINGS_VALUE_VALIDATORS[key];
+		if (validator && !validator(value)) {
+			dropped.push(`"${key}"`);
+			delete settings[key];
+			continue;
+		}
+		const nestedValidators = NESTED_SETTINGS_VALIDATORS[key];
+		if (nestedValidators && isPlainObject(value)) {
+			for (const [nestedKey, nestedValue] of Object.entries(value)) {
+				const nestedValidator = nestedValidators[nestedKey];
+				if (nestedValidator && nestedValue !== undefined && !nestedValidator(nestedValue)) {
+					dropped.push(`"${key}.${nestedKey}"`);
+					delete value[nestedKey];
+				}
+			}
+		}
+	}
+	if (dropped.length > 0) {
+		console.error(`Warning: dropping invalid ${scope} settings value(s): ${dropped.join(", ")}`);
+	}
+	return settings as Settings;
+}
+
 export type SettingsScope = "global" | "project";
 
 export interface SettingsStorage {
+	/** Read current content without locking; safe because writes are atomic (temp + rename). */
+	read(scope: SettingsScope): string | undefined;
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 }
 
@@ -179,33 +303,33 @@ export class FileSettingsStorage implements SettingsStorage {
 		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
 	}
 
+	read(scope: SettingsScope): string | undefined {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+	}
+
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const dir = dirname(path);
 
-		let release: (() => void) | undefined;
+		// Acquire the lock before the read-modify-write in ALL cases. Previously the
+		// lock was only taken when the file already existed, so concurrent first-writes
+		// both computed from `undefined` and the last writer won (read-before-lock TOCTOU).
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+		const release = this.acquireLockSyncWithRetry(path);
 		try {
-			// Only create directory and lock if file exists or we need to write
-			const fileExists = existsSync(path);
-			if (fileExists) {
-				release = this.acquireLockSyncWithRetry(path);
-			}
-			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
+			const current = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
 			const next = fn(current);
 			if (next !== undefined) {
-				// Only create directory when we actually need to write
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
-				}
-				if (!release) {
-					release = this.acquireLockSyncWithRetry(path);
-				}
-				writeFileSync(path, next, "utf-8");
+				// Atomic write (temp + rename) so lock-free readers never see partial content.
+				const tmpPath = `${path}.tmp`;
+				writeFileSync(tmpPath, next, "utf-8");
+				renameSync(tmpPath, path);
 			}
 		} finally {
-			if (release) {
-				release();
-			}
+			release();
 		}
 	}
 }
@@ -213,6 +337,10 @@ export class FileSettingsStorage implements SettingsStorage {
 export class InMemorySettingsStorage implements SettingsStorage {
 	private global: string | undefined;
 	private project: string | undefined;
+
+	read(scope: SettingsScope): string | undefined {
+		return scope === "global" ? this.global : this.project;
+	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const current = scope === "global" ? this.global : this.project;
@@ -314,17 +442,15 @@ export class SettingsManager {
 	}
 
 	private static loadFromStorage(storage: SettingsStorage, scope: SettingsScope): Settings {
-		let content: string | undefined;
-		storage.withLock(scope, (current) => {
-			content = current;
-			return undefined;
-		});
+		// Lock-free read: writes go through temp+rename, so content is never partial.
+		const content = storage.read(scope);
 
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(content);
-		return SettingsManager.migrateSettings(settings);
+		const settings = JSON.parse(content) as Record<string, unknown>;
+		SettingsManager.migrateSettings(settings);
+		return sanitizeSettings(settings, scope);
 	}
 
 	private static tryLoadFromStorage(
@@ -605,6 +731,20 @@ export class SettingsManager {
 		return this.settings.executionModel;
 	}
 
+	getVerifierModel(): string | undefined {
+		return this.settings.verifierModel;
+	}
+
+	getVisualToolsMode(): "auto" | "on" | "off" {
+		return this.settings.visualTools ?? "auto";
+	}
+
+	setVisualToolsMode(mode: "auto" | "on" | "off"): void {
+		this.globalSettings.visualTools = mode === "auto" ? undefined : mode;
+		this.markModified("visualTools");
+		this.save();
+	}
+
 	setDefaultProvider(provider: string): void {
 		this.globalSettings.defaultProvider = provider;
 		this.markModified("defaultProvider");
@@ -634,6 +774,12 @@ export class SettingsManager {
 	setExecutionModel(modelRef: string | undefined): void {
 		this.globalSettings.executionModel = modelRef;
 		this.markModified("executionModel");
+		this.save();
+	}
+
+	setVerifierModel(modelRef: string | undefined): void {
+		this.globalSettings.verifierModel = modelRef;
+		this.markModified("verifierModel");
 		this.save();
 	}
 
@@ -773,6 +919,16 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getVerboseMode(): boolean {
+		return this.settings.verboseMode ?? false;
+	}
+
+	setVerboseMode(verbose: boolean): void {
+		this.globalSettings.verboseMode = verbose;
+		this.markModified("verboseMode");
+		this.save();
+	}
+
 	getShellPath(): string | undefined {
 		return this.settings.shellPath;
 	}
@@ -855,6 +1011,30 @@ export class SettingsManager {
 		projectSettings.extensions = paths;
 		this.markProjectModified("extensions");
 		this.saveProjectSettings(projectSettings);
+	}
+
+	/**
+	 * Workspace trust: project config dirs allowed to execute project-local extensions.
+	 * Read from USER settings only — project settings ship with the repo and must
+	 * never be able to trust themselves.
+	 */
+	getTrustedProjects(): string[] {
+		return [...(this.globalSettings.trustedProjects ?? [])];
+	}
+
+	isProjectTrusted(projectConfigDir: string): boolean {
+		const resolved = resolve(projectConfigDir);
+		return this.getTrustedProjects().some((entry) => resolve(entry) === resolved);
+	}
+
+	addTrustedProject(projectConfigDir: string): void {
+		const resolved = resolve(projectConfigDir);
+		if (this.isProjectTrusted(resolved)) {
+			return;
+		}
+		this.globalSettings.trustedProjects = [...this.getTrustedProjects(), resolved];
+		this.markModified("trustedProjects");
+		this.save();
 	}
 
 	getSkillPaths(): string[] {

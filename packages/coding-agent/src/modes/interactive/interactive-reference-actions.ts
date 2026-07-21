@@ -1,8 +1,8 @@
-import type { MarkdownTheme, Keybinding } from "@ag1/tui";
+import type { Keybinding, MarkdownTheme } from "@ag1/tui";
 import { Markdown, Spacer, Text } from "@ag1/tui";
 import type { AppKeybinding } from "../../core/keybindings.js";
-import { keyText } from "./components/keybinding-hints.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
+import { keyText } from "./components/keybinding-hints.js";
 import { theme } from "./theme/theme.js";
 
 type ChatContainerLike = { addChild(child: unknown): void };

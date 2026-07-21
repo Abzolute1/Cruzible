@@ -17,16 +17,21 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-function buildFooterBadge(
-	text: string,
+function buildFooterMetric(
+	label: string,
+	value: string,
 	options: {
 		tone?: "accent" | "success" | "warning" | "error" | "muted" | "text";
 		bold?: boolean;
 	} = {},
 ): string {
-	const tone = options.tone ?? "muted";
-	const content = options.bold ? theme.bold(theme.fg(tone, text)) : theme.fg(tone, text);
-	return `[${content}]`;
+	const tone = options.tone ?? "text";
+	const styledValue = options.bold ? theme.bold(theme.fg(tone, value)) : theme.fg(tone, value);
+	return `${theme.fg("dim", label)} ${styledValue}`;
+}
+
+function buildFooterModelLabel(provider: string, model: string): string {
+	return `${theme.fg("muted", provider)} ${theme.fg("dim", "/")} ${theme.bold(theme.fg("accent", model))}`;
 }
 
 const INPUT_ARROW = "↓";
@@ -112,16 +117,12 @@ export class FooterComponent implements Component {
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 		let totalInput = 0;
 		let totalOutput = 0;
-		let totalCacheRead = 0;
-		let totalCacheWrite = 0;
 		let totalCost = 0;
 
 		for (const entry of this.session.sessionManager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				totalInput += entry.message.usage.input;
 				totalOutput += entry.message.usage.output;
-				totalCacheRead += entry.message.usage.cacheRead;
-				totalCacheWrite += entry.message.usage.cacheWrite;
 				totalCost += entry.message.usage.cost.total;
 			}
 		}
@@ -147,30 +148,32 @@ export class FooterComponent implements Component {
 				? `?/${formatTokens(contextWindow)}${autoIndicator}`
 				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
 		if (contextPercentValue > 90) {
-			leftParts.push(buildFooterBadge(`context ${contextPercentDisplay}`, { tone: "error", bold: true }));
+			leftParts.push(buildFooterMetric("ctx", contextPercentDisplay, { tone: "error", bold: true }));
 		} else if (contextPercentValue > 70) {
-			leftParts.push(buildFooterBadge(`context ${contextPercentDisplay}`, { tone: "warning", bold: true }));
+			leftParts.push(buildFooterMetric("ctx", contextPercentDisplay, { tone: "warning", bold: true }));
 		} else {
-			leftParts.push(buildFooterBadge(`context ${contextPercentDisplay}`, { tone: "accent", bold: true }));
+			leftParts.push(buildFooterMetric("ctx", contextPercentDisplay, { tone: "accent", bold: true }));
 		}
 		if (typeof liveContextTokens === "number" && liveContextTokens > 0) {
-			leftParts.push(buildFooterBadge(`live ctx ${formatTokens(liveContextTokens)}`, { tone: "text", bold: true }));
+			leftParts.push(buildFooterMetric("live", formatTokens(liveContextTokens), { tone: "text", bold: true }));
 		}
 		if (
 			typeof liveContextTokens === "number" &&
 			liveContextTokens > 0 &&
 			rawContextTokens > liveContextTokens + Math.max(512, Math.round(liveContextTokens * 0.08))
 		) {
-			leftParts.push(buildFooterBadge(`raw ctx ${formatTokens(rawContextTokens)}`, { tone: "muted", bold: true }));
+			leftParts.push(buildFooterMetric("raw", formatTokens(rawContextTokens), { tone: "muted", bold: true }));
 		}
-		leftParts.push(buildFooterBadge(`Σ${INPUT_ARROW} ${formatTokens(totalInput)}`, { tone: "text", bold: true }));
-		leftParts.push(buildFooterBadge(`Σ${OUTPUT_ARROW} ${formatTokens(totalOutput)}`, { tone: "text", bold: true }));
+		leftParts.push(buildFooterMetric(`in${INPUT_ARROW}`, formatTokens(totalInput), { tone: "text", bold: true }));
+		leftParts.push(buildFooterMetric(`out${OUTPUT_ARROW}`, formatTokens(totalOutput), { tone: "text", bold: true }));
 
 		const costStr = `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
-		leftParts.push(buildFooterBadge(`api ${costStr}`, { tone: usingSubscription ? "accent" : "success", bold: true }));
+		leftParts.push(buildFooterMetric("api", costStr, { tone: usingSubscription ? "accent" : "success", bold: true }));
 
 		if (this.warningMessage) {
-			leftParts.push(buildFooterBadge(`warning ${sanitizeStatusText(this.warningMessage)}`, { tone: "warning", bold: true }));
+			leftParts.push(
+				buildFooterMetric("warn", sanitizeStatusText(this.warningMessage), { tone: "warning", bold: true }),
+			);
 		}
 
 		const extensionStatuses = this.footerData.getExtensionStatuses();
@@ -182,18 +185,15 @@ export class FooterComponent implements Component {
 		}
 
 		const rightParts = [
-			buildFooterBadge(formatProviderLabel(state.model?.provider), { tone: "muted", bold: true }),
-			buildFooterBadge(state.model?.id || "no-model", { tone: "accent", bold: true }),
+			buildFooterModelLabel(formatProviderLabel(state.model?.provider), state.model?.id || "no-model"),
 		];
 		if (state.model?.reasoning && !this.autoCompactEnabled) {
-			rightParts.push(buildFooterBadge("autocompact off", { tone: "warning", bold: true }));
+			rightParts.push(buildFooterMetric("compact", "off", { tone: "warning", bold: true }));
 		}
 
-		const left = leftParts.join(theme.fg("dim", " "));
-		const right = rightParts.join(theme.fg("dim", " "));
+		const left = leftParts.join(theme.fg("borderMuted", "  │  "));
+		const right = rightParts.join(theme.fg("borderMuted", "  │  "));
 
-		return [
-			buildAlignedFooterLine(left, right, width),
-		];
+		return [buildAlignedFooterLine(left, right, width)];
 	}
 }

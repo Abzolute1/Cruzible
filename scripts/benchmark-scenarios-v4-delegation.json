@@ -1,0 +1,376 @@
+{
+	"id": "benchmark-v4-delegation",
+	"name": "Benchmark v4 — delegation suite",
+	"description": "Task-tool (subagent) scenarios: must-delegate exploration with a self-contained answer, and must-delegate implement+verify. Verified by external commands only.",
+	"version": 4.0,
+	"parent": "benchmark-v4",
+	"scenarios": [
+		{
+			"id": "delegation_explore_answer",
+			"category": "delegation",
+			"description": "Delegate a cross-file exploration to an explore subagent and record the answer.",
+			"weight": 3,
+			"verifyCommand": "grep -q \"owner: computeBackoff\" ANSWER.md && grep -q \"base_delay_ms: 250\" ANSWER.md",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. Find which function owns the retry backoff calculation in this workspace, and the exact base delay in milliseconds that the backoff starts from. Note: the delay value is defined in a different file than the function.\n2. Use the task tool (type: explore) to perform the codebase exploration. Do not search or read the repository files yourself — delegate it.\n3. After the subagent returns its answer, write a file named ANSWER.md containing exactly these two lines:\n\nowner: <functionName>\nbase_delay_ms: <number>\n\nConstraints:\n\n- Stay inside this workspace.\n- Only ANSWER.md may be created or changed.\n",
+			"files": [
+				{
+					"path": "src/config.mjs",
+					"lines": [
+						"// Central tuning constants for the platform services.",
+						"export const RETRY_BASE_DELAY_MS = 250;",
+						"export const RETRY_MAX_ATTEMPTS = 4;",
+						"export const CACHE_TTL_SECONDS = 900;",
+						"export const LOG_LEVEL = \"info\";"
+					]
+				},
+				{
+					"path": "src/retry.mjs",
+					"lines": [
+						"import { RETRY_BASE_DELAY_MS, RETRY_MAX_ATTEMPTS } from \"./config.mjs\";",
+						"",
+						"export function computeBackoff(attempt) {",
+						"\tif (attempt < 1) throw new RangeError(\"attempt starts at 1\");",
+						"\treturn RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);",
+						"}",
+						"",
+						"export async function withRetry(fn, onError) {",
+						"\tfor (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {",
+						"\t\ttry {",
+						"\t\t\treturn await fn();",
+						"\t\t} catch (error) {",
+						"\t\t\tif (attempt === RETRY_MAX_ATTEMPTS) throw error;",
+						"\t\t\tonError?.(error, attempt);",
+						"\t\t\tawait new Promise((resolve) => setTimeout(resolve, computeBackoff(attempt)));",
+						"\t\t}",
+						"\t}",
+						"}"
+					]
+				},
+				{
+					"path": "src/auth.mjs",
+					"lines": [
+						"import { createHash } from \"node:crypto\";",
+						"",
+						"export function hashToken(token) {",
+						"\treturn createHash(\"sha256\").update(token).digest(\"hex\");",
+						"}",
+						"",
+						"export function isSessionFresh(session, maxAgeSeconds = 3600) {",
+						"\treturn Date.now() / 1000 - session.createdAt < maxAgeSeconds;",
+						"}"
+					]
+				},
+				{
+					"path": "src/billing.mjs",
+					"lines": [
+						"export function invoiceTotal(lines) {",
+						"\treturn lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);",
+						"}",
+						"",
+						"export function applyDiscount(total, coupon) {",
+						"\tif (!coupon) return total;",
+						"\treturn Math.max(0, total - coupon.amount);",
+						"}"
+					]
+				},
+				{
+					"path": "src/cache.mjs",
+					"lines": [
+						"import { CACHE_TTL_SECONDS } from \"./config.mjs\";",
+						"",
+						"const store = new Map();",
+						"",
+						"export function cacheGet(key) {",
+						"\tconst entry = store.get(key);",
+						"\tif (!entry) return undefined;",
+						"\tif (Date.now() > entry.expiresAt) {",
+						"\t\tstore.delete(key);",
+						"\t\treturn undefined;",
+						"\t}",
+						"\treturn entry.value;",
+						"}",
+						"",
+						"export function cacheSet(key, value) {",
+						"\tstore.set(key, { value, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 });",
+						"}"
+					]
+				},
+				{
+					"path": "src/logging.mjs",
+					"lines": [
+						"import { LOG_LEVEL } from \"./config.mjs\";",
+						"",
+						"const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };",
+						"",
+						"export function log(level, message, fields = {}) {",
+						"\tif (LEVELS[level] < LEVELS[LOG_LEVEL]) return;",
+						"\tconsole.log(JSON.stringify({ level, message, ...fields }));",
+						"}"
+					]
+				},
+				{
+					"path": "src/router.mjs",
+					"lines": [
+						"const routes = new Map();",
+						"",
+						"export function registerRoute(method, path, handler) {",
+						"\troutes.set(`${method.toUpperCase()} ${path}`, handler);",
+						"}",
+						"",
+						"export function resolveRoute(method, path) {",
+						"\treturn routes.get(`${method.toUpperCase()} ${path}`);",
+						"}"
+					]
+				},
+				{
+					"path": "src/session.mjs",
+					"lines": [
+						"import { randomUUID } from \"node:crypto\";",
+						"",
+						"const sessions = new Map();",
+						"",
+						"export function createSession(userId) {",
+						"\tconst session = { id: randomUUID(), userId, createdAt: Date.now() / 1000 };",
+						"\tsessions.set(session.id, session);",
+						"\treturn session;",
+						"}",
+						"",
+						"export function getSession(id) {",
+						"\treturn sessions.get(id);",
+						"}"
+					]
+				},
+				{
+					"path": "src/users.mjs",
+					"lines": [
+						"export function normalizeEmail(email) {",
+						"\treturn email.trim().toLowerCase();",
+						"}",
+						"",
+						"export function displayName(user) {",
+						"\treturn user.name?.trim() || normalizeEmail(user.email).split(\"@\")[0];",
+						"}"
+					]
+				},
+				{
+					"path": "src/orders.mjs",
+					"lines": [
+						"export function orderStatusFlow() {",
+						"\treturn [\"pending\", \"paid\", \"fulfilled\", \"closed\"];",
+						"}",
+						"",
+						"export function canTransition(from, to) {",
+						"\tconst flow = orderStatusFlow();",
+						"\treturn flow.indexOf(to) === flow.indexOf(from) + 1;",
+						"}"
+					]
+				},
+				{
+					"path": "src/metrics.mjs",
+					"lines": [
+						"const counters = new Map();",
+						"",
+						"export function increment(name, amount = 1) {",
+						"\tcounters.set(name, (counters.get(name) ?? 0) + amount);",
+						"}",
+						"",
+						"export function snapshot() {",
+						"\treturn Object.fromEntries(counters);",
+						"}"
+					]
+				},
+				{
+					"path": "src/index.mjs",
+					"lines": [
+						"import { withRetry } from \"./retry.mjs\";",
+						"import { log } from \"./logging.mjs\";",
+						"",
+						"export async function startService() {",
+						"\tlog(\"info\", \"service starting\");",
+						"\treturn withRetry(async () => ({ ok: true }));",
+						"}"
+					]
+				}
+			]
+		},
+		{
+			"id": "delegation_implement_verify",
+			"category": "delegation",
+			"description": "Delegate a bug fix to an implement subagent and the noisy test run to a verify subagent.",
+			"weight": 4,
+			"verifyCommand": "npm test",
+			"expectedChangedFilesMax": 1,
+			"task": "You are in a self-contained benchmark workspace.\n\nTask:\n\n1. A bug in src/paginate.mjs makes pagination lose items on some pages. Find and fix it so the whole test suite passes.\n2. Use the task tool: delegate the code change to an implement subagent, then delegate the test run (`npm test`) to a verify subagent.\n3. Do not edit files directly yourself and do not edit the tests.\n\nConstraints:\n\n- Stay inside this workspace.\n- The intended verification command is: `npm test`\n",
+			"files": [
+				{
+					"path": "package.json",
+					"lines": [
+						"{",
+						"  \"name\": \"pagination-service\",",
+						"  \"private\": true,",
+						"  \"type\": \"module\",",
+						"  \"scripts\": {",
+						"    \"test\": \"node --test\"",
+						"  }",
+						"}"
+					]
+				},
+				{
+					"path": "src/paginate.mjs",
+					"lines": [
+						"export function paginate(items, pageSize, page) {",
+						"\tif (pageSize < 1) throw new RangeError(\"pageSize must be >= 1\");",
+						"\tif (page < 1) throw new RangeError(\"page must be >= 1\");",
+						"\tconst start = (page - 1) * pageSize;",
+						"\tconst end = Math.min(start + pageSize, items.length - 1);",
+						"\treturn {",
+						"\t\titems: items.slice(start, end),",
+						"\t\tpage,",
+						"\t\tpageSize,",
+						"\t\ttotal: items.length,",
+						"\t};",
+						"}"
+					]
+				},
+				{
+					"path": "src/users.mjs",
+					"lines": [
+						"export function normalizeEmail(email) {",
+						"\treturn email.trim().toLowerCase();",
+						"}",
+						"",
+						"export function displayName(user) {",
+						"\treturn user.name?.trim() || normalizeEmail(user.email).split(\"@\")[0];",
+						"}"
+					]
+				},
+				{
+					"path": "src/format.mjs",
+					"lines": [
+						"export function formatCurrency(cents, currency = \"USD\") {",
+						"\treturn new Intl.NumberFormat(\"en-US\", { style: \"currency\", currency }).format(cents / 100);",
+						"}",
+						"",
+						"export function formatList(items) {",
+						"\tif (items.length <= 2) return items.join(\" and \");",
+						"\treturn `${items.slice(0, -1).join(\", \")}, and ${items[items.length - 1]}`;",
+						"}"
+					]
+				},
+				{
+					"path": "src/inventory.mjs",
+					"lines": [
+						"export function totalStock(items) {",
+						"\treturn items.reduce((sum, item) => sum + item.stock, 0);",
+						"}",
+						"",
+						"export function lowStock(items, threshold = 5) {",
+						"\treturn items.filter((item) => item.stock < threshold);",
+						"}"
+					]
+				},
+				{
+					"path": "test/paginate.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"import { paginate } from \"../src/paginate.mjs\";",
+						"",
+						"const sample = Array.from({ length: 25 }, (_, index) => index + 1);",
+						"",
+						"test(\"first page returns the leading window\", () => {",
+						"\tassert.deepEqual(paginate(sample, 10, 1).items, sample.slice(0, 10));",
+						"});",
+						"",
+						"test(\"middle page returns the middle window\", () => {",
+						"\tassert.deepEqual(paginate(sample, 10, 2).items, sample.slice(10, 20));",
+						"});",
+						"",
+						"test(\"partial last page returns the remaining items\", () => {",
+						"\tassert.deepEqual(paginate(sample, 10, 3).items, sample.slice(20));",
+						"});",
+						"",
+						"test(\"exact-boundary last page keeps every item\", () => {",
+						"\tconst even = Array.from({ length: 20 }, (_, index) => index + 1);",
+						"\tassert.deepEqual(paginate(even, 10, 2).items, even.slice(10));",
+						"});",
+						"",
+						"test(\"single page shorter than the page size returns all items\", () => {",
+						"\tassert.deepEqual(paginate([1, 2, 3], 10, 1).items, [1, 2, 3]);",
+						"});",
+						"",
+						"test(\"metadata is preserved\", () => {",
+						"\tconst result = paginate(sample, 10, 2);",
+						"\tassert.equal(result.page, 2);",
+						"\tassert.equal(result.pageSize, 10);",
+						"\tassert.equal(result.total, 25);",
+						"});",
+						"",
+						"test(\"invalid arguments throw\", () => {",
+						"\tassert.throws(() => paginate(sample, 0, 1), RangeError);",
+						"\tassert.throws(() => paginate(sample, 10, 0), RangeError);",
+						"});"
+					]
+				},
+				{
+					"path": "test/users.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"import { displayName, normalizeEmail } from \"../src/users.mjs\";",
+						"",
+						"test(\"normalizeEmail trims and lowercases\", () => {",
+						"\tassert.equal(normalizeEmail(\"  Ada@Example.COM \"), \"ada@example.com\");",
+						"});",
+						"",
+						"test(\"displayName prefers the explicit name\", () => {",
+						"\tassert.equal(displayName({ name: \"Ada\", email: \"ada@example.com\" }), \"Ada\");",
+						"});",
+						"",
+						"test(\"displayName falls back to the email local part\", () => {",
+						"\tassert.equal(displayName({ email: \"grace@example.com\" }), \"grace\");",
+						"});"
+					]
+				},
+				{
+					"path": "test/format.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"import { formatCurrency, formatList } from \"../src/format.mjs\";",
+						"",
+						"test(\"formatCurrency renders cents\", () => {",
+						"\tassert.equal(formatCurrency(12345), \"$123.45\");",
+						"});",
+						"",
+						"test(\"formatList joins pairs with and\", () => {",
+						"\tassert.equal(formatList([\"a\", \"b\"]), \"a and b\");",
+						"});",
+						"",
+						"test(\"formatList joins longer lists with commas\", () => {",
+						"\tassert.equal(formatList([\"a\", \"b\", \"c\"]), \"a, b, and c\");",
+						"});"
+					]
+				},
+				{
+					"path": "test/inventory.test.mjs",
+					"lines": [
+						"import test from \"node:test\";",
+						"import assert from \"node:assert/strict\";",
+						"import { lowStock, totalStock } from \"../src/inventory.mjs\";",
+						"",
+						"test(\"totalStock sums stock\", () => {",
+						"\tassert.equal(totalStock([{ stock: 3 }, { stock: 4 }]), 7);",
+						"});",
+						"",
+						"test(\"lowStock filters below the threshold\", () => {",
+						"\tconst items = [{ stock: 1 }, { stock: 9 }];",
+						"\tassert.deepEqual(lowStock(items), [{ stock: 1 }]);",
+						"});"
+					]
+				}
+			]
+		}
+	]
+}

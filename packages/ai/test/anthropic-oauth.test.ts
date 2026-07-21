@@ -73,6 +73,32 @@ describe.sequential("Anthropic OAuth", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	it("rejects a mismatched OAuth state from manual input", async () => {
+		let authUrl = "";
+		const fetchMock = vi.fn(async (): Promise<Response> => {
+			throw new Error("fetch must not be called when state validation fails");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			loginAnthropic({
+				onAuth: (info) => {
+					authUrl = info.url;
+				},
+				onPrompt: async () => "",
+				onManualCodeInput: async () => {
+					const url = new URL(authUrl);
+					const redirectUri = url.searchParams.get("redirect_uri");
+					if (!redirectUri) {
+						throw new Error("Missing redirect_uri in auth URL");
+					}
+					return `${redirectUri}?code=manual-code&state=forged-state`;
+				},
+			}),
+		).rejects.toThrow("OAuth state mismatch");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("omits scope from refresh token requests", async () => {
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
 			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");

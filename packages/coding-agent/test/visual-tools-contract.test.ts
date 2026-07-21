@@ -8,7 +8,10 @@ vi.mock("../src/core/tools/visual/engine.js", () => ({
 	runScreenshot: runScreenshotMock,
 }));
 
-import { createInteractThenScreenshotToolDefinition, createScreenshotUrlToolDefinition } from "../src/core/tools/visual/tools.js";
+import {
+	createInteractThenScreenshotToolDefinition,
+	createScreenshotUrlToolDefinition,
+} from "../src/core/tools/visual/tools.js";
 
 describe("visual tool hardening", () => {
 	afterEach(() => {
@@ -47,7 +50,12 @@ describe("visual tool hardening", () => {
 		);
 
 		expect(runScreenshotMock).not.toHaveBeenCalled();
-		expect(result.content[0]?.text).toContain("Action 1 (click) is missing a non-empty selector.");
-		expect((result.details as Record<string, unknown>).error).toBe("Action 1 (click) is missing a non-empty selector.");
+		const first = result.content[0];
+		expect(first?.type === "text" && first.text.includes("Action 1 (click) is missing a non-empty selector.")).toBe(
+			true,
+		);
+		expect((result.details as Record<string, unknown>).error).toBe(
+			"Action 1 (click) is missing a non-empty selector.",
+		);
 	});
 });

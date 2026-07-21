@@ -42,9 +42,6 @@ export interface GoogleOptions extends StreamOptions {
 	};
 }
 
-// Counter for generating unique tool call IDs
-let toolCallCounter = 0;
-
 export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions> = (
 	model: Model<"google-generative-ai">,
 	context: Context,
@@ -53,6 +50,8 @@ export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions>
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		// Per-request counter for generating unique tool call IDs
+		let toolCallCounter = 0;
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -203,7 +202,11 @@ export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions>
 				}
 
 				if (candidate?.finishReason) {
-					output.stopReason = mapStopReason(candidate.finishReason);
+					const finishReasonResult = mapStopReason(candidate.finishReason);
+					output.stopReason = finishReasonResult.stopReason;
+					if (finishReasonResult.errorMessage) {
+						output.errorMessage = finishReasonResult.errorMessage;
+					}
 					if (output.content.some((b) => b.type === "toolCall")) {
 						output.stopReason = "toolUse";
 					}
@@ -252,19 +255,16 @@ export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions>
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			// Remove internal index property used during streaming
-			for (const block of output.content) {
-				if ("index" in block) {
-					delete (block as { index?: number }).index;
-				}
-			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });

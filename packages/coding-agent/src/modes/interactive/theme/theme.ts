@@ -31,15 +31,15 @@ const ThemeJsonSchema = Type.Object({
 		borderMuted: ColorValueSchema,
 		success: ColorValueSchema,
 		error: ColorValueSchema,
-			warning: ColorValueSchema,
-			muted: ColorValueSchema,
-			dim: ColorValueSchema,
-			text: ColorValueSchema,
-			thinkingText: ColorValueSchema,
-			accentShimmer: ColorValueSchema,
-			successShimmer: ColorValueSchema,
-			bashModeShimmer: ColorValueSchema,
-			// Backgrounds & Content Text (11 colors)
+		warning: ColorValueSchema,
+		muted: ColorValueSchema,
+		dim: ColorValueSchema,
+		text: ColorValueSchema,
+		thinkingText: ColorValueSchema,
+		accentShimmer: ColorValueSchema,
+		successShimmer: ColorValueSchema,
+		bashModeShimmer: ColorValueSchema,
+		// Backgrounds & Content Text (11 colors)
 		selectedBg: ColorValueSchema,
 		userMessageBg: ColorValueSchema,
 		userMessageText: ColorValueSchema,
@@ -62,10 +62,14 @@ const ThemeJsonSchema = Type.Object({
 		mdQuoteBorder: ColorValueSchema,
 		mdHr: ColorValueSchema,
 		mdListBullet: ColorValueSchema,
-		// Tool Diffs (3 colors)
+		// Tool Diffs (3 required colors)
 		toolDiffAdded: ColorValueSchema,
 		toolDiffRemoved: ColorValueSchema,
 		toolDiffContext: ColorValueSchema,
+		// Tool Diffs (optional colors, fall back in createTheme when absent)
+		toolDiffLineNum: Type.Optional(ColorValueSchema),
+		toolDiffAddedBg: Type.Optional(ColorValueSchema),
+		toolDiffRemovedBg: Type.Optional(ColorValueSchema),
 		// Syntax Highlighting (9 colors)
 		syntaxComment: ColorValueSchema,
 		syntaxKeyword: ColorValueSchema,
@@ -132,6 +136,7 @@ export type ThemeColor =
 	| "toolDiffAdded"
 	| "toolDiffRemoved"
 	| "toolDiffContext"
+	| "toolDiffLineNum"
 	| "syntaxComment"
 	| "syntaxKeyword"
 	| "syntaxFunction"
@@ -155,7 +160,9 @@ export type ThemeBg =
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
-	| "toolErrorBg";
+	| "toolErrorBg"
+	| "toolDiffAddedBg"
+	| "toolDiffRemovedBg";
 
 type ColorMode = "truecolor" | "256color";
 
@@ -595,6 +602,8 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		"toolPendingBg",
 		"toolSuccessBg",
 		"toolErrorBg",
+		"toolDiffAddedBg",
+		"toolDiffRemovedBg",
 	]);
 	for (const [key, value] of Object.entries(resolvedColors)) {
 		if (bgColorKeys.has(key)) {
@@ -603,6 +612,10 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 			fgColors[key as ThemeColor] = value;
 		}
 	}
+	// Fallbacks for optional diff colors so older themes keep working
+	fgColors.toolDiffLineNum ??= fgColors.dim;
+	bgColors.toolDiffAddedBg ??= bgColors.toolSuccessBg;
+	bgColors.toolDiffRemovedBg ??= bgColors.toolErrorBg;
 	return new Theme(fgColors, bgColors, colorMode, {
 		name: themeJson.name,
 		sourcePath,

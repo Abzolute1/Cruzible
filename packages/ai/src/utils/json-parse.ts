@@ -26,3 +26,24 @@ export function parseStreamingJson<T = any>(partialJson: string | undefined): T 
 		}
 	}
 }
+
+/**
+ * Strictly parses complete tool-call argument JSON at stream finalization.
+ * Unlike parseStreamingJson, this never closes open strings or guesses, so a
+ * truncated stream is reported as malformed instead of silently shortened.
+ *
+ * @param json The final, complete JSON string for the tool-call arguments
+ * @returns The parsed arguments, with `malformed: true` (and empty arguments)
+ *          when strict parsing fails
+ */
+export function parseFinalToolCallJson<T = any>(json: string | undefined): { arguments: T; malformed: boolean } {
+	if (!json || json.trim() === "") {
+		return { arguments: {} as T, malformed: false };
+	}
+
+	try {
+		return { arguments: JSON.parse(json) as T, malformed: false };
+	} catch {
+		return { arguments: {} as T, malformed: true };
+	}
+}

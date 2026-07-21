@@ -63,6 +63,9 @@
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
 		"toolDiffContext": "gray",
+		"toolDiffLineNum": "dimGray",
+		"toolDiffAddedBg": "#2a4531",
+		"toolDiffRemovedBg": "#4a3031",
 
 		"syntaxComment": "#6A9955",
 		"syntaxKeyword": "#569CD6",

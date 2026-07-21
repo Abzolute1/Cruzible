@@ -13,11 +13,19 @@ export class SvgArtifact extends ArtifactElement {
 	@property() override filename = "";
 
 	private _content = "";
+	private _objectUrl: string | undefined;
+
 	override get content(): string {
 		return this._content;
 	}
 	override set content(value: string) {
 		this._content = value;
+		if (this._objectUrl) {
+			URL.revokeObjectURL(this._objectUrl);
+		}
+		// Render via blob-URL <img>: scripts, event handlers and external refs in the
+		// (model-generated, untrusted) SVG do not run in image context.
+		this._objectUrl = URL.createObjectURL(new Blob([value], { type: "image/svg+xml" }));
 		this.requestUpdate();
 	}
 
@@ -25,6 +33,14 @@ export class SvgArtifact extends ArtifactElement {
 
 	protected override createRenderRoot(): HTMLElement | DocumentFragment {
 		return this; // light DOM
+	}
+
+	override disconnectedCallback(): void {
+		if (this._objectUrl) {
+			URL.revokeObjectURL(this._objectUrl);
+			this._objectUrl = undefined;
+		}
+		super.disconnectedCallback();
 	}
 
 	private setViewMode(mode: "preview" | "code") {
@@ -59,7 +75,7 @@ export class SvgArtifact extends ArtifactElement {
 					${
 						this.viewMode === "preview"
 							? html`<div class="h-full flex items-center justify-center">
-								${unsafeHTML(this.content.replace(/<svg(\s|>)/i, (_m, p1) => `<svg class="w-full h-full"${p1}`))}
+								<img src=${this._objectUrl} class="w-full h-full object-contain" alt="" />
 							</div>`
 							: html`<pre class="m-0 p-4 text-xs"><code class="hljs language-xml">${unsafeHTML(
 									hljs.highlight(this.content, { language: "xml", ignoreIllegals: true }).value,

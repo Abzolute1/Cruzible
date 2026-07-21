@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@ag1/ai";
-import { AgentSessionRetryCoordinator } from "../src/core/agent-session-retry-coordinator.js";
+import { describe, expect, it, vi } from "vitest";
 import { AgentSessionRecoveryArbiter } from "../src/core/agent-session-recovery-arbiter.js";
+import { AgentSessionRetryCoordinator } from "../src/core/agent-session-retry-coordinator.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
 function createRetryableErrorMessage(): AssistantMessage {
@@ -25,6 +26,14 @@ function createRetryableErrorMessage(): AssistantMessage {
 	};
 }
 
+function createUserMessage(text: string) {
+	return {
+		role: "user" as const,
+		content: [{ type: "text" as const, text }],
+		timestamp: Date.now(),
+	};
+}
+
 describe("AgentSessionRetryCoordinator", () => {
 	it("restores the previous assistant message and emits failure when continuation rejects", async () => {
 		const errorMessage = createRetryableErrorMessage();
@@ -36,6 +45,7 @@ describe("AgentSessionRetryCoordinator", () => {
 		const events: any[] = [];
 		const coordinator = new AgentSessionRetryCoordinator({
 			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -73,6 +83,7 @@ describe("AgentSessionRetryCoordinator", () => {
 		const events: any[] = [];
 		const coordinator = new AgentSessionRetryCoordinator({
 			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -84,11 +95,14 @@ describe("AgentSessionRetryCoordinator", () => {
 		const started = await coordinator.handleRetryableError(errorMessage);
 		expect(started).toBe(true);
 
-		agent.state.messages.push({
-			role: "user",
-			content: [{ type: "text", text: "newer prompt" }],
-			timestamp: Date.now() + 1,
-		});
+		agent.state.messages = [
+			...agent.state.messages,
+			{
+				role: "user",
+				content: [{ type: "text", text: "newer prompt" }],
+				timestamp: Date.now() + 1,
+			} as any,
+		];
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -117,6 +131,7 @@ describe("AgentSessionRetryCoordinator", () => {
 				continue: vi.fn(),
 				waitForIdle: vi.fn(),
 			} as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -150,6 +165,7 @@ describe("AgentSessionRetryCoordinator", () => {
 		const events: any[] = [];
 		const coordinator = new AgentSessionRetryCoordinator({
 			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -198,6 +214,7 @@ describe("AgentSessionRetryCoordinator", () => {
 		const events: any[] = [];
 		const coordinator = new AgentSessionRetryCoordinator({
 			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -248,6 +265,7 @@ describe("AgentSessionRetryCoordinator", () => {
 		recoveryArbiter.tryArm("compaction");
 		const coordinator = new AgentSessionRetryCoordinator({
 			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory({
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			}),
@@ -276,5 +294,78 @@ describe("AgentSessionRetryCoordinator", () => {
 			}),
 		]);
 		expect(recoveryArbiter.owner).toBe("compaction");
+	});
+
+	it("branches around the persisted failed message so it cannot resurface on resume", async () => {
+		const userMessage = createUserMessage("hello");
+		const errorMessage = createRetryableErrorMessage();
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(userMessage);
+		sessionManager.appendMessage(errorMessage);
+		const failedEntryId = sessionManager.getLeafId();
+
+		const agent = {
+			state: { messages: [userMessage, errorMessage], isStreaming: false },
+			continue: vi.fn().mockResolvedValue(undefined),
+			waitForIdle: vi.fn().mockResolvedValue(undefined),
+		};
+		const coordinator = new AgentSessionRetryCoordinator({
+			agent: agent as any,
+			sessionManager,
+			settingsManager: SettingsManager.inMemory({
+				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+			}),
+			getContextWindow: () => undefined,
+			emit: vi.fn(),
+			recoveryArbiter: new AgentSessionRecoveryArbiter(),
+		});
+
+		const started = await coordinator.handleRetryableError(errorMessage);
+		expect(started).toBe(true);
+
+		// Live state is rebuilt from the session file without the failed message
+		expect(agent.state.messages).toEqual([userMessage]);
+		// The active branch excludes the failed entry; the entry stays in the
+		// file as an abandoned branch.
+		expect(sessionManager.getLeafId()).not.toBe(failedEntryId);
+		expect(sessionManager.getEntry(failedEntryId!)).toBeDefined();
+		expect(sessionManager.buildSessionContext().messages).toEqual([userMessage]);
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(agent.continue).toHaveBeenCalledTimes(1);
+	});
+
+	it("restores the failed branch when the retried continuation rejects", async () => {
+		const userMessage = createUserMessage("hello");
+		const errorMessage = createRetryableErrorMessage();
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(userMessage);
+		sessionManager.appendMessage(errorMessage);
+		const failedEntryId = sessionManager.getLeafId();
+
+		const agent = {
+			state: { messages: [userMessage, errorMessage], isStreaming: false },
+			continue: vi.fn().mockRejectedValue(new Error("continue failed")),
+			waitForIdle: vi.fn().mockResolvedValue(undefined),
+		};
+		const coordinator = new AgentSessionRetryCoordinator({
+			agent: agent as any,
+			sessionManager,
+			settingsManager: SettingsManager.inMemory({
+				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+			}),
+			getContextWindow: () => undefined,
+			emit: vi.fn(),
+			recoveryArbiter: new AgentSessionRecoveryArbiter(),
+		});
+
+		const started = await coordinator.handleRetryableError(errorMessage);
+		expect(started).toBe(true);
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(agent.continue).toHaveBeenCalledTimes(1);
+		expect(agent.state.messages.at(-1)).toBe(errorMessage);
+		expect(sessionManager.getLeafId()).toBe(failedEntryId);
 	});
 });

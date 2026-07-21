@@ -125,6 +125,23 @@ describe("SettingsManager", () => {
 			expect(manager.getPlanningModel()).toBe("openai/gpt-5.4");
 			expect(manager.getExecutionModel()).toBe("anthropic/claude-opus-4-5");
 		});
+
+		it("should persist and clear the verifier model route", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setVerifierModel("openai/gpt-5.4");
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.verifierModel).toBe("openai/gpt-5.4");
+			expect(manager.getVerifierModel()).toBe("openai/gpt-5.4");
+
+			manager.setVerifierModel(undefined);
+			await manager.flush();
+			expect(manager.getVerifierModel()).toBeUndefined();
+		});
 	});
 
 	describe("packages migration", () => {

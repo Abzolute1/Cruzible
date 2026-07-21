@@ -1,4 +1,15 @@
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	linkSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -126,6 +137,66 @@ describe("autonomous workspace isolation", () => {
 
 		expect(readFileSync(join(prepared.workspaceRoot, "README.md"), "utf8")).toBe("hello");
 		expect(existsSync(join(prepared.workspaceRoot, ".ag1"))).toBe(false);
+	});
+
+	test("preserves file mode bits in copy-based workspaces", async () => {
+		const sourceRoot = join(tempDir, "source");
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const scriptPath = join(sourceRoot, "run.sh");
+		writeFileSync(scriptPath, "#!/bin/sh\necho hi\n");
+		chmodSync(scriptPath, 0o755);
+		writeFileSync(join(sourceRoot, "notes.txt"), "plain");
+		chmodSync(join(sourceRoot, "notes.txt"), 0o640);
+
+		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
+
+		const prepared = await prepareAutonomousWorkspace({ sourceCwd: sourceRoot, agentDir });
+
+		expect(lstatSync(join(prepared.workspaceRoot, "run.sh")).mode & 0o777).toBe(0o755);
+		expect(lstatSync(join(prepared.workspaceRoot, "notes.txt")).mode & 0o777).toBe(0o640);
+	});
+
+	test("hardlinked source files are copied as independent inodes", async () => {
+		const sourceRoot = join(tempDir, "source");
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const original = join(sourceRoot, "original.txt");
+		writeFileSync(original, "shared content");
+		linkSync(original, join(sourceRoot, "hardlink.txt"));
+
+		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
+
+		const prepared = await prepareAutonomousWorkspace({ sourceCwd: sourceRoot, agentDir });
+
+		// Editing the workspace copy must not propagate through the old link.
+		writeFileSync(join(prepared.workspaceRoot, "hardlink.txt"), "mutated in workspace");
+		expect(readFileSync(original, "utf8")).toBe("shared content");
+		expect(lstatSync(join(prepared.workspaceRoot, "hardlink.txt")).nlink).toBe(1);
+	});
+
+	test("diffs by size and content hash, including files larger than the hash chunk", async () => {
+		const sourceRoot = join(tempDir, "source");
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(sourceRoot, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(sourceRoot, "keep.txt"), "unchanged");
+		writeFileSync(join(sourceRoot, "change-me.txt"), "before");
+
+		execCommandMock.mockResolvedValue({ stdout: "", stderr: "not git", code: 1, killed: false });
+
+		const prepared = await prepareAutonomousWorkspace({ sourceCwd: sourceRoot, agentDir });
+
+		writeFileSync(join(prepared.workspaceRoot, "change-me.txt"), "after");
+		writeFileSync(join(prepared.workspaceRoot, "big-asset.bin"), Buffer.alloc(10 * 1024 * 1024, 7));
+		rmSync(join(prepared.workspaceRoot, "keep.txt"));
+
+		const diff = diffAutonomousWorkspace(prepared);
+		expect(diff.added).toEqual(["big-asset.bin"]);
+		expect(diff.modified).toEqual(["change-me.txt"]);
+		expect(diff.deleted).toEqual(["keep.txt"]);
 	});
 
 	test("copies safe in-tree file symlinks as regular files", async () => {

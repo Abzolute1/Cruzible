@@ -103,13 +103,7 @@ describe("edit tool prepareArguments", () => {
 	it("normalizes simple unified diff payloads", () => {
 		const definition = createEditToolDefinition(process.cwd());
 		const prepared = definition.prepareArguments!({
-			diff: [
-				"--- a/file.txt",
-				"+++ b/file.txt",
-				"@@ -1 +1 @@",
-				"-before",
-				"+after",
-			].join("\n"),
+			diff: ["--- a/file.txt", "+++ b/file.txt", "@@ -1 +1 @@", "-before", "+after"].join("\n"),
 		});
 		expect(prepared).toEqual({
 			path: "file.txt",

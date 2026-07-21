@@ -1,12 +1,13 @@
 import type { SessionStats } from "../../core/agent-session.js";
-import type { ResearchArtifactSnapshot } from "../../core/research-artifacts.js";
 import type {
 	ActivatedAutonomousWorkspace,
 	AutonomousWorkspaceDiff,
 	PreparedAutonomousWorkspace,
 	PromotedAutonomousWorkspace,
 } from "../../core/auton/workspace.js";
+import type { ResearchArtifactSnapshot } from "../../core/research-artifacts.js";
 import { limitPreviewLines } from "../../core/tools/research-output.js";
+import { formatTokens } from "./components/model-metrics.js";
 import { theme } from "./theme/theme.js";
 
 export function formatSessionInfo(options: {
@@ -54,6 +55,18 @@ export function formatSessionInfo(options: {
 		info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
 	}
 	info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
+	if (stats.contextUsage?.attribution) {
+		const attribution = stats.contextUsage.attribution;
+		info += `\n${theme.bold("Context Attribution")}\n`;
+		info += `${theme.fg("dim", "System Prompt:")} ${formatTokens(attribution.systemPrompt)}\n`;
+		info += `${theme.fg("dim", "Tool Schemas:")} ${formatTokens(attribution.toolSchemas)}\n`;
+		info += `${theme.fg("dim", "Retained Transcript:")} ${formatTokens(attribution.retainedTranscript)}\n`;
+		info += `${theme.fg("dim", "Summaries:")} ${formatTokens(attribution.summaries)}\n`;
+		info += `${theme.fg("dim", "Tool Outputs:")} ${formatTokens(attribution.toolOutputs)}\n`;
+		if (attribution.overhead > 0) {
+			info += `${theme.fg("dim", "Provider/Serialization Delta:")} ${formatTokens(attribution.overhead)}\n`;
+		}
+	}
 
 	if (stats.cost > 0) {
 		info += `\n${theme.bold("Cost")}\n`;
@@ -143,8 +156,7 @@ export function formatWorkspacePromotionSummary(
 	promoted: PromotedAutonomousWorkspace,
 	options: { deleteMissing: boolean },
 ): string {
-	const summary =
-		promoted.copiedEntries.length > 0 ? promoted.copiedEntries.join(", ") : "(no entries copied)";
+	const summary = promoted.copiedEntries.length > 0 ? promoted.copiedEntries.join(", ") : "(no entries copied)";
 	const deletedSummary =
 		promoted.deletedEntries.length > 0 ? `\nDeleted entries: ${promoted.deletedEntries.join(", ")}` : "";
 	return `Promoted autonomous workspace into ${promoted.sourceCwd}\nCopied entries: ${summary}${deletedSummary}\nNote: promotion overlays files${options.deleteMissing ? " and removed entries missing from the sandbox." : " and does not delete files missing from the sandbox."}`;

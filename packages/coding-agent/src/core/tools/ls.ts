@@ -106,17 +106,6 @@ function formatLsNotice(limit: number, options: { entryLimitReached?: boolean; b
 	return `[${parts.join("; ")}]`;
 }
 
-function formatLsFollowupNotice(
-	results: string[],
-	options: { entryLimitReached?: boolean; byteTruncated?: boolean },
-): string | undefined {
-	if (results.length === 0 || options.entryLimitReached || options.byteTruncated) return undefined;
-	if (results.length <= 8) {
-		return "[directory listed completely; if the user asked which files are here, answer now from this listing instead of running find or grep]";
-	}
-	return undefined;
-}
-
 export function createLsToolDefinition(
 	cwd: string,
 	options?: LsToolOptions,
@@ -229,11 +218,6 @@ export function createLsToolDefinition(
 								byteTruncated: truncation.truncated,
 							})}`;
 						}
-						const followupNotice = formatLsFollowupNotice(results, {
-							entryLimitReached,
-							byteTruncated: truncation.truncated,
-						});
-						if (followupNotice) output += `\n\n${followupNotice}`;
 
 						resolve({
 							content: [{ type: "text", text: output }],

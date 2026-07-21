@@ -397,6 +397,46 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedPaste, ["Hello 世界 🎉"]);
 			assert.deepStrictEqual(emittedSequences, []);
 		});
+
+		it("should flush an unterminated paste after the sequence timeout", async () => {
+			processInput("\x1b[200~truncated content");
+			assert.deepStrictEqual(emittedPaste, []);
+
+			// No end marker ever arrives; the timeout must flush the partial paste
+			await wait(20);
+
+			assert.deepStrictEqual(emittedPaste, ["truncated content"]);
+		});
+
+		it("should resume normal input processing after an unterminated paste times out", async () => {
+			processInput("\x1b[200~partial");
+			await wait(20);
+			assert.deepStrictEqual(emittedPaste, ["partial"]);
+
+			// Editor must not stay deadlocked in paste mode
+			processInput("a");
+			assert.deepStrictEqual(emittedSequences, ["a"]);
+		});
+
+		it("should keep accumulating paste chunks that arrive within the timeout", async () => {
+			processInput("\x1b[200~hello ");
+			await wait(5);
+			processInput("world\x1b[201~");
+
+			assert.deepStrictEqual(emittedPaste, ["hello world"]);
+			assert.deepStrictEqual(emittedSequences, []);
+		});
+
+		it("should terminate and flush a paste exceeding the size cap", () => {
+			processInput(`\x1b[200~${"x".repeat(10 * 1024 * 1024)}`);
+
+			assert.strictEqual(emittedPaste.length, 1);
+			assert.strictEqual(emittedPaste[0]!.length, 10 * 1024 * 1024);
+
+			// Paste mode is exited; subsequent input is processed normally
+			processInput("a");
+			assert.deepStrictEqual(emittedSequences, ["a"]);
+		});
 	});
 
 	describe("Destroy", () => {

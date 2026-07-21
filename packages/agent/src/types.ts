@@ -192,6 +192,18 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	toolExecution?: ToolExecutionMode;
 
 	/**
+	 * Optional cap on the number of assistant turns in a single run.
+	 *
+	 * Circuit breaker for models that keep looping on tool calls. When the limit
+	 * is reached, the loop ends through the normal end path with a synthetic error
+	 * assistant message (stopReason "error", errorMessage describing the limit)
+	 * instead of starting another turn.
+	 *
+	 * Default: unlimited.
+	 */
+	maxTurns?: number;
+
+	/**
 	 * Called before a tool is executed, after arguments have been validated.
 	 *
 	 * Return `{ block: true }` to prevent execution. The loop emits an error tool result instead.
@@ -248,7 +260,8 @@ export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessag
  * Public agent state.
  *
  * `tools` and `messages` use accessor properties so implementations can copy
- * assigned arrays before storing them.
+ * arrays on both read and assignment. Mutating a returned array does not
+ * affect the agent.
  */
 export interface AgentState {
 	/** System prompt sent with each model request. */
@@ -257,10 +270,10 @@ export interface AgentState {
 	model: Model<any>;
 	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
-	/** Available tools. Assigning a new array copies the top-level array. */
+	/** Available tools. Reading or assigning copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
-	/** Conversation transcript. Assigning a new array copies the top-level array. */
+	/** Conversation transcript. Reading or assigning copies the top-level array. */
 	set messages(messages: AgentMessage[]);
 	get messages(): AgentMessage[];
 	/**

@@ -187,11 +187,9 @@ export class SettingsList implements Component {
 		} else if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel();
 		} else if (this.searchEnabled && this.searchInput) {
-			const sanitized = data.replace(/ /g, "");
-			if (!sanitized) {
-				return;
-			}
-			this.searchInput.handleInput(sanitized);
+			// A single space keystroke is consumed above by activateItem; forward
+			// everything else (including pasted multi-word queries) with spaces intact.
+			this.searchInput.handleInput(data);
 			this.applyFilter(this.searchInput.getValue());
 		}
 	}

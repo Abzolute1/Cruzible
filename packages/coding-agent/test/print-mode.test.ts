@@ -260,9 +260,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -300,7 +305,12 @@ describe("runPrintMode", () => {
 						type: "message_end",
 						message: {
 							...createAssistantMessage({ stopReason: "length" }),
-							content: [{ type: "thinking", thinking: "I should first inspect the likely scripts directory before answering." }],
+							content: [
+								{
+									type: "thinking",
+									thinking: "I should first inspect the likely scripts directory before answering.",
+								},
+							],
 						},
 					});
 					setTimeout(() => {
@@ -308,11 +318,18 @@ describe("runPrintMode", () => {
 							type: "message_end",
 							message: {
 								...createAssistantMessage({ stopReason: "length" }),
-								content: [{ type: "thinking", thinking: "I should search in the scripts directory for the archive command." }],
+								content: [
+									{
+										type: "thinking",
+										thinking: "I should search in the scripts directory for the archive command.",
+									},
+								],
 							},
 						});
 						setTimeout(() => {
-							const finalMessage = createAssistantMessage({ text: "The archive command is defined in `scripts/harness-benchmark-archive.mjs`." });
+							const finalMessage = createAssistantMessage({
+								text: "The archive command is defined in `scripts/harness-benchmark-archive.mjs`.",
+							});
 							runtimeHost.session.state.messages = [finalMessage];
 							subscriptions.emit({ type: "message_end", message: finalMessage });
 							subscriptions.emit({ type: "agent_end" });
@@ -326,16 +343,22 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
 
 		const exitPromise = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "which file defines the script that archives benchmark runs into /home/alex/Desktop/Benchmark?",
+			initialMessage:
+				"which file defines the script that archives benchmark runs into /home/alex/Desktop/Benchmark?",
 		});
 
 		await vi.advanceTimersByTimeAsync(250);
@@ -346,14 +369,18 @@ describe("runPrintMode", () => {
 		expect(runtimeHost.session.sendCustomMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "runtime_continuation_state",
-				content: expect.stringContaining("Continue immediately with either one concrete next tool call or a direct answer"),
+				content: expect.stringContaining(
+					"Continue immediately with either one concrete next tool call or a direct answer",
+				),
 			}),
 			expect.objectContaining({ deliverAs: "followUp" }),
 		);
 		expect(runtimeHost.session.sendCustomMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "runtime_continuation_state",
-				content: expect.stringContaining("Output exactly one concrete next tool call now, or the direct answer if no tool is needed"),
+				content: expect.stringContaining(
+					"Output exactly one concrete next tool call now, or the direct answer if no tool is needed",
+				),
 			}),
 			expect.objectContaining({ deliverAs: "followUp" }),
 		);
@@ -403,7 +430,9 @@ describe("runPrintMode", () => {
 						},
 					});
 					setTimeout(() => {
-						const finalMessage = createAssistantMessage({ text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`." });
+						const finalMessage = createAssistantMessage({
+							text: "The benchmark archive command is implemented in `scripts/harness-benchmark-archive.mjs`.",
+						});
 						runtimeHost.session.state.messages = [finalMessage];
 						subscriptions.emit({ type: "message_end", message: finalMessage });
 						subscriptions.emit({ type: "agent_end" });
@@ -416,16 +445,22 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
 
 		const exitPromise = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			initialMessage:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 		});
 
 		await vi.advanceTimersByTimeAsync(250);
@@ -507,9 +542,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -569,7 +609,12 @@ describe("runPrintMode", () => {
 						toolName: "read",
 						isError: false,
 						result: {
-							content: [{ type: "text", text: "export async function getJson(url, { timeoutMs = 1000 } = {}) {\n\treturn fakeFetchJson(url, { timeoutMs });\n}" }],
+							content: [
+								{
+									type: "text",
+									text: "export async function getJson(url, { timeoutMs = 1000 } = {}) {\n\treturn fakeFetchJson(url, { timeoutMs });\n}",
+								},
+							],
 							details: {
 								progress: { startLine: 1, endLine: 4, totalLines: 4, completion: "complete" },
 							},
@@ -623,9 +668,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -673,7 +723,12 @@ describe("runPrintMode", () => {
 							content: [
 								{ type: "thinking", thinking: "I should inspect the guessed file path next." },
 								{ type: "text", text: "\n\n" },
-								{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "reference/request.mjs" } },
+								{
+									type: "toolCall",
+									id: "call-read",
+									name: "read",
+									arguments: { path: "reference/request.mjs" },
+								},
 							],
 						},
 					});
@@ -714,9 +769,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -762,9 +822,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -804,9 +869,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -838,7 +908,12 @@ describe("runPrintMode", () => {
 						subscriptions.emit({ type: "message_end", message: finalMessage });
 						subscriptions.emit({
 							type: "message_start",
-							message: { role: "custom", display: false, customType: "runtime_continuation_state", content: "hint" },
+							message: {
+								role: "custom",
+								display: false,
+								customType: "runtime_continuation_state",
+								content: "hint",
+							},
 						});
 					}, 25);
 					setTimeout(() => resolve(), 500);
@@ -849,9 +924,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -885,7 +965,12 @@ describe("runPrintMode", () => {
 					setTimeout(() => {
 						subscriptions.emit({
 							type: "message_start",
-							message: { role: "custom", display: false, customType: "runtime_continuation_state", content: "late hint" },
+							message: {
+								role: "custom",
+								display: false,
+								customType: "runtime_continuation_state",
+								content: "late hint",
+							},
 						});
 					}, 50);
 					setTimeout(() => {
@@ -901,9 +986,14 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
@@ -940,9 +1030,13 @@ describe("runPrintMode", () => {
 					content: [
 						{
 							type: "thinking",
-							thinking: ["<tool_call>", "<function=webSearch>", "<parameter=query>react docs</parameter>", "</function>", "</tool_call>"].join(
-								"\n",
-							),
+							thinking: [
+								"<tool_call>",
+								"<function=webSearch>",
+								"<parameter=query>react docs</parameter>",
+								"</function>",
+								"</tool_call>",
+							].join("\n"),
 						},
 					],
 				},
@@ -986,7 +1080,12 @@ describe("runPrintMode", () => {
 				toolName: "grep",
 				isError: false,
 				result: {
-					content: [{ type: "text", text: "packages/coding-agent/src/core/compaction/micro-compact.ts:456: createLiveProviderContext" }],
+					content: [
+						{
+							type: "text",
+							text: "packages/coding-agent/src/core/compaction/micro-compact.ts:456: createLiveProviderContext",
+						},
+					],
 					details: {
 						matchCount: 1,
 						uniqueFileCount: 1,
@@ -1018,9 +1117,13 @@ describe("runPrintMode", () => {
 					content: [
 						{
 							type: "thinking",
-							thinking: ["<tool_call>", "<function=read>", "<parameter=path>packages/coding-agent/src/core/compaction/micro-compact.ts</parameter>", "</function>", "</tool_call>"].join(
-								"\n",
-							),
+							thinking: [
+								"<tool_call>",
+								"<function=read>",
+								"<parameter=path>packages/coding-agent/src/core/compaction/micro-compact.ts</parameter>",
+								"</function>",
+								"</tool_call>",
+							].join("\n"),
 						},
 					],
 				},
@@ -1033,13 +1136,20 @@ describe("runPrintMode", () => {
 
 		await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "find where createLiveProviderContext is defined and explain how it differs from createContextHygieneCopy; do not browse the web",
+			initialMessage:
+				"find where createLiveProviderContext is defined and explain how it differs from createContextHygieneCopy; do not browse the web",
 		});
 
 		expect(runtimeHost.session.recoverXmlToolCallsNow).toHaveBeenCalledTimes(1);
 		expect(runtimeHost.session.setActiveToolsByName).toHaveBeenCalledWith(["read"]);
 		expect(runtimeHost.session.setActiveToolsByName).toHaveBeenCalledWith([]);
-		expect(runtimeHost.session.setActiveToolsByName).toHaveBeenCalledWith(["read", "webSearch", "grep", "find", "ls"]);
+		expect(runtimeHost.session.setActiveToolsByName).toHaveBeenCalledWith([
+			"read",
+			"webSearch",
+			"grep",
+			"find",
+			"ls",
+		]);
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
@@ -1060,7 +1170,12 @@ describe("runPrintMode", () => {
 				toolName: "grep",
 				isError: false,
 				result: {
-					content: [{ type: "text", text: "packages/coding-agent/src/core/tools/websearch.ts:211: normalizeCurrentEventsQuery" }],
+					content: [
+						{
+							type: "text",
+							text: "packages/coding-agent/src/core/tools/websearch.ts:211: normalizeCurrentEventsQuery",
+						},
+					],
 					details: {
 						matchCount: 1,
 						uniqueFileCount: 1,
@@ -1104,7 +1219,8 @@ describe("runPrintMode", () => {
 
 		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "find where normalizeCurrentEventsQuery is actually defined in this repo and summarize why it exists",
+			initialMessage:
+				"find where normalizeCurrentEventsQuery is actually defined in this repo and summarize why it exists",
 		});
 
 		expect(exitCode).toBe(0);
@@ -1147,7 +1263,12 @@ describe("runPrintMode", () => {
 						toolName: "grep",
 						isError: false,
 						result: {
-							content: [{ type: "text", text: "packages/coding-agent/src/core/tools/websearch.ts:211: normalizeCurrentEventsQuery" }],
+							content: [
+								{
+									type: "text",
+									text: "packages/coding-agent/src/core/tools/websearch.ts:211: normalizeCurrentEventsQuery",
+								},
+							],
 							details: {
 								matchCount: 1,
 								uniqueFileCount: 1,
@@ -1204,16 +1325,22 @@ describe("runPrintMode", () => {
 			subscribeImpl: subscriptions.subscribeImpl,
 		});
 		const stdoutChunks: string[] = [];
-		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
 			stdoutChunks.push(String(chunk));
-			const callback = rest.find((value) => typeof value === "function") as ((error?: Error | null) => void) | undefined;
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
 			callback?.(null);
 			return true;
 		}) as typeof process.stdout.write);
 
 		const exitPromise = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "find where normalizeCurrentEventsQuery is actually defined in this repo and summarize why it exists",
+			initialMessage:
+				"find where normalizeCurrentEventsQuery is actually defined in this repo and summarize why it exists",
 		});
 
 		await vi.advanceTimersByTimeAsync(250);
@@ -1264,7 +1391,9 @@ describe("runPrintMode", () => {
 				toolName: "webSearch",
 				args: { query: "React useActionState permalink parameter docs" },
 			});
-			const finalMessage = createAssistantMessage({ text: "The permalink parameter preserves state across navigation." });
+			const finalMessage = createAssistantMessage({
+				text: "The permalink parameter preserves state across navigation.",
+			});
 			subscriptions.emit({ type: "message_end", message: finalMessage });
 			subscriptions.emit({ type: "agent_end" });
 		});
@@ -1275,7 +1404,8 @@ describe("runPrintMode", () => {
 
 		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
-			initialMessage: "look up the official React docs for useActionState and explain the permalink parameter in one sentence",
+			initialMessage:
+				"look up the official React docs for useActionState and explain the permalink parameter in one sentence",
 		});
 
 		expect(exitCode).toBe(0);
@@ -1322,7 +1452,9 @@ describe("runPrintMode", () => {
 					},
 				},
 			});
-			const finalMessage = createAssistantMessage({ text: "The scripts directory contains archive.mjs, compare.mjs, and run.mjs." });
+			const finalMessage = createAssistantMessage({
+				text: "The scripts directory contains archive.mjs, compare.mjs, and run.mjs.",
+			});
 			subscriptions.emit({ type: "message_end", message: finalMessage });
 			subscriptions.emit({ type: "agent_end" });
 		});
@@ -1344,6 +1476,61 @@ describe("runPrintMode", () => {
 			}),
 			expect.objectContaining({ deliverAs: "followUp" }),
 		);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("completes on the agent_end terminal signal without waiting for the idle watchdog", async () => {
+		vi.useFakeTimers();
+		const cwd = mkdtempSync(join(tmpdir(), "ag1-print-mode-"));
+		const subscriptions = createSubscriptionHarness();
+		const promptImpl = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					setTimeout(() => {
+						const finalMessage = createAssistantMessage({ text: "terminal signal answer" });
+						runtimeHost.session.state.messages = [finalMessage];
+						subscriptions.emit({ type: "message_end", message: finalMessage });
+						subscriptions.emit({ type: "agent_end" });
+					}, 25);
+					// The prompt promise itself settles much later; completion must be
+					// driven by agent_end, not by the prompt promise or the 150ms watchdog.
+					setTimeout(() => resolve(), 1000);
+				}),
+		);
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "" }), cwd, {
+			promptImpl,
+			subscribeImpl: subscriptions.subscribeImpl,
+		});
+		const stdoutChunks: string[] = [];
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			...rest: unknown[]
+		) => {
+			stdoutChunks.push(String(chunk));
+			const callback = rest.find((value) => typeof value === "function") as
+				| ((error?: Error | null) => void)
+				| undefined;
+			callback?.(null);
+			return true;
+		}) as typeof process.stdout.write);
+
+		let settled = false;
+		const exitPromise = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "hello",
+		}).then((value) => {
+			settled = true;
+			return value;
+		});
+
+		// agent_end fired at t=25; well before the 150ms watchdog would fire.
+		await vi.advanceTimersByTimeAsync(50);
+		expect(settled).toBe(true);
+		const exitCode = await exitPromise;
+
+		expect(exitCode).toBe(0);
+		expect(stdoutChunks.join("")).toContain("terminal signal answer");
+		stdoutSpy.mockRestore();
 		rmSync(cwd, { recursive: true, force: true });
 	});
 });

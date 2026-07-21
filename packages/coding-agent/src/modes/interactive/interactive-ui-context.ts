@@ -38,7 +38,7 @@ export function normalizeInteractiveWorkspaceSummaryLines(summary: string): stri
 	return summary
 		.split("\n")
 		.map((line) => line.trimEnd())
-		.filter((line, index, lines) => {
+		.filter((line, index) => {
 			if (line.trim().length === 0) return false;
 			if (line === "Autonomous Workspace") return false;
 			if (index === 0 && line.trim().length === 0) return false;

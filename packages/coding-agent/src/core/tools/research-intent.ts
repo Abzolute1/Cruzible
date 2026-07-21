@@ -27,15 +27,18 @@ function hasApiReferenceShapeSignal(query: string): boolean {
 }
 
 export function isCodeLookupQuery(query: string): boolean {
-	return hasExplicitCodeSourceSignal(query)
-		|| (/\b[a-z][A-Za-z0-9]+[A-Z][A-Za-z0-9]*\b/.test(query) && !hasApiReferenceShapeSignal(query));
+	return (
+		hasExplicitCodeSourceSignal(query) ||
+		(/\b[a-z][A-Za-z0-9]+[A-Z][A-Za-z0-9]*\b/.test(query) && !hasApiReferenceShapeSignal(query))
+	);
 }
 
 export function detectResearchQueryIntent(query: string): ResearchQueryIntent {
 	const hasDocsSignal = /\b(api|docs?|documentation|reference|manual|guide|spec|tutorial)\b/i.test(query);
 	const hasApiSignal = hasApiReferenceShapeSignal(query);
-	const hasStrongCurrentEventSignal =
-		/\b(news|incident|leak|announcement|security advisory|outage|breach)\b/i.test(query);
+	const hasStrongCurrentEventSignal = /\b(news|incident|leak|announcement|security advisory|outage|breach)\b/i.test(
+		query,
+	);
 	const hasWeakCurrentSignal = /\b(latest|recent|today|current|update|released?|\d{4})\b/i.test(query);
 	if (hasStrongCurrentEventSignal || (hasWeakCurrentSignal && !hasDocsSignal && !hasApiSignal)) {
 		return "current_events";

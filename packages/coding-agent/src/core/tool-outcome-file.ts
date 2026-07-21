@@ -105,8 +105,10 @@ export function extractTrackedFileFromToolResult(
 		if (typeof details?.firstMatchPath === "string" && details.firstMatchPath.length > 0) {
 			return canonicalizeTrackedPath(details.firstMatchPath, cwd);
 		}
-		return canonicalizeTrackedPath(extractFirstMatchFromGrep(textContent), cwd)
-			?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
+		return (
+			canonicalizeTrackedPath(extractFirstMatchFromGrep(textContent), cwd) ??
+			(requestedPath && requestedPath !== "." ? requestedPath : undefined)
+		);
 	}
 
 	if (normalized === "find" || normalized === "glob") {
@@ -117,8 +119,10 @@ export function extractTrackedFileFromToolResult(
 		if (typeof details?.dominantFileDirectory === "string" && details.dominantFileDirectory.length > 0) {
 			return canonicalizeTrackedPath(details.dominantFileDirectory, cwd);
 		}
-		return canonicalizeTrackedPath(extractFirstMatchFromFind(textContent), cwd)
-			?? (requestedPath && requestedPath !== "." ? requestedPath : undefined);
+		return (
+			canonicalizeTrackedPath(extractFirstMatchFromFind(textContent), cwd) ??
+			(requestedPath && requestedPath !== "." ? requestedPath : undefined)
+		);
 	}
 
 	if (normalized === "ls") {

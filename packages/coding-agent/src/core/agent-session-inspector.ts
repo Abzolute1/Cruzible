@@ -1,17 +1,23 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AgentState, ThinkingLevel } from "@ag1/agent-core";
+import type { AgentState } from "@ag1/agent-core";
 import type { AssistantMessage } from "@ag1/ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import {
 	calculateContextTokens,
+	estimateContextTokenAttribution,
 	estimateContextTokens,
 	estimateTokens,
 } from "./compaction/index.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import type { ContextUsage, ToolDefinition } from "./extensions/index.js";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader, type SessionManager } from "./session-manager.js";
+import {
+	CURRENT_SESSION_VERSION,
+	getLatestCompactionEntry,
+	type SessionHeader,
+	type SessionManager,
+} from "./session-manager.js";
 
 export interface AgentSessionStats {
 	sessionFile: string | undefined;
@@ -83,6 +89,8 @@ export function buildAgentSessionStats(options: {
 export function deriveAgentSessionContextUsage(options: {
 	contextWindow: number | undefined;
 	messages: AgentState["messages"];
+	systemPrompt?: string;
+	tools?: AgentState["tools"];
 	sessionManager: SessionManager;
 }): ContextUsage | undefined {
 	const contextWindow = options.contextWindow;
@@ -110,21 +118,35 @@ export function deriveAgentSessionContextUsage(options: {
 
 		if (!hasPostCompactionUsage) {
 			const estimatedTokens = options.messages.reduce((total, message) => total + estimateTokens(message), 0);
+			const attribution = estimateContextTokenAttribution({
+				messages: options.messages,
+				systemPrompt: options.systemPrompt,
+				tools: options.tools,
+				totalTokens: estimatedTokens,
+			});
 			return {
 				tokens: estimatedTokens,
 				contextWindow,
 				percent: (estimatedTokens / contextWindow) * 100,
 				estimated: true,
+				attribution,
 			};
 		}
 	}
 
 	const estimate = estimateContextTokens(options.messages);
+	const attribution = estimateContextTokenAttribution({
+		messages: options.messages,
+		systemPrompt: options.systemPrompt,
+		tools: options.tools,
+		totalTokens: estimate.tokens,
+	});
 	return {
 		tokens: estimate.tokens,
 		contextWindow,
 		percent: (estimate.tokens / contextWindow) * 100,
 		estimated: estimate.lastUsageIndex === null,
+		attribution,
 	};
 }
 
@@ -149,10 +171,7 @@ export async function exportAgentSessionHtml(options: {
 	});
 }
 
-export function exportAgentSessionJsonl(options: {
-	sessionManager: SessionManager;
-	outputPath?: string;
-}): string {
+export function exportAgentSessionJsonl(options: { sessionManager: SessionManager; outputPath?: string }): string {
 	const filePath = resolve(options.outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
 	const dir = dirname(filePath);
 	if (!existsSync(dir)) {

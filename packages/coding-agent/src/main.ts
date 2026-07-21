@@ -20,6 +20,7 @@ import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import { readProviderSecretFileApiKey } from "./core/provider-secret-file.js";
 import type { DefaultResourceLoaderOptions } from "./core/resource-loader.js";
 import { getDefaultSessionDir } from "./core/session-manager.js";
+import { collectExistingTestPaths } from "./core/test-paths.js";
 import { createAllTools, type Tool, type ToolName } from "./core/tools/index.js";
 import {
 	AuthStorage,
@@ -343,7 +344,11 @@ function buildNvidiaProviderConfig(modelIds: string[] = []): Record<string, unkn
 		id: m.id,
 		name: m.name,
 		reasoning: m.supportsThinking ?? false,
-		compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
+		compat: {
+			thinkingFormat: "openai" as const,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+		},
 		cost: m.cost,
 		contextWindow: m.contextWindow ?? 128_000,
 		maxTokens: 8192,
@@ -354,6 +359,29 @@ function buildNvidiaProviderConfig(modelIds: string[] = []): Record<string, unkn
 		api: "openai-completions",
 		apiKey: "NVIDIA_API_KEY",
 		models: nvidiaModels,
+	};
+}
+
+function buildNvidiaNimProviderConfig(): Record<string, unknown> {
+	return {
+		baseUrl: NVIDIA_BASE_URL,
+		api: "openai-completions",
+		apiKey: "NVIDIA_NIM_API_KEY",
+		models: [
+			{
+				id: "nvidia/nemotron-3-ultra-550b-a55b",
+				name: "Nemotron 3 Ultra",
+				reasoning: true,
+				compat: {
+					thinkingFormat: "openai" as const,
+					supportsDeveloperRole: false,
+					supportsReasoningEffort: false,
+				},
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 65_536,
+			},
+		],
 	};
 }
 
@@ -418,6 +446,12 @@ async function detectLmStudioModels(lmStudioUrl: string, fetchImpl: typeof fetch
 }
 
 function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Record<string, unknown> {
+	const estimateContextWindow = (id: string): number => {
+		const normalized = id.toLowerCase();
+		if (/(^|[-_/\s])(?:3|4|7|8|9|12|14)b($|[-_/\s])/.test(normalized)) return 32_768;
+		if (/(^|[-_/\s])(?:27|30|32|34|35|40)b($|[-_/\s])/.test(normalized)) return 65_536;
+		return 128_000;
+	};
 	return {
 		baseUrl: `${lmStudioUrl}/v1`,
 		api: "openai-completions",
@@ -428,6 +462,8 @@ function buildLocalProviderConfig(lmStudioUrl: string, modelIds: string[]): Reco
 			reasoning: false,
 			compat: { thinkingFormat: "openai" as const, supportsDeveloperRole: true },
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: estimateContextWindow(id),
+			maxTokens: 4096,
 		})),
 	};
 }
@@ -460,18 +496,25 @@ export async function prepareStartupModelsFile(options: {
 		providers: { ...userModelsData.providers },
 	};
 	delete modelsData.providers.nvidia;
+	delete modelsData.providers["nvidia-nim"];
 	delete modelsData.providers.local;
 
-	const nvidiaStoredKeyReference = getStoredApiKeyReference(options.agentDir, "nvidia");
+	const nvidiaStoredKeyReference =
+		getStoredApiKeyReference(options.agentDir, "nvidia-nim") ?? getStoredApiKeyReference(options.agentDir, "nvidia");
 	const nvidiaDiscoveryKey =
-		readProviderSecretFileApiKey("nvidia", env) ?? env.NVIDIA_API_KEY ?? resolveStartupApiKeyReference(nvidiaStoredKeyReference, env);
+		readProviderSecretFileApiKey("nvidia-nim", env) ??
+		readProviderSecretFileApiKey("nvidia", env) ??
+		env.NVIDIA_NIM_API_KEY ??
+		env.NVIDIA_API_KEY ??
+		resolveStartupApiKeyReference(nvidiaStoredKeyReference, env);
 	if (!nvidiaDiscoveryKey) {
 		startupWarn(
-			"[AG1] NVIDIA_API_KEY, AG1_NVIDIA_API_KEY_FILE, local NVIDIA secret file, or saved NVIDIA auth not set. NVIDIA models will not be available.",
+			"[AG1] NVIDIA_NIM_API_KEY, NVIDIA_API_KEY, AG1_NVIDIA_NIM_API_KEY_FILE, local NVIDIA secret file, or saved NVIDIA auth not set. NVIDIA models will not be available.",
 		);
 	} else {
 		const discoveredNvidiaModels = await detectNvidiaModels(nvidiaDiscoveryKey, fetchImpl);
 		modelsData.providers.nvidia = buildNvidiaProviderConfig(discoveredNvidiaModels);
+		modelsData.providers["nvidia-nim"] = buildNvidiaNimProviderConfig();
 		if (discoveredNvidiaModels.length > 0) {
 			startupLog(`[AG1] NVIDIA Nemotron models detected: ${discoveredNvidiaModels.join(", ")}`);
 		}
@@ -798,6 +841,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 		runtime.session.setToolSafetyPolicy({
 			mode: mode === "autonomous" ? "autonomous" : "headless",
 			cwd: runtime.session.sessionManager.getCwd(),
+			existingTestPaths: collectExistingTestPaths(runtime.session.sessionManager.getCwd()),
+			extensionTools:
+				runtime.session.extensionRunner?.getAllRegisteredTools().map((tool) => tool.definition.name) ?? [],
 		});
 	}
 

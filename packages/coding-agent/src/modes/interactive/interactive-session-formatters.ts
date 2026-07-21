@@ -1,10 +1,10 @@
 import type { AgentSessionEvent } from "../../core/agent-session.js";
-import type { ActivatedAutonomousWorkspace, PreparedAutonomousWorkspace } from "../../core/auton/workspace.js";
 import type { AutonomousRunSnapshot } from "../../core/auton/ledger.js";
 import type { AutonomousRunResult } from "../../core/auton/runner.js";
+import type { ActivatedAutonomousWorkspace, PreparedAutonomousWorkspace } from "../../core/auton/workspace.js";
 import { classifyRequestFailure } from "../../core/request-failure.js";
-import type { SessionDebugArtifacts } from "../../core/session-debug-logger.js";
 import type { RuntimeHealthSnapshot, RuntimeStabilizationProfile } from "../../core/runtime-health.js";
+import type { SessionDebugArtifacts } from "../../core/session-debug-logger.js";
 import { theme } from "./theme/theme.js";
 
 export type XmlFallbackEvent = Extract<AgentSessionEvent, { type: "xml_tool_call" }>;
@@ -39,7 +39,11 @@ export function formatRuntimeHealthIssue(event: XmlFallbackEvent | DegradedTurnE
 	if ("outputTokens" in event && typeof event.outputTokens === "number" && event.outputTokens > 0) {
 		parts.push(`output=${event.outputTokens}`);
 	}
-	if ("assistantTextLength" in event && typeof event.assistantTextLength === "number" && event.assistantTextLength > 0) {
+	if (
+		"assistantTextLength" in event &&
+		typeof event.assistantTextLength === "number" &&
+		event.assistantTextLength > 0
+	) {
 		parts.push(`text=${event.assistantTextLength}`);
 	}
 	if ("textLength" in event && typeof event.textLength === "number" && event.textLength > 0) {
@@ -257,7 +261,17 @@ export function formatAutonomousControlSummary(result: AutonomousRunResult): str
 		info += `${theme.fg("dim", "Intent Outcome:")} ${ledger.taskJournal.lastIntentOutcome}\n`;
 	}
 	const evidenceReady = getAutonomousEvidenceReadyKind(result);
+	const verifier =
+		state.lastVerificationDetail ??
+		ledger.lastVerificationDetail ??
+		ledger.taskJournal.expectedVerification ??
+		"not recorded";
+	const nextAllowedAction =
+		ledger.taskJournal.plannedNextStep ?? ledger.taskJournal.nextAction ?? ledger.currentFocus ?? "not recorded";
 	info += `${theme.fg("dim", "Evidence Ready:")} ${evidenceReady ? `yes (${evidenceReady})` : "no"}\n`;
+	info += `${theme.fg("dim", "Budget Pressure:")} ${state.budgetPressureLevel}\n`;
+	info += `${theme.fg("dim", "Verification:")} ${state.verificationSatisfied ? `satisfied (${verifier})` : `pending (${verifier})`}\n`;
+	info += `${theme.fg("dim", "Next Allowed Action:")} ${nextAllowedAction}\n`;
 	info += `${theme.fg("dim", "Intent Drift Count:")} ${state.consecutiveIntentDriftCount}\n`;
 	info += `${theme.fg("dim", "Intent Failure Count:")} ${state.consecutiveIntentFailureCount}\n`;
 	info += `${theme.fg("dim", "Replans Issued:")} ${state.replanPromptCount}\n`;
@@ -302,6 +316,8 @@ export function formatVisualActionRecipeSummary(
 				case "navigate":
 					return `navigate to ${step.url ?? step.urlHint ?? "the target page"}`;
 			}
+			// step.type is a closed union, so this is unreachable; it keeps the map callback total.
+			return "";
 		})
 		.join(" -> ");
 }
@@ -385,7 +401,9 @@ export function getAutonomousRecoveryActions(
 		}
 	}
 	if (result.ledger.taskJournal.expectedVerification) {
-		actions.push(`rerun autonomy with a narrower prompt that ends by verifying with ${result.ledger.taskJournal.expectedVerification}`);
+		actions.push(
+			`rerun autonomy with a narrower prompt that ends by verifying with ${result.ledger.taskJournal.expectedVerification}`,
+		);
 	} else if (result.ledger.taskJournal.plannedNextStep) {
 		actions.push(`rerun autonomy with a narrower prompt focused on: ${result.ledger.taskJournal.plannedNextStep}`);
 	}
@@ -433,10 +451,16 @@ export function getAutonomousControlStateFromSnapshot(
 	if (ledger.resume?.mode === "resume_repair") return "resuming repair";
 	if (ledger.visualAssessment?.latestJudgment === "fail") return "visual blocker";
 	if (ledger.visualIteration?.phase === "recapture") return "visual recapture";
-	if (state.narrowScopePromptCount > 0 && ledger.taskJournal.plannedNextStep?.startsWith("Define the smallest verifiable slice")) {
+	if (
+		state.narrowScopePromptCount > 0 &&
+		ledger.taskJournal.plannedNextStep?.startsWith("Define the smallest verifiable slice")
+	) {
 		return "scope narrowed";
 	}
-	if (state.replanPromptCount > 0 && ledger.taskJournal.plannedNextStep?.startsWith("Replan into 1-2 concrete steps")) {
+	if (
+		state.replanPromptCount > 0 &&
+		ledger.taskJournal.plannedNextStep?.startsWith("Replan into 1-2 concrete steps")
+	) {
 		return "replanned";
 	}
 	if (ledger.taskJournal.intentStatus === "failed") return "recovering blocker";
@@ -452,32 +476,34 @@ export function formatAutonomousCheckpointStatus(snapshot: AutonomousRunSnapshot
 		formatVisualActionRecipeSummary(snapshot.ledger.visualTarget?.actionRecipe);
 	const detail =
 		controlState === "blocked stop"
-			? snapshot.ledger.taskJournal.blockedReasons.find((reason) => reason.startsWith("Autonomous run stopped after")) ??
-				snapshot.ledger.taskJournal.lastIntentOutcome
+			? (snapshot.ledger.taskJournal.blockedReasons.find((reason) =>
+					reason.startsWith("Autonomous run stopped after"),
+				) ?? snapshot.ledger.taskJournal.lastIntentOutcome)
 			: controlState === "stabilizing degraded turn"
-				? snapshot.checkpointState.lastDegradedTurnReasons?.[0] ??
+				? (snapshot.checkpointState.lastDegradedTurnReasons?.[0] ??
 					snapshot.ledger.taskJournal.plannedNextStep ??
-					snapshot.ledger.taskJournal.lastIntentOutcome
+					snapshot.ledger.taskJournal.lastIntentOutcome)
 				: controlState === "visual blocker"
-					? snapshot.ledger.visualAssessment?.blockingIssues[0] ??
+					? (snapshot.ledger.visualAssessment?.blockingIssues[0] ??
 						flowDetail ??
-						snapshot.ledger.visualAssessment?.summary
+						snapshot.ledger.visualAssessment?.summary)
 					: controlState === "visual recapture"
 						? snapshot.ledger.visualTarget?.surface
 							? `recapturing ${snapshot.ledger.visualTarget.surface}${flowDetail ? ` after ${flowDetail}` : ""}`
-							: flowDetail ?? snapshot.ledger.taskJournal.plannedNextStep
+							: (flowDetail ?? snapshot.ledger.taskJournal.plannedNextStep)
 						: controlState === "researching sources"
-							? snapshot.ledger.research?.preferredSourceUrls[0] ??
+							? (snapshot.ledger.research?.preferredSourceUrls[0] ??
 								snapshot.ledger.research?.fetchedUrls[0] ??
 								snapshot.ledger.research?.searchQueries[0] ??
-								snapshot.ledger.taskJournal.plannedNextStep
+								snapshot.ledger.taskJournal.plannedNextStep)
 							: controlState === "verified slice ready"
-								? snapshot.ledger.taskJournal.plannedNextStep ??
+								? (snapshot.ledger.taskJournal.plannedNextStep ??
 									snapshot.ledger.lastVerificationDetail ??
-									snapshot.ledger.visualAssessment?.summary
+									snapshot.ledger.visualAssessment?.summary)
 								: controlState === "replanned" || controlState === "scope narrowed"
 									? snapshot.ledger.taskJournal.plannedNextStep
-									: snapshot.ledger.taskJournal.lastIntentOutcome ?? snapshot.ledger.taskJournal.plannedNextStep;
+									: (snapshot.ledger.taskJournal.lastIntentOutcome ??
+										snapshot.ledger.taskJournal.plannedNextStep);
 	return `Autonomous: ${controlState} | turn ${snapshot.iterations}${detail ? ` | ${detail}` : ""}`;
 }
 

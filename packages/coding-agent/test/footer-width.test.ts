@@ -52,27 +52,25 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		messages:
-			options.rawMessages ??
-			[
-				{
-					role: "user",
-					content: [{ type: "text", text: "Hello" }],
+		messages: options.rawMessages ?? [
+			{
+				role: "user",
+				content: [{ type: "text", text: "Hello" }],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "World" }],
+				usage: usage ?? {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { total: 0 },
 				},
-				{
-					role: "assistant",
-					content: [{ type: "text", text: "World" }],
-					usage: usage ?? {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { total: 0 },
-					},
-					stopReason: "stop",
-				},
-			],
+				stopReason: "stop",
+			},
+		],
 		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3, tokens: 24_600 }),
 		modelRegistry: {
 			isUsingOAuth: () => false,
@@ -152,10 +150,10 @@ describe("FooterComponent width handling", () => {
 		const lines = footer.render(160);
 		const footerLine = stripAnsi(lines[0] ?? "");
 		expect(lines).toHaveLength(1);
-		expect(footerLine).toContain("live ctx 25k");
-		expect(footerLine).toContain("Σ↓ 12k");
-		expect(footerLine).toContain("Σ↑ 6.8k");
-		expect(footerLine).toContain("context 12.3%/200k");
+		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("in↓ 12k");
+		expect(footerLine).toContain("out↑ 6.8k");
+		expect(footerLine).toContain("ctx 12.3%/200k");
 		expect(footerLine).toContain("api $1.234");
 	});
 
@@ -177,10 +175,10 @@ describe("FooterComponent width handling", () => {
 		const lines = footer.render(200);
 		const footerLine = stripAnsi(lines[0] ?? "");
 		expect(lines).toHaveLength(1);
-		expect(footerLine).toContain("context 12.3%/200k");
-		expect(footerLine).toContain("live ctx 25k");
-		expect(footerLine).toContain("Σ↓ 6.2k");
-		expect(footerLine).toContain("Σ↑ 621");
+		expect(footerLine).toContain("ctx 12.3%/200k");
+		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("in↓ 6.2k");
+		expect(footerLine).toContain("out↑ 621");
 		expect(footerLine).toContain("api $0.000");
 		expect(footerLine).toContain("Local");
 		expect(footerLine).toContain("lm-studio");
@@ -211,7 +209,7 @@ describe("FooterComponent width handling", () => {
 
 		const lines = footer.render(220);
 		const footerLine = stripAnsi(lines[0] ?? "");
-		expect(footerLine).toContain("live ctx 25k");
-		expect(footerLine).toContain("raw ctx 35k");
+		expect(footerLine).toContain("live 25k");
+		expect(footerLine).toContain("raw 35k");
 	});
 });

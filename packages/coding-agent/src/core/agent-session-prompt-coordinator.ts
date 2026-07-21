@@ -2,10 +2,10 @@ import { join } from "node:path";
 import type { AgentMessage } from "@ag1/agent-core";
 import type { AssistantMessage, ImageContent, Model, TextContent } from "@ag1/ai";
 import { getDocsPath } from "../config.js";
-import { appendTaggedPromptSection } from "./prompt-sections.js";
 import type { AgentSessionEvent } from "./agent-session.js";
 import type { ExtensionRunner, InputSource } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.js";
+import { appendTaggedPromptSection } from "./prompt-sections.js";
 
 export interface AgentSessionPromptOptions {
 	expandPromptTemplates?: boolean;
@@ -35,6 +35,8 @@ export interface AgentSessionPromptCoordinatorOptions {
 	};
 	emit: (event: AgentSessionEvent) => void;
 	getBaseSystemPrompt: () => string;
+	/** When a controlled runtime (tool orchestrator) is active, guidance to keep turns single-call. */
+	getControlledRuntimeGuidance?: () => string | undefined;
 	tryExecuteExtensionCommand: (text: string) => Promise<boolean>;
 	expandPromptText: (text: string) => string;
 	queueSteer: (text: string, images?: ImageContent[]) => Promise<void>;
@@ -178,10 +180,15 @@ export class AgentSessionPromptCoordinator {
 	): Promise<void> {
 		const extensionRunner = this.options.getExtensionRunner();
 		const baseSystemPrompt = this.options.getBaseSystemPrompt();
-		const effectiveSystemPrompt = appendTaggedPromptSection(
+		const withRuntimeAddendum = appendTaggedPromptSection(
 			baseSystemPrompt,
 			"session-runtime-addendum",
 			systemPromptAddendum,
+		);
+		const effectiveSystemPrompt = appendTaggedPromptSection(
+			withRuntimeAddendum,
+			"controlled-runtime-guidance",
+			this.options.getControlledRuntimeGuidance?.(),
 		);
 		if (!extensionRunner) {
 			this.options.agentState.setSystemPrompt(effectiveSystemPrompt);

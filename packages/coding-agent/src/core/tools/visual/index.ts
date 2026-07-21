@@ -2,14 +2,23 @@
  * Visual verification tools barrel export.
  */
 
-export type { PageAction, ScreenshotOptions, ScreenshotResult } from "./types.js";
-export { getBrowser, closeBrowser } from "./browser.js";
+export { closeBrowser, getBrowser } from "./browser.js";
 export { runScreenshot } from "./engine.js";
 export {
-	screenshotUrlTool,
-	screenshotUrlToolDefinition,
+	createInteractThenScreenshotToolDefinition,
+	createScreenshotUrlToolDefinition,
 	interactThenScreenshotTool,
 	interactThenScreenshotToolDefinition,
-	createScreenshotUrlToolDefinition,
-	createInteractThenScreenshotToolDefinition,
+	screenshotUrlTool,
+	screenshotUrlToolDefinition,
 } from "./tools.js";
+export type { PageAction, ScreenshotOptions, ScreenshotResult } from "./types.js";
+export {
+	createVerifyUiToolDefinition,
+	parseJudgeVerdict,
+	type VerifyUiDeps,
+	type VerifyUiDetails,
+	type VerifyUiInput,
+	type VerifyUiVerdict,
+} from "./verify-ui.js";
+export { modelSupportsVision } from "./vision.js";

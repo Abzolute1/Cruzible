@@ -7,6 +7,7 @@ import {
 	type TextContent,
 	type ThinkingBudgets,
 	type Transport,
+	type Usage,
 } from "@ag1/ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.js";
 import type {
@@ -30,27 +31,50 @@ function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 	);
 }
 
-const EMPTY_USAGE = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 0,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
+/**
+ * Failed/aborted runs append an assistant message with empty content (see handleRunFailure).
+ * Providers reject empty content blocks, so drop those messages from the provider-bound
+ * context snapshot. The messages stay in the live transcript (they were emitted through the
+ * normal message lifecycle) but are never sent to the model again.
+ */
+function isFailedEmptyAssistantMessage(message: AgentMessage): boolean {
+	return (
+		message.role === "assistant" &&
+		message.errorMessage !== undefined &&
+		message.content.every((block) => block.type === "text" && block.text.trim() === "")
+	);
+}
 
-const DEFAULT_MODEL = {
-	id: "unknown",
-	name: "unknown",
-	api: "unknown",
-	provider: "unknown",
-	baseUrl: "",
-	reasoning: false,
-	input: [],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 0,
-	maxTokens: 0,
-} satisfies Model<any>;
+/**
+ * Fresh zeroed usage per call. Failure messages must not share a mutable usage
+ * object: one consumer mutating `message.usage` would rewrite all failure messages.
+ */
+function emptyUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+/** Fresh placeholder model per call; callers may mutate `state.model`. */
+function defaultModel(): Model<any> {
+	return {
+		id: "unknown",
+		name: "unknown",
+		api: "unknown",
+		provider: "unknown",
+		baseUrl: "",
+		reasoning: false,
+		input: [],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 0,
+		maxTokens: 0,
+	};
+}
 
 type QueueMode = "all" | "one-at-a-time";
 
@@ -61,32 +85,45 @@ type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "
 	errorMessage?: string;
 };
 
+type InternalAgentState = {
+	state: MutableAgentState;
+	/** Live backing arrays for internal hot-path access. Public getters return copies. */
+	messages: AgentMessage[];
+	tools: AgentTool<any>[];
+};
+
 function createMutableAgentState(
 	initialState?: Partial<Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">>,
-): MutableAgentState {
-	let tools = initialState?.tools?.slice() ?? [];
-	let messages = initialState?.messages?.slice() ?? [];
+): InternalAgentState {
+	const tools = initialState?.tools?.slice() ?? [];
+	const messages = initialState?.messages?.slice() ?? [];
 
 	return {
-		systemPrompt: initialState?.systemPrompt ?? "",
-		model: initialState?.model ?? DEFAULT_MODEL,
-		thinkingLevel: initialState?.thinkingLevel ?? "off",
-		get tools() {
-			return tools;
+		messages,
+		tools,
+		state: {
+			systemPrompt: initialState?.systemPrompt ?? "",
+			model: initialState?.model ?? defaultModel(),
+			thinkingLevel: initialState?.thinkingLevel ?? "off",
+			get tools() {
+				return tools.slice();
+			},
+			set tools(nextTools: AgentTool<any>[]) {
+				// Replace in place so internal direct references stay valid.
+				tools.splice(0, tools.length, ...nextTools);
+			},
+			get messages() {
+				return messages.slice();
+			},
+			set messages(nextMessages: AgentMessage[]) {
+				// Replace in place so internal direct references stay valid.
+				messages.splice(0, messages.length, ...nextMessages);
+			},
+			isStreaming: false,
+			streamingMessage: undefined,
+			pendingToolCalls: new Set<string>(),
+			errorMessage: undefined,
 		},
-		set tools(nextTools: AgentTool<any>[]) {
-			tools = nextTools.slice();
-		},
-		get messages() {
-			return messages;
-		},
-		set messages(nextMessages: AgentMessage[]) {
-			messages = nextMessages.slice();
-		},
-		isStreaming: false,
-		streamingMessage: undefined,
-		pendingToolCalls: new Set<string>(),
-		errorMessage: undefined,
 	};
 }
 
@@ -107,6 +144,8 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/** Optional cap on assistant turns per run; acts as a circuit breaker for looping models. */
+	maxTurns?: number;
 }
 
 class PendingMessageQueue {
@@ -156,6 +195,9 @@ type ActiveRun = {
  */
 export class Agent {
 	private _state: MutableAgentState;
+	/** Live transcript/tools backing arrays; the public `state` getters return copies. */
+	private readonly _messages: AgentMessage[];
+	private readonly _tools: AgentTool<any>[];
 	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
@@ -184,9 +226,14 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** Optional cap on assistant turns per run, forwarded to the loop config. */
+	public maxTurns?: number;
 
 	constructor(options: AgentOptions = {}) {
-		this._state = createMutableAgentState(options.initialState);
+		const internalState = createMutableAgentState(options.initialState);
+		this._state = internalState.state;
+		this._messages = internalState.messages;
+		this._tools = internalState.tools;
 		this.convertToLlm = options.convertToLlm ?? defaultConvertToLlm;
 		this.transformContext = options.transformContext;
 		this.streamFn = options.streamFn ?? streamSimple;
@@ -201,6 +248,7 @@ export class Agent {
 		this.transport = options.transport ?? "sse";
 		this.maxRetryDelayMs = options.maxRetryDelayMs;
 		this.toolExecution = options.toolExecution ?? "parallel";
+		this.maxTurns = options.maxTurns;
 	}
 
 	/**
@@ -208,7 +256,8 @@ export class Agent {
 	 *
 	 * Listener promises are awaited in subscription order and are included in
 	 * the current run's settlement. Listeners also receive the active abort
-	 * signal for the current run.
+	 * signal for the current run. A throwing listener is caught and reported via
+	 * `console.error`; it cannot interrupt the run or the remaining listeners.
 	 *
 	 * `agent_end` is the final emitted event for a run, but the agent does not
 	 * become idle until all awaited listeners for that event have settled.
@@ -221,7 +270,9 @@ export class Agent {
 	/**
 	 * Current agent state.
 	 *
-	 * Assigning `state.tools` or `state.messages` copies the provided top-level array.
+	 * Reading `state.tools` or `state.messages` returns a copy of the top-level
+	 * array; assigning copies the provided array. Mutating a returned array does
+	 * not affect the agent.
 	 */
 	get state(): AgentState {
 		return this._state;
@@ -297,6 +348,9 @@ export class Agent {
 
 	/** Clear transcript state, runtime state, and queued messages. */
 	reset(): void {
+		if (this.activeRun) {
+			throw new Error("Agent is processing a run. Abort the run and wait for completion before resetting.");
+		}
 		this._state.messages = [];
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
@@ -306,7 +360,7 @@ export class Agent {
 		this.clearSteeringQueue();
 	}
 
-	/** Start a new prompt from text, a single message, or a batch of messages. */
+	/** Start a new prompt from text, a single message, or a batch of messages. Throws on an empty message array. */
 	async prompt(message: AgentMessage | AgentMessage[]): Promise<void>;
 	async prompt(input: string, images?: ImageContent[]): Promise<void>;
 	async prompt(input: string | AgentMessage | AgentMessage[], images?: ImageContent[]): Promise<void> {
@@ -325,7 +379,11 @@ export class Agent {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
 
-		const lastMessage = this._state.messages[this._state.messages.length - 1];
+		// Guard against the same provider-bound view the run will use: failed empty
+		// assistant messages are filtered out, so continue() after a failure resumes
+		// from the last real message instead of tripping over the failure message.
+		const continuableMessages = this._messages.filter((message) => !isFailedEmptyAssistantMessage(message));
+		const lastMessage = continuableMessages[continuableMessages.length - 1];
 		if (!lastMessage) {
 			throw new Error("No messages to continue from");
 		}
@@ -354,6 +412,9 @@ export class Agent {
 		images?: ImageContent[],
 	): AgentMessage[] {
 		if (Array.isArray(input)) {
+			if (input.length === 0) {
+				throw new Error("Cannot prompt with an empty message array. Provide at least one message.");
+			}
 			return input;
 		}
 
@@ -399,8 +460,8 @@ export class Agent {
 	private createContextSnapshot(): AgentContext {
 		return {
 			systemPrompt: this._state.systemPrompt,
-			messages: this._state.messages.slice(),
-			tools: this._state.tools.slice(),
+			messages: this._messages.slice().filter((message) => !isFailedEmptyAssistantMessage(message)),
+			tools: this._tools.slice(),
 		};
 	}
 
@@ -415,6 +476,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			maxTurns: this.maxTurns,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			convertToLlm: this.convertToLlm,
@@ -463,13 +525,18 @@ export class Agent {
 			api: this._state.model.api,
 			provider: this._state.model.provider,
 			model: this._state.model.id,
-			usage: EMPTY_USAGE,
+			usage: emptyUsage(),
 			stopReason: aborted ? "aborted" : "error",
 			errorMessage: error instanceof Error ? error.message : String(error),
 			timestamp: Date.now(),
 		} satisfies AgentMessage;
-		this._state.messages.push(failureMessage);
 		this._state.errorMessage = failureMessage.errorMessage;
+		// Emit the full message lifecycle so downstream consumers that persist on
+		// `message_end` see the failure message like any normal turn. `message_end`
+		// also appends the message to the transcript via processEvents.
+		await this.processEvents({ type: "message_start", message: failureMessage });
+		await this.processEvents({ type: "message_end", message: failureMessage });
+		await this.processEvents({ type: "turn_end", message: failureMessage, toolResults: [] });
 		await this.processEvents({ type: "agent_end", messages: [failureMessage] });
 	}
 
@@ -500,7 +567,7 @@ export class Agent {
 
 			case "message_end":
 				this._state.streamingMessage = undefined;
-				this._state.messages.push(event.message);
+				this._messages.push(event.message);
 				break;
 
 			case "tool_execution_start": {
@@ -533,7 +600,12 @@ export class Agent {
 			throw new Error("Agent listener invoked outside active run");
 		}
 		for (const listener of this.listeners) {
-			await listener(event, signal);
+			try {
+				await listener(event, signal);
+			} catch (error) {
+				// Listener failures must never alter the run, other listeners, or tool outcomes.
+				console.error("Agent event listener threw", error);
+			}
 		}
 	}
 }

@@ -5428,6 +5428,25 @@ export const MODELS = {
 			maxTokens: 16384,
 		} satisfies Model<"openai-completions">,
 	},
+	"nvidia-nim": {
+		"nvidia/nemotron-3-ultra-550b-a55b": {
+			id: "nvidia/nemotron-3-ultra-550b-a55b",
+			name: "Nemotron 3 Ultra",
+			api: "openai-completions",
+			provider: "nvidia-nim",
+			baseUrl: "https://integrate.api.nvidia.com/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		} satisfies Model<"openai-completions">,
+	},
 	"openai": {
 		"gpt-4": {
 			id: "gpt-4",

@@ -6,6 +6,8 @@
  * (cycle through older entries).
  */
 export class KillRing {
+	private static readonly MAX_ENTRIES = 60;
+
 	private ring: string[] = [];
 
 	/**
@@ -23,6 +25,9 @@ export class KillRing {
 			const last = this.ring.pop()!;
 			this.ring.push(opts.prepend ? text + last : last + text);
 		} else {
+			if (this.ring.length >= KillRing.MAX_ENTRIES) {
+				this.ring.shift();
+			}
 			this.ring.push(text);
 		}
 	}

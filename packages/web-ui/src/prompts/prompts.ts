@@ -241,15 +241,15 @@ Read files the user uploaded to the conversation.
 
 #### Functions
 - listAttachments() - List all attachments, returns array of {id, fileName, mimeType, size}
-- readTextAttachment(id) - Read attachment as text, returns string
-- readBinaryAttachment(id) - Read attachment as binary data, returns Uint8Array
+- readTextAttachment(id) - Read attachment as text, returns Promise<string>
+- readBinaryAttachment(id) - Read attachment as binary data, returns Promise<Uint8Array>
 
 #### Example
 CSV file:
 \`\`\`javascript
 const files = listAttachments();
 const csvFile = files.find(f => f.fileName.endsWith('.csv'));
-const csvData = readTextAttachment(csvFile.id);
+const csvData = await readTextAttachment(csvFile.id);
 const rows = csvData.split('\\n').map(row => row.split(','));
 \`\`\`
 
@@ -258,7 +258,7 @@ Excel file:
 const XLSX = await import('https://esm.run/xlsx');
 const files = listAttachments();
 const xlsxFile = files.find(f => f.fileName.endsWith('.xlsx'));
-const bytes = readBinaryAttachment(xlsxFile.id);
+const bytes = await readBinaryAttachment(xlsxFile.id);
 const workbook = XLSX.read(bytes);
 const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
 \`\`\`

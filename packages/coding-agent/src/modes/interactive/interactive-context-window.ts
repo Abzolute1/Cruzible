@@ -4,9 +4,7 @@ export type InteractiveContextWindowCommandAction =
 	| { type: "set"; value: number }
 	| { type: "invalid"; message: string };
 
-export function resolveInteractiveContextWindowCommand(
-	arg: string | undefined,
-): InteractiveContextWindowCommandAction {
+export function resolveInteractiveContextWindowCommand(arg: string | undefined): InteractiveContextWindowCommandAction {
 	if (!arg) {
 		return { type: "show-dialog" };
 	}

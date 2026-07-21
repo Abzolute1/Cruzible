@@ -1,7 +1,4 @@
-import {
-	classifyVerificationFailure,
-	type VerificationFailureClassification,
-} from "./verification-controller.js";
+import { classifyVerificationFailure, type VerificationFailureClassification } from "./verification-controller.js";
 
 export type RepairControllerOptions = {
 	relevantPaths?: string[];
@@ -18,9 +15,7 @@ export type RepairSnapshot = {
 	shouldStop: boolean;
 };
 
-export type RepairVerifierDecision =
-	| { allow: true }
-	| { allow: false; reason: string; nextAction: string };
+export type RepairVerifierDecision = { allow: true } | { allow: false; reason: string; nextAction: string };
 
 export class RepairController {
 	private readonly relevantPaths: string[];
@@ -97,7 +92,9 @@ export class RepairController {
 			sameFailureCount: this.sameFailureCount,
 			repeatedFailureLimit: this.repeatedFailureLimit,
 			lastFailure: this.lastFailure,
-			shouldStop: Boolean(this.lastFailure && this.sameFailureCount >= this.repeatedFailureLimit && !this.mutationSinceFailure),
+			shouldStop: Boolean(
+				this.lastFailure && this.sameFailureCount >= this.repeatedFailureLimit && !this.mutationSinceFailure,
+			),
 		};
 	}
 }

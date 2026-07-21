@@ -11,7 +11,11 @@ describe("interactive-auth-flow", () => {
 			hasLoggedInOAuthProviders({
 				list: () => ["github", "anthropic"],
 				get: (providerId) =>
-					providerId === "github" ? { type: "oauth" } : providerId === "anthropic" ? { type: "api_key" } : undefined,
+					providerId === "github"
+						? { type: "oauth" }
+						: providerId === "anthropic"
+							? { type: "api_key" }
+							: undefined,
 			}),
 		).toBe(true);
 

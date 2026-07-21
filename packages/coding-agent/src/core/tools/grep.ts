@@ -8,7 +8,6 @@ import path from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { looksLikeGuidanceTrapPath } from "./guidance-trap-paths.js";
 import { resolveContainedPath } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -46,9 +45,6 @@ export interface GrepToolDetails {
 	uniqueFileCount?: number;
 	firstMatchPath?: string;
 	firstMatchLine?: number;
-	recoveryPattern?: string;
-	recoveryPath?: string;
-	recoveryRequired?: boolean;
 }
 
 /**
@@ -81,7 +77,7 @@ function toToolPath(filePath: string, cwd: string): string {
 function grepPathRank(filePath: string, cwd: string): number {
 	const normalized = toToolPath(filePath, cwd).toLowerCase();
 	let score = 0;
-	const isHarnessBenchmarkScript = /(^|\/)scripts\/harness-benchmark-[^/]+\.mjs$/.test(normalized);
+	const isRepoScript = /(^|\/)scripts\/[^/]+\.(mjs|cjs|js|ts|py|sh)$/.test(normalized);
 
 	const sourceExtensions = new Set([
 		".ts",
@@ -144,8 +140,6 @@ function grepPathRank(filePath: string, cwd: string): number {
 	) {
 		score += 60;
 	}
-	if (normalized.includes("benchmark") && !isHarnessBenchmarkScript) score += 60;
-
 	if (
 		normalized.includes("/fixtures/") ||
 		normalized.includes("new_files-copy") ||
@@ -155,23 +149,15 @@ function grepPathRank(filePath: string, cwd: string): number {
 		score += 120;
 	}
 
-	if (
-		normalized.includes("/core/") ||
-		normalized.includes("/system-prompt") ||
-		normalized.includes("/prompt")
-	) {
+	if (normalized.includes("/core/") || normalized.includes("/system-prompt") || normalized.includes("/prompt")) {
 		score -= 20;
 	}
 
 	if (normalized.includes("/tools/")) score -= 20;
 	if (normalized.includes("/auton/")) score += 25;
-	if (isHarnessBenchmarkScript) score -= 140;
+	if (isRepoScript) score -= 80;
 
-	if (
-		normalized.includes("research-output") ||
-		normalized.includes("prompt-intent-steering") ||
-		normalized.includes("benchmark-scenarios")
-	) {
+	if (normalized.includes("research-output") || normalized.includes("prompt-intent-steering")) {
 		score += 180;
 	}
 
@@ -206,14 +192,6 @@ function grepLineRank(lineText: string, pattern?: string): number {
 		if (/\bnormalizecurrenteventsquery\b/i.test(lineText)) score -= 260;
 		else if (/\bnormalize[a-z0-9_]*current[a-z0-9_]*events[a-z0-9_]*\b/i.test(normalized)) score -= 180;
 		else if (/\bnormalize\b/.test(normalized)) score -= 80;
-	}
-	if (normalizedPattern.includes("score per 1k tokens")) {
-		if (/\bscoreper1ktokens\b/i.test(lineText) || /\bscore_per_1k_tokens\b/i.test(lineText)) score -= 240;
-	}
-	if (normalizedPattern.includes("scoreper1ktokens") || normalizedPattern.includes("score_per_1k_tokens")) {
-		if (/\bscorePer1kTokens\b/.test(lineText)) score -= 280;
-		if (/^\s*const\s+scorePer1kTokens\b/.test(lineText) || /^\s*let\s+scorePer1kTokens\b/.test(lineText)) score -= 120;
-		if (/"score_per_1k_tokens"\s*:/.test(lineText)) score += 260;
 	}
 	if (normalizedPattern.includes("normalization")) {
 		if (/^\s*export\s+(async\s+)?function\s+normalize/i.test(normalized)) score -= 120;
@@ -335,103 +313,13 @@ function formatNoMatchNotice(options: { literal?: boolean; pattern: string }): s
 			);
 		}
 	}
-	notices.push("if the user asked which file/script defines something, prefer find on filenames before broad content grep");
-	notices.push("for local code lookups, retry with a narrower source path like src/ or packages/*/src before reading docs");
+	notices.push(
+		"if the user asked which file/script defines something, prefer find on filenames before broad content grep",
+	);
+	notices.push(
+		"for local code lookups, retry with a narrower source path like src/ or packages/*/src before reading docs",
+	);
 	return `[${notices.join("; ")}]`;
-}
-
-interface SemanticRecovery {
-	notice: string;
-	preferredMatchPath?: string;
-	preferredMatchLine?: number;
-	recoveryPattern?: string;
-	recoveryPath?: string;
-	recoveryRequired?: boolean;
-}
-
-function buildSemanticRecovery(
-	matches: Array<{ filePath: string; lineNumber: number; lineText: string }>,
-	cwd: string,
-	pattern: string,
-): SemanticRecovery | undefined {
-	const normalizedPattern = pattern.trim().toLowerCase();
-	if (normalizedPattern.includes("current-events")) {
-		const preferredSymbolMatch = matches.find(
-			(match) => /\bnormalizeCurrentEventsQuery\b/i.test(match.lineText)
-				&& !looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)),
-		) ?? matches.find((match) => /\bnormalizeCurrentEventsQuery\b/i.test(match.lineText));
-		const preferredImplementationMatch = matches.find((match) => {
-			const toolPath = toToolPath(match.filePath, cwd);
-			return !looksLikeGuidanceTrapPath(toolPath)
-				&& /(?:^|\/)(websearch|research-intent)\.ts$/i.test(toolPath);
-		});
-		const onlyTrapPaths = matches.every((match) => looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)));
-		const preferredMatch = preferredSymbolMatch ?? preferredImplementationMatch;
-		if (preferredMatch) {
-			const preferredPath = toToolPath(preferredMatch.filePath, cwd);
-			const offset = Math.max(1, preferredMatch.lineNumber - 20);
-			return {
-				notice: `[descriptive current-events normalization lookup; use the implementation match first at ${preferredPath}:${preferredMatch.lineNumber}; next: read ${preferredPath} offset=${offset} limit=120]`,
-				preferredMatchPath: preferredPath,
-				preferredMatchLine: preferredMatch.lineNumber,
-			};
-		}
-		if (onlyTrapPaths) {
-			return {
-				notice: "[descriptive current-events normalization lookup; do not read the guidance/test hit first; next: grep normalizeCurrentEventsQuery path=packages/coding-agent/src/core/tools or src/core/tools]",
-				recoveryPattern: "normalizeCurrentEventsQuery",
-				recoveryPath: "packages/coding-agent/src/core/tools",
-				recoveryRequired: true,
-			};
-		}
-	}
-	if (normalizedPattern.includes("score per 1k tokens")) {
-		const onlyTrapPaths = matches.every((match) => looksLikeGuidanceTrapPath(toToolPath(match.filePath, cwd)));
-		if (onlyTrapPaths) {
-			return {
-				notice: "[metric-phrase lookup hit guidance or UI prose, not the computation; next: grep scorePer1kTokens path=scripts or grep score_per_1k_tokens path=scripts]",
-				recoveryPattern: "scorePer1kTokens",
-				recoveryPath: "scripts",
-				recoveryRequired: true,
-			};
-		}
-	}
-	if (normalizedPattern.includes("scoreper1ktokens") || normalizedPattern.includes("score_per_1k_tokens")) {
-		const compareScriptMatch = matches.find((match) => /scripts\/harness-benchmark-compare\.mjs$/i.test(toToolPath(match.filePath, cwd)));
-		if (compareScriptMatch) {
-			return {
-				notice: `[benchmark metric lookup; likely implementation is ${toToolPath(compareScriptMatch.filePath, cwd)}; use that file before history/report artifacts]`,
-				preferredMatchPath: toToolPath(compareScriptMatch.filePath, cwd),
-				preferredMatchLine: compareScriptMatch.lineNumber,
-			};
-		}
-		const onlyHistoryish = matches.every((match) => {
-			const toolPath = toToolPath(match.filePath, cwd).toLowerCase();
-			return toolPath.includes("/benchmarks/history/")
-				|| toolPath.endsWith("history-summary.json")
-				|| toolPath.endsWith("benchmark-scenarios-v2.json")
-				|| toolPath.endsWith("benchmark-scenarios-v2_5.json");
-		});
-		if (onlyHistoryish) {
-			return {
-				notice: "[benchmark metric lookup hit output/config artifacts, not the computation; next: grep scorePer1kTokens path=scripts]",
-				recoveryPattern: "scorePer1kTokens",
-				recoveryPath: "scripts",
-				recoveryRequired: true,
-			};
-		}
-	}
-	if (normalizedPattern.includes("benchmark") && normalizedPattern.includes("archive")) {
-		const archiveScriptMatch = matches.find((match) => /harness-benchmark-archive\.mjs$/i.test(toToolPath(match.filePath, cwd)));
-		if (archiveScriptMatch) {
-			return {
-				notice: `[benchmark archive lookup; likely defining file is ${toToolPath(archiveScriptMatch.filePath, cwd)}; answer now with that path or read it directly before more grep]`,
-				preferredMatchPath: toToolPath(archiveScriptMatch.filePath, cwd),
-				preferredMatchLine: archiveScriptMatch.lineNumber,
-			};
-		}
-	}
-	return undefined;
 }
 
 export function createGrepToolDefinition(
@@ -491,7 +379,13 @@ export function createGrepToolDefinition(
 					try {
 						const rgPath = await ensureTool("rg", true);
 						if (!rgPath) {
-							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+							settle(() =>
+								reject(
+									new Error(
+										"ripgrep (rg) is not available. Install rg on PATH or set AG1_ALLOW_TOOL_AUTO_DOWNLOAD=1.",
+									),
+								),
+							);
 							return;
 						}
 
@@ -500,7 +394,13 @@ export function createGrepToolDefinition(
 							searchPath = resolveContainedPath(searchDir || ".", cwd);
 						} catch (error) {
 							const message = error instanceof Error ? error.message : String(error);
-							settle(() => reject(new Error(`${message}. Retry without path or use a workspace-relative path like ., scripts, src, or packages/*/src instead of /.`)));
+							settle(() =>
+								reject(
+									new Error(
+										`${message}. Retry without path or use a workspace-relative path like ., scripts, src, or packages/*/src instead of /.`,
+									),
+								),
+							);
 							return;
 						}
 						const ops = customOps ?? defaultGrepOperations;
@@ -609,7 +509,8 @@ export function createGrepToolDefinition(
 								const filePath = event.data?.path?.text;
 								const lineNumber = event.data?.line_number;
 								const lineText = String(event.data?.lines?.text ?? "");
-								if (filePath && typeof lineNumber === "number") matches.push({ filePath, lineNumber, lineText });
+								if (filePath && typeof lineNumber === "number")
+									matches.push({ filePath, lineNumber, lineText });
 								if (matchCount >= effectiveLimit) {
 									matchLimitReached = true;
 									stopChild(true);
@@ -640,34 +541,15 @@ export function createGrepToolDefinition(
 
 							matches.sort((a, b) => {
 								const rankDiff =
-									(grepPathRank(a.filePath, cwd) + grepLineRank(a.lineText, pattern))
-									- (grepPathRank(b.filePath, cwd) + grepLineRank(b.lineText, pattern));
+									grepPathRank(a.filePath, cwd) +
+									grepLineRank(a.lineText, pattern) -
+									(grepPathRank(b.filePath, cwd) + grepLineRank(b.lineText, pattern));
 								if (rankDiff !== 0) return rankDiff;
 								const pathA = toToolPath(a.filePath, cwd);
 								const pathB = toToolPath(b.filePath, cwd);
 								if (pathA !== pathB) return pathA.localeCompare(pathB);
 								return a.lineNumber - b.lineNumber;
 							});
-
-							const semanticRecovery = buildSemanticRecovery(matches, cwd, pattern);
-							if (semanticRecovery?.preferredMatchPath) {
-								matches.sort((a, b) => {
-									const aPreferred =
-										toToolPath(a.filePath, cwd) === semanticRecovery.preferredMatchPath
-										&& (
-											typeof semanticRecovery.preferredMatchLine !== "number"
-											|| a.lineNumber === semanticRecovery.preferredMatchLine
-										);
-									const bPreferred =
-										toToolPath(b.filePath, cwd) === semanticRecovery.preferredMatchPath
-										&& (
-											typeof semanticRecovery.preferredMatchLine !== "number"
-											|| b.lineNumber === semanticRecovery.preferredMatchLine
-										);
-									if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
-									return 0;
-								});
-							}
 
 							// Format matches after streaming finishes so custom readFile() backends can be async.
 							for (const match of matches) {
@@ -686,15 +568,6 @@ export function createGrepToolDefinition(
 								details.firstMatchPath = toToolPath(matches[0].filePath, cwd);
 								details.firstMatchLine = matches[0].lineNumber;
 							}
-							if (semanticRecovery?.preferredMatchPath) {
-								details.firstMatchPath = semanticRecovery.preferredMatchPath;
-								if (typeof semanticRecovery.preferredMatchLine === "number") {
-									details.firstMatchLine = semanticRecovery.preferredMatchLine;
-								}
-							}
-							if (semanticRecovery?.recoveryPattern) details.recoveryPattern = semanticRecovery.recoveryPattern;
-							if (semanticRecovery?.recoveryPath) details.recoveryPath = semanticRecovery.recoveryPath;
-							if (semanticRecovery?.recoveryRequired) details.recoveryRequired = true;
 							if (matchLimitReached) {
 								details.matchLimitReached = effectiveLimit;
 							}
@@ -716,7 +589,6 @@ export function createGrepToolDefinition(
 								byteTruncated: truncation.truncated,
 							});
 							if (followupNotice) output += `\n\n${followupNotice}`;
-							if (semanticRecovery?.notice) output += `\n\n${semanticRecovery.notice}`;
 							settle(() =>
 								resolve({
 									content: [{ type: "text", text: output }],

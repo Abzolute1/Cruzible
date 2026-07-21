@@ -1,5 +1,5 @@
 import type { Component } from "../tui.js";
-import { truncateToWidth, visibleWidth } from "../utils.js";
+import { sanitizeTerminalText, truncateToWidth, visibleWidth } from "../utils.js";
 
 /**
  * Text component that truncates to fit viewport width
@@ -10,7 +10,7 @@ export class TruncatedText implements Component {
 	private paddingY: number;
 
 	constructor(text: string, paddingX: number = 0, paddingY: number = 0) {
-		this.text = text;
+		this.text = sanitizeTerminalText(text);
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 	}

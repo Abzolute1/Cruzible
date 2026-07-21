@@ -1,21 +1,26 @@
 import type { AgentEvent, AgentMessage } from "@ag1/agent-core";
 import type { AssistantMessage, ImageContent, Message, TextContent } from "@ag1/ai";
+import type { AgentSessionEvent } from "./agent-session.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import { SessionPersistenceError } from "./session-manager.js";
 import { analyzeAssistantTurnHealth } from "./turn-health.js";
 
 export interface AgentSessionEventLoopCoordinatorOptions {
 	removeQueuedUserMessage: (text: string) => boolean;
 	emitQueueUpdate: () => void;
 	emitExtensionEvent: (event: AgentEvent) => Promise<void>;
-	emitPublicEvent: (event: AgentEvent) => void;
+	emitPublicEvent: (event: AgentSessionEvent) => void;
 	appendCustomMessageEntry: (
 		customType: string,
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details: unknown,
-	) => void;
-	appendMessage: (message: Message | CustomMessage | BashExecutionMessage) => void;
+	) => void | Promise<void>;
+	appendMessage: (message: Message | CustomMessage | BashExecutionMessage) => void | Promise<void>;
+	flushPendingBashMessages: () => void;
 	resetOverflowRecovery: () => void;
+	/** Reset per-user-turn web research tracking when a user turn actually starts. */
+	resetWebResearchRuntimeState: () => void;
 	emitDegradedTurn: (event: {
 		severity: "elevated" | "critical";
 		stopReason?: string;
@@ -49,7 +54,16 @@ export class AgentSessionEventLoopCoordinator {
 			() => this.process(event),
 			() => this.process(event),
 		);
-		this.agentEventQueue.catch(() => {});
+		// The chain above always continues (rejection handler), so the queue keeps
+		// processing subsequent events. This terminal catch only reports: log every
+		// failure and surface persistence failures as a public persistence_error
+		// event instead of silently swallowing them.
+		this.agentEventQueue.catch((error) => {
+			console.error("[AgentSession] Event processing failed:", error);
+			if (error instanceof SessionPersistenceError) {
+				this.options.emitPublicEvent({ type: "persistence_error", message: error.message });
+			}
+		});
 	}
 
 	async wait(): Promise<void> {
@@ -69,6 +83,9 @@ export class AgentSessionEventLoopCoordinator {
 	private async process(event: AgentEvent): Promise<void> {
 		if (event.type === "message_start" && event.message.role === "user") {
 			this.options.resetOverflowRecovery();
+			// A user turn actually starts here — prompt() may have only QUEUED the
+			// message mid-stream, so per-turn web research state resets now, not earlier.
+			this.options.resetWebResearchRuntimeState();
 			const messageText = this.options.getUserMessageText(event.message);
 			if (messageText && this.options.removeQueuedUserMessage(messageText)) {
 				this.options.emitQueueUpdate();
@@ -80,7 +97,7 @@ export class AgentSessionEventLoopCoordinator {
 
 		if (event.type === "message_end") {
 			if (event.message.role === "custom") {
-				this.options.appendCustomMessageEntry(
+				await this.options.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -91,7 +108,7 @@ export class AgentSessionEventLoopCoordinator {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
-				this.options.appendMessage(event.message);
+				await this.options.appendMessage(event.message);
 			}
 
 			if (event.message.role === "assistant") {
@@ -125,6 +142,10 @@ export class AgentSessionEventLoopCoordinator {
 			const message = this.lastAssistantMessage;
 			this.lastAssistantMessage = undefined;
 
+			// Flush bash results recorded during the run before any retry/compaction
+			// decision, so they are persisted even if no further prompt follows.
+			this.options.flushPendingBashMessages();
+
 			if (this.options.isRetryableError(message)) {
 				const didRetry = await this.options.handleRetryableError(message);
 				if (didRetry) {
@@ -134,6 +155,8 @@ export class AgentSessionEventLoopCoordinator {
 
 			this.options.resolveRetry();
 			await this.options.checkCompaction(message);
+		} else if (event.type === "agent_end") {
+			this.options.flushPendingBashMessages();
 		}
 	}
 }

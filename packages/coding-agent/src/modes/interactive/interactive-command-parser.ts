@@ -16,7 +16,8 @@ type PlanAction =
 	| "done"
 	| "reopen"
 	| "planner-model"
-	| "executor-model";
+	| "executor-model"
+	| "verifier-model";
 
 export type InteractiveBuiltinCommand =
 	| { kind: "settings" }
@@ -29,6 +30,7 @@ export type InteractiveBuiltinCommand =
 	| { kind: "name"; text: string }
 	| { kind: "session" }
 	| { kind: "plan"; action: PlanAction; feedback?: string; revision?: number; stepIndex?: number; modelRef?: string }
+	| { kind: "todo" }
 	| { kind: "research"; text: string }
 	| { kind: "debug" }
 	| { kind: "workspace"; text: string }
@@ -44,6 +46,7 @@ export type InteractiveBuiltinCommand =
 	| { kind: "reload" }
 	| { kind: "arminsayshi" }
 	| { kind: "resume" }
+	| { kind: "verbose" }
 	| { kind: "quit" };
 
 function matchesCommandWithOptionalArg(text: string, command: string): boolean {
@@ -74,6 +77,7 @@ export function parseInteractiveBuiltinCommand(text: string): InteractiveBuiltin
 	if (matchesCommandWithOptionalArg(text, "/workspace")) return { kind: "workspace", text };
 	if (text === "/changelog") return { kind: "changelog" };
 	if (text === "/hotkeys") return { kind: "hotkeys" };
+	if (text === "/todo" || text === "/todos") return { kind: "todo" };
 	if (text === "/fork") return { kind: "fork" };
 	if (text === "/tree") return { kind: "tree" };
 	if (text === "/login") return { kind: "login" };
@@ -97,6 +101,7 @@ export function parseInteractiveBuiltinCommand(text: string): InteractiveBuiltin
 	if (text === "/reload") return { kind: "reload" };
 	if (text === "/arminsayshi") return { kind: "arminsayshi" };
 	if (text === "/resume") return { kind: "resume" };
+	if (text === "/verbose") return { kind: "verbose" };
 	if (text === "/quit") return { kind: "quit" };
 	return undefined;
 }
@@ -130,10 +135,13 @@ function parsePlanCommand(text: string): Extract<InteractiveBuiltinCommand, { ki
 			return arg ? undefined : { kind: "plan", action: "review" };
 		case "interview": {
 			const revision = parseOptionalRevision(arg);
-			return arg !== undefined && revision === undefined ? undefined : { kind: "plan", action: "interview", revision };
+			return arg !== undefined && revision === undefined
+				? undefined
+				: { kind: "plan", action: "interview", revision };
 		}
 		case "planner-model":
 		case "executor-model":
+		case "verifier-model":
 			return { kind: "plan", action, modelRef: arg };
 		case "answer": {
 			if (!arg) return { kind: "plan", action: "answer", feedback: undefined };

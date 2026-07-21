@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, normalize, relative, resolve } from "node:path";
 
 const DEFAULT_MAX_FILES = 1000;
@@ -30,6 +30,7 @@ const PACKAGE_MANAGER_FILES = new Set([
 	"Cargo.toml",
 	"go.mod",
 ]);
+const WORKSPACE_INDEX_CACHE_TTL_MS = 30_000;
 
 export type WorkspaceImportEdge = {
 	from: string;
@@ -55,6 +56,7 @@ export type WorkspaceIndex = {
 export type BuildWorkspaceIndexOptions = {
 	rootDir: string;
 	maxFiles?: number;
+	useCache?: boolean;
 };
 
 export type WorkspaceManifestOptions = {
@@ -68,9 +70,26 @@ export type WorkspaceManifest = {
 	packageScripts: Record<string, string>;
 	likelyVerifier?: string;
 	importEdges: WorkspaceImportEdge[];
+	repoMap?: WorkspaceRepoMap;
+};
+
+export type WorkspaceRepoMap = {
+	rootDir: string;
+	topDirectories: string[];
+	entrypoints: string[];
+	topExtensions: Array<{ extension: string; count: number }>;
+	packageManagerFiles: string[];
+	testFileCount: number;
 };
 
 type IgnoreMatcher = (path: string, isDirectory: boolean) => boolean;
+type CachedWorkspaceIndex = {
+	index: WorkspaceIndex;
+	fingerprint: string;
+	createdAt: number;
+};
+
+const workspaceIndexCache = new Map<string, CachedWorkspaceIndex>();
 
 function normalizeRelativePath(path: string): string {
 	return path.split("\\").join("/");
@@ -81,10 +100,7 @@ function escapeRegExp(value: string): string {
 }
 
 function createGlobMatcher(pattern: string): RegExp {
-	const escaped = pattern
-		.split("*")
-		.map(escapeRegExp)
-		.join("[^/]*");
+	const escaped = pattern.split("*").map(escapeRegExp).join("[^/]*");
 	return new RegExp(`(^|/)${escaped}($|/)`);
 }
 
@@ -190,8 +206,8 @@ function resolveImportSpecifier(fromPath: string, specifier: string, fileSet: Se
 	const candidates = [
 		base,
 		...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].map((extension) => `${base}${extension}`),
-		...["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs", "index.cjs"].map((indexFile) =>
-			`${base}/${indexFile}`
+		...["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs", "index.cjs"].map(
+			(indexFile) => `${base}/${indexFile}`,
 		),
 	];
 	return candidates.find((candidate) => fileSet.has(candidate));
@@ -219,8 +235,39 @@ function buildImportEdges(rootDir: string, files: WorkspaceIndexFile[]): Workspa
 
 export function buildWorkspaceIndex(options: BuildWorkspaceIndexOptions): WorkspaceIndex {
 	const rootDir = resolve(options.rootDir);
+	const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
+	if (options.useCache !== false) {
+		const cacheKey = `${rootDir}:${maxFiles}`;
+		const fingerprint = workspaceIndexFingerprint(rootDir, maxFiles);
+		const cached = workspaceIndexCache.get(cacheKey);
+		if (
+			cached &&
+			cached.fingerprint === fingerprint &&
+			Date.now() - cached.createdAt < WORKSPACE_INDEX_CACHE_TTL_MS
+		) {
+			return cached.index;
+		}
+		const index = buildWorkspaceIndexUncached(rootDir, maxFiles);
+		workspaceIndexCache.set(cacheKey, { index, fingerprint, createdAt: Date.now() });
+		return index;
+	}
+	return buildWorkspaceIndexUncached(rootDir, maxFiles);
+}
+
+export function clearWorkspaceIndexCache(rootDir?: string): void {
+	if (!rootDir) {
+		workspaceIndexCache.clear();
+		return;
+	}
+	const normalizedRoot = resolve(rootDir);
+	for (const key of workspaceIndexCache.keys()) {
+		if (key.startsWith(`${normalizedRoot}:`)) workspaceIndexCache.delete(key);
+	}
+}
+
+function buildWorkspaceIndexUncached(rootDir: string, maxFiles: number): WorkspaceIndex {
 	const ignoreMatchers = createIgnoreMatchers(rootDir);
-	const files = collectFiles(rootDir, options.maxFiles ?? DEFAULT_MAX_FILES, ignoreMatchers);
+	const files = collectFiles(rootDir, maxFiles, ignoreMatchers);
 	return {
 		rootDir,
 		files,
@@ -229,6 +276,22 @@ export function buildWorkspaceIndex(options: BuildWorkspaceIndexOptions): Worksp
 		packageScripts: parsePackageScripts(rootDir),
 		importEdges: buildImportEdges(rootDir, files),
 	};
+}
+
+function workspaceIndexFingerprint(rootDir: string, maxFiles: number): string {
+	const trackedFiles = [".gitignore", "package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"];
+	const parts = [`max=${maxFiles}`];
+	for (const file of trackedFiles) {
+		const filePath = join(rootDir, file);
+		if (!existsSync(filePath)) continue;
+		try {
+			const stat = statSync(filePath);
+			parts.push(`${file}:${stat.size}:${stat.mtimeMs}`);
+		} catch {
+			parts.push(`${file}:unreadable`);
+		}
+	}
+	return parts.join("|");
 }
 
 function promptTerms(prompt: string): Set<string> {
@@ -282,7 +345,10 @@ function expandImportNeighborhood(files: string[], index: WorkspaceIndex): strin
 	return [...selected].sort();
 }
 
-export function buildWorkspaceManifest(index: WorkspaceIndex, options: WorkspaceManifestOptions = {}): WorkspaceManifest {
+export function buildWorkspaceManifest(
+	index: WorkspaceIndex,
+	options: WorkspaceManifestOptions = {},
+): WorkspaceManifest {
 	const maxFiles = options.maxFiles ?? DEFAULT_MANIFEST_FILE_LIMIT;
 	const terms = promptTerms(options.prompt ?? "");
 	const scored = index.files
@@ -301,11 +367,46 @@ export function buildWorkspaceManifest(index: WorkspaceIndex, options: Workspace
 		packageScripts: index.packageScripts,
 		likelyVerifier: likelyVerifierFromIndex(index),
 		importEdges: index.importEdges.filter((edge) => fileSet.has(edge.from) && fileSet.has(edge.to)),
+		repoMap: buildWorkspaceRepoMap(index),
+	};
+}
+
+export function buildWorkspaceRepoMap(index: WorkspaceIndex): WorkspaceRepoMap {
+	const directoryCounts = new Map<string, number>();
+	const extensionCounts = new Map<string, number>();
+	for (const file of index.files) {
+		const firstSegment = file.path.includes("/") ? file.path.slice(0, file.path.indexOf("/")) : ".";
+		directoryCounts.set(firstSegment, (directoryCounts.get(firstSegment) ?? 0) + 1);
+		const extension = file.extension || "(none)";
+		extensionCounts.set(extension, (extensionCounts.get(extension) ?? 0) + 1);
+	}
+	const topDirectories = [...directoryCounts.entries()]
+		.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+		.slice(0, 8)
+		.map(([directory]) => directory);
+	const topExtensions = [...extensionCounts.entries()]
+		.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+		.slice(0, 8)
+		.map(([extension, count]) => ({ extension, count }));
+	const entrypoints = index.files
+		.map((file) => file.path)
+		.filter((file) => /(^|\/)(main|index|cli|app|server)\.[cm]?[jt]sx?$/i.test(file))
+		.slice(0, 12);
+	return {
+		rootDir: index.rootDir,
+		topDirectories,
+		entrypoints,
+		topExtensions,
+		packageManagerFiles: index.packageManagerFiles,
+		testFileCount: index.testFiles.length,
 	};
 }
 
 export function formatWorkspaceManifest(manifest: WorkspaceManifest): string {
 	const lines = ["", "Controlled workspace manifest:"];
+	if (manifest.repoMap) {
+		lines.push(formatWorkspaceRepoMap(manifest.repoMap));
+	}
 	if (manifest.files.length > 0) {
 		lines.push("Relevant files:");
 		for (const file of manifest.files) lines.push(`- ${file}`);
@@ -325,5 +426,19 @@ export function formatWorkspaceManifest(manifest: WorkspaceManifest): string {
 		for (const edge of manifest.importEdges.slice(0, 12)) lines.push(`- ${edge.from} -> ${edge.to}`);
 	}
 	lines.push("Use these exact relative paths when possible. Prefer direct reads over broad discovery.");
+	return lines.join("\n");
+}
+
+export function formatWorkspaceRepoMap(repoMap: WorkspaceRepoMap): string {
+	const lines = ["Repo map:"];
+	if (repoMap.topDirectories.length > 0) lines.push(`- top directories: ${repoMap.topDirectories.join(", ")}`);
+	if (repoMap.entrypoints.length > 0) lines.push(`- entrypoints: ${repoMap.entrypoints.join(", ")}`);
+	if (repoMap.packageManagerFiles.length > 0) {
+		lines.push(`- package files: ${repoMap.packageManagerFiles.slice(0, 6).join(", ")}`);
+	}
+	if (repoMap.topExtensions.length > 0) {
+		lines.push(`- file types: ${repoMap.topExtensions.map((item) => `${item.extension}=${item.count}`).join(", ")}`);
+	}
+	lines.push(`- test files: ${repoMap.testFileCount}`);
 	return lines.join("\n");
 }

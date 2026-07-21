@@ -248,16 +248,23 @@ export class AgentInterface extends LitElement {
 		this._autoScroll = true; // Enable auto-scroll when sending a message
 
 		// Compose message with attachments if any
-		if (attachments && attachments.length > 0) {
-			const message: UserMessageWithAttachments = {
-				role: "user-with-attachments",
-				content: input,
-				attachments,
-				timestamp: Date.now(),
-			};
-			await this.session?.prompt(message);
-		} else {
-			await this.session?.prompt(input);
+		try {
+			if (attachments && attachments.length > 0) {
+				const message: UserMessageWithAttachments = {
+					role: "user-with-attachments",
+					content: input,
+					attachments,
+					timestamp: Date.now(),
+				};
+				await this.session?.prompt(message);
+			} else {
+				await this.session?.prompt(input);
+			}
+		} catch (error) {
+			// Restore the draft so a failed send doesn't lose the user's input
+			this._messageEditor.value = input;
+			this._messageEditor.attachments = attachments ?? [];
+			throw error;
 		}
 	}
 
@@ -369,7 +376,10 @@ export class AgentInterface extends LitElement {
 							.showModelSelector=${this.enableModelSelector}
 							.showThinkingSelector=${this.enableThinkingSelector}
 							.onSend=${(input: string, attachments: Attachment[]) => {
-								this.sendMessage(input, attachments);
+								this.sendMessage(input, attachments).catch((error) => {
+									console.error("Failed to send message:", error);
+									alert(`${i18n("An error occurred")}: ${error?.message || String(error)}`);
+								});
 							}}
 							.onAbort=${() => session.abort()}
 							.onModelSelect=${() => {

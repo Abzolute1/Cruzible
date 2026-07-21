@@ -228,6 +228,18 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Context lines in tool diffs"
 				},
+				"toolDiffLineNum": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Optional. Line-number gutter in tool diffs (falls back to \"dim\")"
+				},
+				"toolDiffAddedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Optional. Background tint for changed tokens in added diff lines (falls back to \"toolSuccessBg\")"
+				},
+				"toolDiffRemovedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Optional. Background tint for changed tokens in removed diff lines (falls back to \"toolErrorBg\")"
+				},
 				"syntaxComment": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Syntax highlighting: comments"

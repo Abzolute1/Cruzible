@@ -89,7 +89,7 @@ describe("AgentSessionRecoveryReplayScheduler", () => {
 				messages: [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 }] as any,
 				isStreaming: false,
 				model: { provider: "openai", id: "gpt-5.4-mini" },
-				thinkingLevel: "medium" as const,
+				thinkingLevel: "medium" as "medium" | "high",
 			};
 			const run = vi.fn().mockResolvedValue(undefined);
 			const scheduler = new AgentSessionRecoveryReplayScheduler({

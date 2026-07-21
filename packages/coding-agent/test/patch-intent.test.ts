@@ -30,9 +30,7 @@ describe("patch-intent", () => {
 		expect(
 			normalizePatchIntent({
 				path: "src/app.ts",
-				patch: ["<<<<<<< SEARCH", "const value = 1;", "=======", "const value = 2;", ">>>>>>> REPLACE"].join(
-					"\n",
-				),
+				patch: ["<<<<<<< SEARCH", "const value = 1;", "=======", "const value = 2;", ">>>>>>> REPLACE"].join("\n"),
 			}),
 		).toEqual({
 			path: "src/app.ts",

@@ -39,6 +39,29 @@ const OLDER_THINKING_PLACEHOLDER = "[older reasoning omitted to preserve context
 const OLDER_HIDDEN_CUSTOM_PLACEHOLDER = "[older hidden runtime message omitted to preserve context]";
 const POST_TOOL_CONTINUATION_CUSTOM_TYPE = "post_tool_continuation_state";
 
+export interface ContextHygieneOptions {
+	keepTurns?: number;
+	maxToolResultChars?: number;
+	maxHiddenCustomChars?: number;
+}
+
+function resolveContextHygieneOptions(
+	options: number | ContextHygieneOptions | undefined,
+): Required<ContextHygieneOptions> {
+	if (typeof options === "number") {
+		return {
+			keepTurns: options,
+			maxToolResultChars: DEFAULT_LIVE_CONTEXT_MAX_TOOL_RESULT_CHARS,
+			maxHiddenCustomChars: DEFAULT_LIVE_CONTEXT_MAX_HIDDEN_CUSTOM_CHARS,
+		};
+	}
+	return {
+		keepTurns: options?.keepTurns ?? DEFAULT_LIVE_CONTEXT_KEEP_TURNS,
+		maxToolResultChars: options?.maxToolResultChars ?? DEFAULT_LIVE_CONTEXT_MAX_TOOL_RESULT_CHARS,
+		maxHiddenCustomChars: options?.maxHiddenCustomChars ?? DEFAULT_LIVE_CONTEXT_MAX_HIDDEN_CUSTOM_CHARS,
+	};
+}
+
 /**
  * Extract tool name from an assistant message's tool call by tool_result index.
  *
@@ -190,13 +213,6 @@ function cloneMessageWithTextOnly(msg: AgentMessage, text: string): AgentMessage
 	return msg;
 }
 
-function getAssistantTextBlocks(msg: AgentMessage): Array<{ type: "text"; text: string }> {
-	if (msg.role !== "assistant") return [];
-	return msg.content.filter(
-		(block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
-	);
-}
-
 function hasThinkingBlocks(msg: AgentMessage): boolean {
 	return msg.role === "assistant" && msg.content.some((block) => block.type === "thinking");
 }
@@ -258,10 +274,14 @@ function describeTrailingToolResult(msg: AgentMessage): string | undefined {
 	const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
 	const details = (msg as { details?: Record<string, unknown> }).details;
 	const detail =
-		typeof details?.url === "string" ? details.url
-			: typeof details?.path === "string" ? details.path
-				: typeof details?.query === "string" ? details.query
-					: typeof details?.command === "string" ? details.command
+		typeof details?.url === "string"
+			? details.url
+			: typeof details?.path === "string"
+				? details.path
+				: typeof details?.query === "string"
+					? details.query
+					: typeof details?.command === "string"
+						? details.command
 						: undefined;
 	return detail ? `${toolName} around \`${detail}\`` : toolName;
 }
@@ -291,7 +311,11 @@ function mutateTextOnlyMessage(msg: AgentMessage, text: string): void {
  * @param keepTurns - Number of most recent user-initiated turns to leave untouched
  * @returns The number of tool results that were truncated
  */
-export function microCompact(messages: AgentMessage[], keepTurns = DEFAULT_KEEP_TURNS): number {
+export function microCompact(
+	messages: AgentMessage[],
+	keepTurns = DEFAULT_KEEP_TURNS,
+	recordToolOutcome?: (outcome: any) => void,
+): number {
 	if (messages.length === 0) return 0;
 
 	const protectedIndices = collectProtectedIndices(messages, keepTurns);
@@ -337,6 +361,10 @@ export function microCompact(messages: AgentMessage[], keepTurns = DEFAULT_KEEP_
 				if (shouldStripAttachments && Array.isArray(msg.content)) {
 					msg.content = [{ type: "text", text: nextText }];
 				}
+				if (recordToolOutcome && toolName && COMPACTABLE_TOOLS.has(toolName)) {
+					// Record fact before truncation so cache remembers the result (no extra cost, preserves knowledge)
+					recordToolOutcome({ tool: toolName, success: true, detail: content.slice(0, 100) });
+				}
 				compactedCount++;
 				continue;
 			}
@@ -364,10 +392,12 @@ export function microCompact(messages: AgentMessage[], keepTurns = DEFAULT_KEEP_
  */
 export function createContextHygieneCopy(
 	messages: AgentMessage[],
-	keepTurns = DEFAULT_LIVE_CONTEXT_KEEP_TURNS,
+	options?: number | ContextHygieneOptions,
+	recordToolOutcome?: (outcome: any) => void,
 ): AgentMessage[] {
 	if (messages.length === 0) return messages;
 
+	const { keepTurns, maxToolResultChars, maxHiddenCustomChars } = resolveContextHygieneOptions(options);
 	const protectedIndices = collectProtectedIndices(messages, keepTurns);
 	let nextMessages: AgentMessage[] | undefined;
 
@@ -379,7 +409,7 @@ export function createContextHygieneCopy(
 		const toolName = getToolNameForResult(messages, i);
 		const isCompactable = toolName !== undefined && COMPACTABLE_TOOLS.has(toolName);
 		const textContent = getToolResultContent(msg);
-		const shouldCompactText = isCompactable && textContent.length > DEFAULT_LIVE_CONTEXT_MAX_TOOL_RESULT_CHARS;
+		const shouldCompactText = isCompactable && textContent.length > maxToolResultChars;
 		const shouldStripAttachments = hasNonTextAttachmentBlocks(msg);
 
 		if (!shouldCompactText && !shouldStripAttachments) continue;
@@ -395,9 +425,12 @@ export function createContextHygieneCopy(
 			nextMessages = [...messages];
 		}
 		nextMessages[i] = cloneMessageWithTextOnly(msg, compactText);
+		if (recordToolOutcome && toolName && COMPACTABLE_TOOLS.has(toolName)) {
+			recordToolOutcome({ tool: toolName, success: true, detail: textContent.slice(0, 100) });
+		}
 	}
 
-		for (let i = 0; i < messages.length; i++) {
+	for (let i = 0; i < messages.length; i++) {
 		if (protectedIndices.has(i)) continue;
 		const msg = messages[i];
 		if (msg.role !== "user" && msg.role !== "custom") continue;
@@ -433,7 +466,7 @@ export function createContextHygieneCopy(
 		if (msg.role !== "custom" || msg.display !== false) continue;
 
 		const textContent = getMessageTextContent(msg);
-		const shouldCompactText = textContent.length > DEFAULT_LIVE_CONTEXT_MAX_HIDDEN_CUSTOM_CHARS;
+		const shouldCompactText = textContent.length > maxHiddenCustomChars;
 		const shouldStripAttachments = hasNonTextAttachmentBlocks(msg);
 		if (!shouldCompactText && !shouldStripAttachments) continue;
 

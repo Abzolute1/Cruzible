@@ -10,8 +10,8 @@ type CopilotCredentials = OAuthCredentials & {
 	enterpriseUrl?: string;
 };
 
-const decode = (s: string) => atob(s);
-const CLIENT_ID = decode("SXYxLmI1MDdhMDhjODdlY2ZlOTg=");
+// Public installed-app client ID (VS Code's GitHub OAuth app, used by Copilot); not a secret.
+const CLIENT_ID = "Iv1.b507a08c87ecfe98";
 
 const COPILOT_HEADERS = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
@@ -92,7 +92,9 @@ export function getGitHubCopilotBaseUrl(token?: string, enterpriseDomain?: strin
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
-	const response = await fetch(url, init);
+	// Default timeout so a stalled connection can't hang login/refresh forever;
+	// a caller-provided signal takes precedence.
+	const response = await fetch(url, { signal: AbortSignal.timeout(30_000), ...init });
 	if (!response.ok) {
 		const text = await response.text();
 		throw new Error(`${response.status} ${response.statusText}: ${text}`);

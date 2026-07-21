@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import type { TaskPolicy } from "../src/core/task-policy.js";
 import { buildEvidencePlan, formatEvidencePlanStep, nextEvidencePlanStep } from "../src/core/evidence-planner.js";
+import type { TaskPolicy } from "../src/core/task-policy.js";
 
 const debugPolicy: TaskPolicy = {
 	mode: "strict_benchmark",
@@ -36,9 +36,9 @@ describe("evidence-planner", () => {
 		const plan = buildEvidencePlan(debugPolicy);
 
 		expect(formatEvidencePlanStep(nextEvidencePlanStep(plan) ?? plan[0])).toBe("read tests/config-parser.test.mjs");
-		expect(formatEvidencePlanStep(nextEvidencePlanStep(plan, { readPaths: ["tests/config-parser.test.mjs"] }) ?? plan[0])).toBe(
-			"read src/config-parser.mjs",
-		);
+		expect(
+			formatEvidencePlanStep(nextEvidencePlanStep(plan, { readPaths: ["tests/config-parser.test.mjs"] }) ?? plan[0]),
+		).toBe("read src/config-parser.mjs");
 		expect(
 			formatEvidencePlanStep(
 				nextEvidencePlanStep(plan, {
@@ -76,4 +76,3 @@ describe("evidence-planner", () => {
 		expect(plan.map(formatEvidencePlanStep)).toEqual(["bash node --test", "final_answer"]);
 	});
 });
-

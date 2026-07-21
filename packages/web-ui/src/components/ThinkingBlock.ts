@@ -2,6 +2,7 @@ import { icon } from "@mariozechner/mini-lit";
 import { html, LitElement } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ChevronRight } from "lucide";
+import "./SafeMarkdownBlock.js";
 
 @customElement("thinking-block")
 export class ThinkingBlock extends LitElement {
@@ -36,7 +37,7 @@ export class ThinkingBlock extends LitElement {
 					<span class="transition-transform inline-block ${this.isExpanded ? "rotate-90" : ""}">${icon(ChevronRight, "sm")}</span>
 					<span class="${shimmerClasses}">Thinking...</span>
 				</div>
-				${this.isExpanded ? html`<markdown-block .content=${this.content} .isThinking=${true}></markdown-block>` : ""}
+				${this.isExpanded ? html`<safe-markdown-block .content=${this.content} .isThinking=${true}></safe-markdown-block>` : ""}
 			</div>
 		`;
 	}

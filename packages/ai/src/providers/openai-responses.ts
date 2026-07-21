@@ -109,8 +109,11 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -153,12 +156,11 @@ function createClient(
 	optionsHeaders?: Record<string, string>,
 ) {
 	if (!apiKey) {
-		if (!process.env.OPENAI_API_KEY) {
-			throw new Error(
-				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
-			);
+		if (model.provider === "openai" && process.env.OPENAI_API_KEY) {
+			apiKey = process.env.OPENAI_API_KEY;
+		} else {
+			throw new Error(`No API key for provider: ${model.provider}`);
 		}
-		apiKey = process.env.OPENAI_API_KEY;
 	}
 
 	const headers = { ...model.headers };

@@ -134,6 +134,11 @@ export async function refreshOAuthToken(
  * @returns API key string and updated credentials, or null if no credentials
  * @throws Error if refresh fails
  */
+
+// In-flight refreshes per provider: concurrent callers must share one refresh,
+// since providers with rotating refresh tokens invalidate the old token on use.
+const inFlightRefreshes = new Map<OAuthProviderId, Promise<OAuthCredentials>>();
+
 export async function getOAuthApiKey(
 	providerId: OAuthProviderId,
 	credentials: Record<string, OAuthCredentials>,
@@ -150,10 +155,17 @@ export async function getOAuthApiKey(
 
 	// Refresh if expired
 	if (Date.now() >= creds.expires) {
+		let refresh = inFlightRefreshes.get(providerId);
+		if (!refresh) {
+			refresh = provider.refreshToken(creds).finally(() => {
+				inFlightRefreshes.delete(providerId);
+			});
+			inFlightRefreshes.set(providerId, refresh);
+		}
 		try {
-			creds = await provider.refreshToken(creds);
-		} catch (_error) {
-			throw new Error(`Failed to refresh OAuth token for ${providerId}`);
+			creds = await refresh;
+		} catch (error) {
+			throw new Error(`Failed to refresh OAuth token for ${providerId}`, { cause: error });
 		}
 	}
 

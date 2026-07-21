@@ -167,6 +167,19 @@ function getHomeDir(): string {
 	return process.env.HOME || homedir();
 }
 
+/**
+ * Defense in depth against package-source path traversal: assert that an install
+ * path stays inside its install root before any fs mutation (clone, rmSync) uses it.
+ */
+export function assertContainedInstallPath(installRoot: string, target: string): string {
+	const resolvedRoot = resolve(installRoot);
+	const resolvedTarget = resolve(target);
+	if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(`${resolvedRoot}${sep}`)) {
+		throw new Error(`Refusing to use install path outside its install root: ${target}`);
+	}
+	return target;
+}
+
 function prefixIgnorePattern(line: string, prefix: string): string | null {
 	const trimmed = line.trim();
 	if (!trimmed) return null;
@@ -1525,11 +1538,19 @@ export class DefaultPackageManager implements PackageManager {
 
 	private parseNpmSpec(spec: string): { name: string; version?: string } {
 		const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
-		if (!match) {
-			return { name: spec };
+		const name = match?.[1] ?? spec;
+		const version = match?.[2];
+		// Reject path traversal in package names: the name is joined under an
+		// install root, so `npm:../../x` would otherwise escape it.
+		const segments = (name.startsWith("@") ? name.slice(1) : name).split("/");
+		if (
+			name.startsWith("/") ||
+			/^[A-Za-z]:/.test(name) ||
+			name.includes("\\") ||
+			segments.some((segment) => segment === "" || segment === "..")
+		) {
+			throw new Error(`Refusing unsafe npm package name: ${name}`);
 		}
-		const name = match[1] ?? spec;
-		const version = match[2];
 		return { name, version };
 	}
 
@@ -1721,22 +1742,34 @@ export class DefaultPackageManager implements PackageManager {
 
 	private getNpmInstallPath(source: NpmSource, scope: SourceScope): string {
 		if (scope === "temporary") {
-			return join(this.getTemporaryDir("npm"), "node_modules", source.name);
+			const installRoot = this.getTemporaryDir("npm");
+			return assertContainedInstallPath(installRoot, join(installRoot, "node_modules", source.name));
 		}
 		if (scope === "project") {
-			return join(getProjectConfigDir(this.cwd), "npm", "node_modules", source.name);
+			const installRoot = join(getProjectConfigDir(this.cwd), "npm");
+			return assertContainedInstallPath(installRoot, join(installRoot, "node_modules", source.name));
 		}
-		return join(this.getGlobalNpmRoot(), source.name);
+		const installRoot = this.getGlobalNpmRoot();
+		return assertContainedInstallPath(installRoot, join(installRoot, source.name));
 	}
 
 	private getGitInstallPath(source: GitSource, scope: SourceScope): string {
 		if (scope === "temporary") {
-			return this.getTemporaryDir(`git-${source.host}`, source.path);
+			// Historical cache layout: hash over host + path, with the path as subdir.
+			const installRoot = join(
+				tmpdir(),
+				"ag1-extensions",
+				`git-${source.host}`,
+				createHash("sha256").update(`git-${source.host}-${source.path}`).digest("hex").slice(0, 8),
+			);
+			return assertContainedInstallPath(installRoot, join(installRoot, source.path));
 		}
 		if (scope === "project") {
-			return join(getProjectConfigDir(this.cwd), "git", source.host, source.path);
+			const installRoot = join(getProjectConfigDir(this.cwd), "git");
+			return assertContainedInstallPath(installRoot, join(installRoot, source.host, source.path));
 		}
-		return join(this.agentDir, "git", source.host, source.path);
+		const installRoot = join(this.agentDir, "git");
+		return assertContainedInstallPath(installRoot, join(installRoot, source.host, source.path));
 	}
 
 	private getGitInstallRoot(scope: SourceScope): string | undefined {
@@ -1749,12 +1782,9 @@ export class DefaultPackageManager implements PackageManager {
 		return join(this.agentDir, "git");
 	}
 
-	private getTemporaryDir(prefix: string, suffix?: string): string {
-		const hash = createHash("sha256")
-			.update(`${prefix}-${suffix ?? ""}`)
-			.digest("hex")
-			.slice(0, 8);
-		return join(tmpdir(), "ag1-extensions", prefix, hash, suffix ?? "");
+	private getTemporaryDir(prefix: string): string {
+		const hash = createHash("sha256").update(`${prefix}-`).digest("hex").slice(0, 8);
+		return join(tmpdir(), "ag1-extensions", prefix, hash);
 	}
 
 	private getBaseDirForScope(scope: SourceScope): string {
@@ -2076,7 +2106,10 @@ export class DefaultPackageManager implements PackageManager {
 		);
 		addResources(
 			"skills",
-			[...collectAutoSkillEntries(userDirs.skills, "ag1"), ...collectAutoSkillEntries(userAgentsSkillsDir, "agents")],
+			[
+				...collectAutoSkillEntries(userDirs.skills, "ag1"),
+				...collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
+			],
 			userMetadata,
 			userOverrides.skills,
 			globalBaseDir,
@@ -2224,11 +2257,17 @@ export class DefaultPackageManager implements PackageManager {
 
 	private runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
 		return new Promise((resolvePromise, reject) => {
+			// "inherit" only makes sense with a human watching: on a real TTY the
+			// child shares the terminal; anywhere else (tests, CI, pipes) capture
+			// and drain so the parent's log stays clean of raw package-manager output.
+			const shareTerminal = !isStdoutTakenOver() && process.stderr.isTTY === true;
 			const child = spawn(command, args, {
 				cwd: options?.cwd,
-				stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
+				stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : shareTerminal ? "inherit" : ["ignore", "pipe", "pipe"],
 				shell: process.platform === "win32",
 			});
+			child.stdout?.resume();
+			child.stderr?.resume();
 			child.on("error", reject);
 			child.on("exit", (code) => {
 				if (code === 0) {

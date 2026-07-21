@@ -1,19 +1,28 @@
 /**
- * Session Debug Logger — Non-blocking session debug logger.
+ * Session Debug Logger — non-blocking session recorder and analyzer.
  *
  * Records every agent session to disk for post-mortem analysis,
- * model benchmarking, and LLM-based audit.
+ * model benchmarking, and LLM-based audit. Beyond raw recording it derives
+ * analyzer signals: per-turn state snapshots, typed harness-action events
+ * (nudges, retries, stalls, tool changes, vision verdicts), journal entry
+ * summaries, loop detection, and a session outcome record.
  *
  * Writes three files per session:
- *  - session.md           — Full detailed turn-by-turn log
- *  - session.compact.md   — Compact one-line-per-turn summary
+ *  - session.md           — Full detailed turn-by-turn log + outcome analysis
+ *  - session.compact.md   — Compact one-line-per-turn summary + outcome block
  *  - timeline.json        — Machine-parseable event timeline
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+	getCompletedStepCount,
+	getLatestInteractivePlanArtifact,
+	INTERACTIVE_PLAN_ARTIFACT_TYPE,
+} from "../modes/interactive/interactive-plan-artifacts.js";
 import type { AgentSession, AgentSessionEvent } from "./agent-session.js";
 import type { ToolOutcome } from "./auton/nudges/types.js";
+import { buildToolOutcomeFingerprint, normalizeToolName } from "./auton/nudges/types.js";
 import type { CompactionResult } from "./compaction/index.js";
 import {
 	formatCost,
@@ -25,6 +34,7 @@ import {
 	padLeft,
 	redactSecrets,
 	safeJsonPreview,
+	sanitizeNamePart,
 	summarizeToolArgs,
 	toSessionDateStr,
 	toSessionDateTimeStr,
@@ -32,8 +42,14 @@ import {
 	truncate,
 } from "./debug-formatters.js";
 import { evaluateInteractiveNudges, type InteractiveNudgeContext, type NudgeWarning } from "./nudge-warnings.js";
+import type { SessionEntry } from "./session-manager.js";
+import { computeSessionMetrics, type SessionMetrics } from "./session-metrics.js";
+import { readLatestTodoSnapshot, summarizeTodos, TODO_JOURNAL_TYPE } from "./todos.js";
+import { buildToolCallDigest, buildToolResultDigest } from "./tool-outcome-digests.js";
 import { extractTrackedFileFromToolResult } from "./tool-outcome-file.js";
-import { buildToolOutcomeFingerprint, normalizeToolName } from "./auton/nudges/types.js";
+
+/** customType used by the task tool for subagent run records (see core/tools/task.ts). */
+const TASK_JOURNAL_TYPE = "ag1.subagent_task";
 
 // ============================================================================
 // Types
@@ -82,6 +98,7 @@ interface TurnState {
 	toolFailureWarnings: ToolFailureWarningEntry[];
 	xmlToolCalls: XmlToolCallEntry[];
 	degradedTurns: DegradedTurnEntry[];
+	harnessLines: string[];
 	compaction?: CompactionEntry;
 	steeringMessages: string[];
 	followUpMessages: string[];
@@ -89,7 +106,20 @@ interface TurnState {
 	errorMessage?: string;
 	tokenDeltas?: TokenDeltas;
 	contextPercent: number | null;
+	stateText?: string;
 }
+
+/** Tool outcome row fed into session-metrics at session end. */
+type ToolOutcomeForMetrics = {
+	tool: string;
+	success: boolean;
+	callDigest?: string;
+	resultDigest?: string;
+	durationMs: number;
+	contentLength: number;
+	timestamp: number;
+	verdict?: string;
+};
 
 interface TokenDeltas {
 	inputTokensDelta: number;
@@ -175,10 +205,26 @@ export class SessionDebugLogger {
 
 	// Subscription
 	private unsubscribe: (() => void) | null = null;
+	private unsubscribeEntries: (() => void) | null = null;
 
 	// Turn tracking
 	private turnCounter = 0;
 	private currentTurn: TurnState | null = null;
+	/** True once a real session turn_start event has been seen — turns are then driven by turn_start, not agent_start. */
+	private seenTurnEvents = false;
+	/** True when the open turn was optimistically opened by agent_start (fallback) and not yet adopted by a turn_start. */
+	private currentTurnFromAgentStart = false;
+	/** Steering/follow-up messages that arrive between turns are buffered into the next turn block. */
+	private pendingSteeringMessages: string[] = [];
+	private pendingFollowUpMessages: string[] = [];
+
+	// Analyzer state
+	private journalLines: string[] = [];
+	private lastFiredNudgeTurns = new Map<string, number>();
+	private lastVisionVerdict: string | undefined;
+	private prevActiveTools: string[] | null = null;
+	private toolOutcomesForMetrics: ToolOutcomeForMetrics[] = [];
+	private outcomeWritten = false;
 
 	// Token tracking
 	private previousCumulative: CumulativeTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -264,6 +310,12 @@ export class SessionDebugLogger {
 			// Subscribe to session events
 			this.unsubscribe = this.session.subscribe(this.handleEvent);
 
+			// Subscribe to journal entries (custom entries become timeline events)
+			const sessionManager = this.session.sessionManager;
+			if (typeof sessionManager.onEntryAppended === "function") {
+				this.unsubscribeEntries = sessionManager.onEntryAppended((entry) => this.onJournalEntryAppended(entry));
+			}
+
 			// Emit session_start timeline event
 			const model = this.session.model;
 			this.addTimelineEvent({
@@ -316,6 +368,10 @@ export class SessionDebugLogger {
 			this.unsubscribe();
 			this.unsubscribe = null;
 		}
+		if (this.unsubscribeEntries) {
+			this.unsubscribeEntries();
+			this.unsubscribeEntries = null;
+		}
 
 		// Flush and close
 		this.enqueueWrite(() => {
@@ -339,6 +395,12 @@ export class SessionDebugLogger {
 				break;
 			case "agent_end":
 				this.onAgentEnd(event);
+				break;
+			case "turn_start":
+				this.onSessionTurnStart(event);
+				break;
+			case "turn_end":
+				this.onSessionTurnEnd(event);
 				break;
 			case "message_start":
 				this.onMessageStart(event);
@@ -379,7 +441,7 @@ export class SessionDebugLogger {
 			case "queue_update":
 				this.onQueueUpdate(event);
 				break;
-			// message_update, queue_update: no-op for logger
+			// message_update: no-op for logger
 		}
 	};
 
@@ -388,6 +450,74 @@ export class SessionDebugLogger {
 	// -----------------------------------------------------------------------
 
 	private onAgentStart(_event: any): void {
+		if (this.seenTurnEvents) {
+			// Turn events drive segmentation — agent_start only marks the run boundary.
+			this.addTimelineEvent({ type: "agent_start", timestamp: Date.now() });
+			return;
+		}
+		// Fallback: no turn events seen (older paths) — a run is one turn.
+		this.openTurn();
+		this.currentTurnFromAgentStart = true;
+	}
+
+	private onAgentEnd(event: any): void {
+		if (this.currentTurn) {
+			// Fallback mode, or a dangling turn never closed by a turn_end — close it.
+			this.closeCurrentTurn(
+				typeof event.stopReason === "string" ? event.stopReason : undefined,
+				typeof event.errorMessage === "string" ? event.errorMessage : undefined,
+			);
+		}
+		if (this.seenTurnEvents) {
+			this.addTimelineEvent({
+				type: "agent_end",
+				timestamp: Date.now(),
+				stopReason: typeof event.stopReason === "string" ? event.stopReason : undefined,
+				errorMessage: typeof event.errorMessage === "string" ? event.errorMessage : undefined,
+			});
+		}
+	}
+
+	private onSessionTurnStart(_event: any): void {
+		this.seenTurnEvents = true;
+		if (this.currentTurn) {
+			if (this.currentTurnFromAgentStart && !this.turnHasActivity(this.currentTurn)) {
+				// Adopt the turn optimistically opened by agent_start — it is this LLM turn.
+				this.currentTurnFromAgentStart = false;
+				return;
+			}
+			// Dangling turn (missing turn_end) — close it before opening the next.
+			this.closeCurrentTurn();
+		}
+		this.openTurn();
+	}
+
+	private onSessionTurnEnd(event: any): void {
+		if (!this.currentTurn) return;
+		const message = event.message;
+		this.closeCurrentTurn(
+			typeof message?.stopReason === "string" ? message.stopReason : undefined,
+			typeof message?.errorMessage === "string" ? message.errorMessage : undefined,
+		);
+	}
+
+	/** True when anything has already been recorded on the turn (input, tools, signals). */
+	private turnHasActivity(turn: TurnState): boolean {
+		return (
+			turn.inputText.length > 0 ||
+			turn.toolCalls.length > 0 ||
+			turn.nudgeWarnings.length > 0 ||
+			turn.xmlToolCalls.length > 0 ||
+			turn.degradedTurns.length > 0 ||
+			turn.harnessLines.length > 0 ||
+			turn.steeringMessages.length > 0 ||
+			turn.followUpMessages.length > 0 ||
+			turn.compaction !== undefined
+		);
+	}
+
+	/** Open a new turn block: increments the counter and emits the timeline turn_start. */
+	private openTurn(): void {
 		this.turnCounter++;
 		const now = Date.now();
 
@@ -404,12 +534,17 @@ export class SessionDebugLogger {
 			toolFailureWarnings: [],
 			xmlToolCalls: [],
 			degradedTurns: [],
-			steeringMessages: [],
-			followUpMessages: [],
+			harnessLines: [],
+			steeringMessages: this.pendingSteeringMessages.splice(0),
+			followUpMessages: this.pendingFollowUpMessages.splice(0),
 			contextPercent: null,
 		};
+		this.currentTurnFromAgentStart = false;
 
 		this.turnAnomalies.set(this.turnCounter, []);
+		if (this.currentTurn.steeringMessages.length > 0) {
+			this.addAnomaly("STEER");
+		}
 
 		// Timeline event
 		this.addTimelineEvent({
@@ -421,19 +556,19 @@ export class SessionDebugLogger {
 		});
 	}
 
-	private onAgentEnd(event: any): void {
+	private closeCurrentTurn(stopReason?: string, errorMessage?: string): void {
 		if (!this.currentTurn) return;
 
 		const turn = this.currentTurn;
 		const now = Date.now();
 
 		// Capture stop reason
-		if (event.stopReason) {
-			turn.stopReason = event.stopReason;
-			if (event.stopReason === "error" && event.errorMessage) {
-				turn.errorMessage = event.errorMessage;
+		if (stopReason) {
+			turn.stopReason = stopReason;
+			if (stopReason === "error" && errorMessage) {
+				turn.errorMessage = errorMessage;
 				this.addAnomaly("ERROR");
-			} else if (event.stopReason === "aborted") {
+			} else if (stopReason === "aborted") {
 				this.addAnomaly("ABORT");
 			}
 		}
@@ -463,6 +598,49 @@ export class SessionDebugLogger {
 			// ignore
 		}
 
+		// Per-turn state snapshot (model, tools, todos, plan, context)
+		try {
+			const snapshot = this.captureTurnStateSnapshot(turn);
+			turn.stateText = snapshot.stateText;
+			this.addTimelineEvent({
+				type: "state_snapshot",
+				timestamp: now,
+				turn: turn.turn,
+				model: snapshot.model,
+				thinkingLevel: snapshot.thinkingLevel,
+				contextPercent: turn.contextPercent,
+				activeTools: snapshot.activeTools,
+				todos: snapshot.todos,
+				plan: snapshot.plan,
+			});
+			if (snapshot.toolsChanged) {
+				const { added, removed } = snapshot.toolsChanged;
+				this.emitHarnessEvent(
+					`tools changed: ${[...added.map((t) => `+${t}`), ...removed.map((t) => `-${t}`)].join(" ")}`,
+					{ type: "tools_changed", timestamp: now, turn: turn.turn, added, removed },
+				);
+			}
+		} catch {
+			// ignore snapshot errors
+		}
+
+		// Vision verdict (emitted when it changes)
+		try {
+			const model = this.session.model;
+			const verdict = model ? this.session.getVisionVerdict?.(model) : undefined;
+			if (verdict && verdict !== this.lastVisionVerdict) {
+				this.lastVisionVerdict = verdict;
+				this.emitHarnessEvent(`vision verdict: ${verdict}`, {
+					type: "vision_verdict",
+					timestamp: now,
+					turn: turn.turn,
+					verdict,
+				});
+			}
+		} catch {
+			// ignore vision verdict errors
+		}
+
 		// Nudge evaluation (interactive mode)
 		this.nudgeTurnIndex++;
 		this.lastNudgeOutputTokens = deltas.outputTokensDelta;
@@ -479,6 +657,7 @@ export class SessionDebugLogger {
 			for (const w of dedupedWarnings) {
 				this.totalNudges++;
 				this.addAnomaly(`NUDGE(${w.type})`);
+				this.lastFiredNudgeTurns.set(w.type, turn.turn);
 				turn.nudgeWarnings.push({
 					type: w.type,
 					message: w.message,
@@ -493,6 +672,32 @@ export class SessionDebugLogger {
 					details: w.message,
 					shouldStop: false,
 				});
+				this.emitHarnessEvent(`nudge fired (${w.type}): ${truncate(w.message, 140)}`, {
+					type: "nudge_fired",
+					timestamp: now,
+					turn: turn.turn,
+					nudgeType: w.type,
+					message: w.message,
+				});
+			}
+
+			// Nudge resolution: a previously-fired type absent from this evaluation
+			// is considered resolved.
+			const activeTypes = new Set(warnings.map((w) => w.type));
+			const resolvedTypes: string[] = [];
+			for (const [type, firedTurn] of this.lastFiredNudgeTurns) {
+				if (activeTypes.has(type) || firedTurn >= turn.turn) continue;
+				resolvedTypes.push(type);
+				this.emitHarnessEvent(`nudge resolved (${type}) after ${turn.turn - firedTurn} turn(s)`, {
+					type: "nudge_resolved",
+					timestamp: now,
+					turn: turn.turn,
+					nudgeType: type,
+					turnsToResolve: turn.turn - firedTurn,
+				});
+			}
+			for (const type of resolvedTypes) {
+				this.lastFiredNudgeTurns.delete(type);
 			}
 		} catch {
 			// ignore nudge evaluation errors
@@ -687,12 +892,38 @@ export class SessionDebugLogger {
 			file: this.extractFileFromToolResult(toolCall.name, event),
 			detail: this.extractToolDetail(toolCall.name, toolCall.arguments),
 			metadata: this.extractToolMetadata(event),
+			callDigest: buildToolCallDigest(toolCall.name, toolCall.arguments),
+			resultDigest: buildToolResultDigest(event?.result, isError),
 		};
 		toolOutcome.fingerprint = buildToolOutcomeFingerprint(toolOutcome);
 		this.toolCallHistoryForNudges.push(toolOutcome);
 		if (toolOutcome.file) {
 			this.fileAccessHistoryForNudges.push(toolOutcome);
 		}
+
+		// Track for session metrics (per-tool totals, loops, verify_ui tally)
+		const metricsOutcome: ToolOutcomeForMetrics = {
+			tool: toolOutcome.tool,
+			success: !isError,
+			callDigest: toolOutcome.callDigest,
+			resultDigest: toolOutcome.resultDigest,
+			durationMs,
+			contentLength,
+			timestamp: now,
+		};
+		if (toolOutcome.tool === "verify_ui") {
+			const verdict = this.extractVerifyUiVerdict(textContent, rawResult);
+			if (verdict) metricsOutcome.verdict = verdict;
+		}
+		this.toolOutcomesForMetrics.push(metricsOutcome);
+	}
+
+	/** Extract a verify_ui verdict from result details or the leading word of the result text. */
+	private extractVerifyUiVerdict(textContent: string, rawResult: unknown): string | undefined {
+		const details = (rawResult as { details?: { verdict?: unknown } } | null)?.details;
+		if (typeof details?.verdict === "string" && details.verdict) return details.verdict.toUpperCase();
+		const match = textContent.match(/^\s*(PASS|FAIL|UNCLEAR|UNVERIFIABLE)\b/i);
+		return match ? match[1].toUpperCase() : undefined;
 	}
 
 	private onCompactionStart(event: any): void {
@@ -729,7 +960,8 @@ export class SessionDebugLogger {
 		if (toolName === "webSearch" && typeof args.query === "string") return args.query;
 		if (toolName === "webFetch" && typeof args.url === "string") return args.url;
 		if (toolName === "read") {
-			const path = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
+			const path =
+				typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : undefined;
 			if (!path) return undefined;
 			const suffix: string[] = [];
 			if (typeof args.offset === "number") suffix.push(`offset=${args.offset}`);
@@ -795,6 +1027,18 @@ export class SessionDebugLogger {
 			errorMessage: event.errorMessage,
 		});
 		this.addAnomaly("RETRY");
+		this.emitHarnessEvent(
+			`retry attempt ${event.attempt}/${event.maxAttempts}: ${truncate(event.errorMessage ?? "", 120)}`,
+			{
+				type: "retry",
+				timestamp: Date.now(),
+				turn: this.currentTurn?.turn || 0,
+				attempt: event.attempt,
+				maxAttempts: event.maxAttempts,
+				delayMs: event.delayMs,
+				errorMessage: event.errorMessage,
+			},
+		);
 	}
 
 	private onAutoRetryEnd(event: any): void {
@@ -878,17 +1122,31 @@ export class SessionDebugLogger {
 			reasons: event.reasons ?? [],
 			recoveryHint: event.recoveryHint,
 		});
+
+		const reasons = (event.reasons ?? []).length > 0 ? ` — ${event.reasons.join(", ")}` : "";
+		this.emitHarnessEvent(`stall: degraded turn (${event.severity ?? "unknown"})${reasons}`, {
+			type: "stall",
+			timestamp: Date.now(),
+			turn: this.currentTurn?.turn || 0,
+			severity: event.severity,
+			stopReason: event.stopReason,
+			reasons: event.reasons ?? [],
+			outputTokens: event.outputTokens,
+			textLength: event.textLength,
+		});
 	}
 
 	private onNudge(event: any): void {
 		this.totalNudges++;
 		const nudgeType = event.nudgeType || event.type || "unknown";
+		const message = event.message || event.details || "";
 		this.addAnomaly(`NUDGE(${nudgeType})`);
+		this.lastFiredNudgeTurns.set(nudgeType, this.currentTurn?.turn ?? this.turnCounter);
 
 		if (this.currentTurn) {
 			this.currentTurn.nudgeWarnings.push({
 				type: nudgeType,
-				message: event.message || event.details || "",
+				message,
 				shouldStop: event.shouldStop || false,
 				timestamp: Date.now(),
 			});
@@ -899,8 +1157,16 @@ export class SessionDebugLogger {
 			timestamp: Date.now(),
 			turn: this.currentTurn?.turn || 0,
 			nudgeType,
-			details: event.message || event.details || "",
+			details: message,
 			shouldStop: event.shouldStop || false,
+		});
+
+		this.emitHarnessEvent(`nudge fired (${nudgeType}): ${truncate(message, 140)}`, {
+			type: "nudge_fired",
+			timestamp: Date.now(),
+			turn: this.currentTurn?.turn || 0,
+			nudgeType,
+			message,
 		});
 	}
 
@@ -925,15 +1191,95 @@ export class SessionDebugLogger {
 	}
 
 	private onQueueUpdate(event: any): void {
-		if (!this.currentTurn) return;
-		// Track steering and follow-up messages
-		if (event.steering && event.steering.length > 0) {
-			this.currentTurn.steeringMessages.push(...event.steering);
-			this.addAnomaly("STEER");
+		const steering: string[] = event.steering && event.steering.length > 0 ? [...event.steering] : [];
+		const followUp: string[] = event.followUp && event.followUp.length > 0 ? [...event.followUp] : [];
+		if (steering.length === 0 && followUp.length === 0) return;
+
+		if (this.currentTurn) {
+			// Track steering and follow-up messages
+			if (steering.length > 0) {
+				this.currentTurn.steeringMessages.push(...steering);
+				this.addAnomaly("STEER");
+			}
+			if (followUp.length > 0) {
+				this.currentTurn.followUpMessages.push(...followUp);
+			}
+			return;
 		}
-		if (event.followUp && event.followUp.length > 0) {
-			this.currentTurn.followUpMessages.push(...event.followUp);
+
+		// Between turns/runs — buffer so the next turn block picks them up.
+		this.pendingSteeringMessages.push(...steering);
+		this.pendingFollowUpMessages.push(...followUp);
+	}
+
+	// -----------------------------------------------------------------------
+	// Journal Entries (custom entries → first-class timeline events)
+	// -----------------------------------------------------------------------
+
+	private onJournalEntryAppended(entry: SessionEntry): void {
+		if (!this.sessionDir || this.disposed) return;
+		if (entry.type !== "custom") return;
+
+		const summary = this.renderCustomEntrySummary(entry.customType, entry.data);
+		const timestamp = Date.parse(entry.timestamp) || Date.now();
+
+		this.addTimelineEvent({
+			type: "custom_entry",
+			timestamp,
+			customType: entry.customType,
+			summary,
+		});
+
+		this.journalLines.push(`- ${formatUtcClock(timestamp)} · ${entry.customType} · ${summary}`);
+	}
+
+	/**
+	 * Compact one-line rendering of a custom journal entry.
+	 * Known types get a structured summary; anything else falls back to
+	 * truncated JSON (≤120 chars).
+	 */
+	private renderCustomEntrySummary(customType: string, data: unknown): string {
+		try {
+			if (customType === TODO_JOURNAL_TYPE) {
+				const snapshot = data as { items?: Array<{ status?: string; title?: string }> } | null;
+				const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+				const completed = items.filter((item) => item?.status === "completed").length;
+				const inProgress = items.find((item) => item?.status === "in_progress");
+				let summary = `todos ${completed}/${items.length}`;
+				if (inProgress?.title) summary += ` · in progress: ${inProgress.title}`;
+				return summary;
+			}
+			if (customType === INTERACTIVE_PLAN_ARTIFACT_TYPE) {
+				const artifact = data as {
+					revision?: number;
+					status?: string;
+					steps?: unknown[];
+					completedStepIndexes?: unknown[];
+				} | null;
+				const steps = Array.isArray(artifact?.steps) ? artifact.steps.length : 0;
+				const done = Array.isArray(artifact?.completedStepIndexes) ? artifact.completedStepIndexes.length : 0;
+				return `plan v${artifact?.revision ?? "?"} ${artifact?.status ?? "unknown"} · ${steps} steps · ${done}/${steps} done`;
+			}
+			if (customType === TASK_JOURNAL_TYPE) {
+				const task = data as {
+					type?: string;
+					state?: string;
+					usage?: { totalTokens?: number };
+				} | null;
+				const tokens =
+					typeof task?.usage?.totalTokens === "number" ? ` · ${task.usage.totalTokens.toLocaleString()} tok` : "";
+				return `task ${task?.type ?? "unknown"} · ${task?.state ?? "unknown"}${tokens}`;
+			}
+		} catch {
+			// fall through to JSON rendering
 		}
+		let json: string;
+		try {
+			json = JSON.stringify(data) ?? "";
+		} catch {
+			json = String(data);
+		}
+		return truncate(json.replace(/\s+/g, " "), 120);
 	}
 
 	// -----------------------------------------------------------------------
@@ -969,36 +1315,48 @@ export class SessionDebugLogger {
 	}
 
 	private writeTurnToSessionMd(turn: TurnState, durationMs: number): void {
-		let content = `## Turn ${turn.turn}\n\n`;
-		content += `**Input:** "${truncate(redactSecrets(turn.inputText), 200)}"\n`;
-		if (turn.inputImageCount > 0) {
-			content += `**Input Images:** ${turn.inputImageCount}\n`;
+		// One-line scannable turn header
+		const headerParts = [
+			`## Turn ${turn.turn}`,
+			formatUtcClock(turn.turnStartTimestamp),
+			formatDurationMs(durationMs),
+		];
+		if (turn.tokenDeltas) {
+			headerParts.push(
+				`in ${turn.tokenDeltas.inputTokensDelta.toLocaleString()} / out ${turn.tokenDeltas.outputTokensDelta.toLocaleString()}`,
+			);
 		}
-		content += "\n";
+		if (turn.contextPercent !== null) headerParts.push(`ctx ${Math.round(turn.contextPercent)}%`);
+		if (turn.tokenDeltas) headerParts.push(formatCost(turn.tokenDeltas.costDelta));
+		let content = `${headerParts.join(" · ")}\n\n`;
 
-		// Tool calls
-		const successfulToolCalls = turn.toolCalls.filter((tc) => tc.result && !tc.result.isError);
-		const errorToolCalls = turn.toolCalls.filter((tc) => tc.result?.isError);
-
-		if (successfulToolCalls.length > 0) {
-			content += `**Model → Tool Calls:**\n`;
-			for (const tc of successfulToolCalls) {
-				const r = tc.result!;
-				const resultText = formatToolResultContent(r.content, false);
-				content += `- \`${tc.name}\` (id: ${tc.toolCallId}): \`${summarizeToolArgs(tc.arguments as Record<string, unknown>, 80)}\`\n`;
-				content += `  - **Result (${r.durationMs}ms):** ${r.contentLength} bytes output\n`;
-				content += `  - ${truncate(resultText, 200).replace(/\n/g, "\\n")}\n`;
+		if (turn.inputText) {
+			content += `**Input:** "${truncate(redactSecrets(turn.inputText), 200)}"\n`;
+			if (turn.inputImageCount > 0) {
+				content += `**Input Images:** ${turn.inputImageCount}\n`;
 			}
 			content += "\n";
 		}
 
-		if (errorToolCalls.length > 0) {
-			content += `**Model → Tool Calls (Errors):**\n`;
-			for (const tc of errorToolCalls) {
-				const r = tc.result!;
-				const errorText = formatToolResultContent(r.content, true);
-				content += `- \`${tc.name}\` (id: ${tc.toolCallId}): \`${summarizeToolArgs(tc.arguments as Record<string, unknown>, 80)}\`\n`;
-				content += `  - **Error (${r.durationMs}ms):** ${truncate(errorText, 500).replace(/\n/g, "\\n")}\n`;
+		// Tool calls — one scannable line each, bounded preview underneath
+		if (turn.toolCalls.length > 0) {
+			for (const tc of turn.toolCalls) {
+				if (!tc.result) continue;
+				const r = tc.result;
+				const detail =
+					this.extractToolDetail(tc.name, tc.arguments as Record<string, unknown>) ??
+					summarizeToolArgs(tc.arguments as Record<string, unknown>, 60);
+				const label = detail ? `${tc.name} ${truncate(detail, 80)}` : tc.name;
+				if (r.isError) {
+					const errorText = formatToolResultContent(r.content, true).replace(/\s+/g, " ").trim();
+					content += `  ✗ ${label} · ${r.durationMs}ms · ${truncate(errorText, 140)}\n`;
+				} else {
+					content += `  ✓ ${label} · ${r.durationMs}ms · ${formatBytes(r.contentLength)}\n`;
+					const preview = formatToolResultContent(r.content, false);
+					if (preview) {
+						content += `    ↳ ${truncate(preview, 200).replace(/\n/g, "\\n")}\n`;
+					}
+				}
 			}
 			content += "\n";
 		}
@@ -1044,19 +1402,20 @@ export class SessionDebugLogger {
 			content += "\n";
 		}
 
-		// Token deltas
-		if (turn.tokenDeltas) {
-			const d = turn.tokenDeltas;
-			content += `**Token Usage (Turn Delta):**\n`;
-			content += `- Input: +${formatTokens(d.inputTokensDelta)}, Output: +${formatTokens(d.outputTokensDelta)}\n`;
-			content += `- Cache Read: +${formatTokens(d.cacheReadDelta)}, Cache_Write: +${formatTokens(d.cacheWriteDelta)}\n`;
-			content += `- Cost: ${formatCost(d.costDelta)}\n`;
-			content += "\n";
+		// State snapshot line
+		if (turn.stateText) {
+			content += `  state: ${turn.stateText}\n\n`;
 		}
 
-		// Context usage
-		if (turn.contextPercent !== null) {
-			content += `**Context Usage:** ${turn.contextPercent.toFixed(1)}%\n\n`;
+		// Harness-action lines (nudges, retries, stalls, tool changes, vision)
+		for (const line of turn.harnessLines) {
+			content += `  ⚑ ${line}\n`;
+		}
+		if (turn.harnessLines.length > 0) content += "\n";
+
+		// Cache deltas (input/output/cost already shown in the header)
+		if (turn.tokenDeltas && (turn.tokenDeltas.cacheReadDelta > 0 || turn.tokenDeltas.cacheWriteDelta > 0)) {
+			content += `  cache: +${formatTokens(turn.tokenDeltas.cacheReadDelta)} read · +${formatTokens(turn.tokenDeltas.cacheWriteDelta)} write\n\n`;
 		}
 
 		// Compaction
@@ -1069,15 +1428,6 @@ export class SessionDebugLogger {
 			if (c.durationMs !== undefined) content += `- Duration: ${(c.durationMs / 1000).toFixed(1)}s\n`;
 			content += `- Aborted: ${c.aborted}\n`;
 			if (c.errorMessage) content += `- Error: ${c.errorMessage}\n`;
-			content += "\n";
-		}
-
-		// Nudge evaluations
-		if (turn.nudgeWarnings.length > 0) {
-			content += `**Nudge Evaluations:**\n`;
-			for (const n of turn.nudgeWarnings) {
-				content += `- Type: ${n.type}, shouldStop: ${n.shouldStop}, Message: ${truncate(n.message, 150)}\n`;
-			}
 			content += "\n";
 		}
 
@@ -1113,9 +1463,6 @@ export class SessionDebugLogger {
 		} else if (turn.stopReason === "aborted") {
 			content += `**Aborted by user**\n\n`;
 		}
-
-		// Duration
-		content += `**Duration:** ${formatDurationMs(durationMs)}\n`;
 
 		content += `---\n\n`;
 
@@ -1170,6 +1517,15 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 		// Compute tool failure breakdown for summary
 		const failureBreakdown = this.computeToolFailureBreakdown();
 
+		// Journal section (custom journal entries collected over the session)
+		if (this.journalLines.length > 0) {
+			const journal = `\n## Journal\n\n${this.journalLines.join("\n")}\n`;
+			fs.appendFileSync(this.sessionMd!, journal, "utf8");
+		}
+
+		// Session outcome record (outcome + derived metrics + tool totals)
+		this.writeSessionOutcome();
+
 		// Write footer to session.md
 		const mdFooter = `
 ## Event: Session Shutdown
@@ -1221,6 +1577,148 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 
 		// Final timeline flush
 		this.flushTimelineSync();
+	}
+
+	/**
+	 * Write the session outcome record: an outcome summary plus derived metrics
+	 * and per-tool totals in session.md, a compact outcome block in
+	 * session.compact.md, and final `outcome`/`metrics` timeline events.
+	 * Idempotent; callable from any mode (dispose calls it automatically).
+	 */
+	writeSessionOutcome(endReason: string = "session closed"): void {
+		if (this.outcomeWritten || !this.sessionMd) return;
+		this.outcomeWritten = true;
+
+		const now = Date.now();
+		const metrics = computeSessionMetrics({
+			events: this.timelineEvents,
+			toolOutcomes: this.toolOutcomesForMetrics,
+			startedAt: this.sessionStartTimestamp,
+			endedAt: now,
+		});
+
+		// Final todo + plan state from the journal
+		let todoLine = "none";
+		let planLine = "none";
+		try {
+			const entries = this.session.sessionManager.getEntries();
+			const snapshot = readLatestTodoSnapshot(entries);
+			if (snapshot && snapshot.items.length > 0) {
+				const summary = summarizeTodos(snapshot);
+				const pendingTitles = snapshot.items
+					.filter((item) => item.status !== "completed")
+					.map((item) => item.title);
+				todoLine = `${summary.completed}/${summary.total} completed`;
+				if (pendingTitles.length > 0) todoLine += ` · pending: ${pendingTitles.join(", ")}`;
+			}
+			const artifact = getLatestInteractivePlanArtifact(entries);
+			if (artifact) {
+				planLine = `v${artifact.revision} ${artifact.status} (${getCompletedStepCount(artifact)}/${artifact.steps.length} steps done)`;
+			}
+		} catch {
+			// ignore journal read errors
+		}
+
+		const tokensLine = `${this.totalInputTokens.toLocaleString()} in / ${this.totalOutputTokens.toLocaleString()} out`;
+		const verifyLine = `${metrics.verifyUi.pass} pass · ${metrics.verifyUi.fail} fail · ${metrics.verifyUi.unclear} unclear`;
+
+		const outcomeMd = `
+## Session Outcome
+
+| Field | Value |
+|-------|-------|
+| End reason | ${endReason} |
+| Duration | ${formatDurationMs(metrics.durationMs)} |
+| Turns | ${metrics.turns} |
+| Total tokens | ${tokensLine} |
+| Total cost | ${formatCost(this.totalCost)} |
+| Todos | ${todoLine} |
+| Plan | ${planLine} |
+| verify_ui | ${verifyLine} |
+
+${this.renderDerivedMetricsMd(metrics)}
+${this.renderToolTotalsMd(metrics)}`;
+		fs.appendFileSync(this.sessionMd, outcomeMd, "utf8");
+
+		if (this.sessionCompactMd) {
+			const compactOutcome = `
+## Outcome
+
+end: ${endReason} · ${formatDurationMs(metrics.durationMs)} · ${metrics.turns} turns · ${tokensLine} · ${formatCost(this.totalCost)}
+todos: ${todoLine}
+plan: ${planLine}
+verify_ui: ${verifyLine}
+`;
+			fs.appendFileSync(this.sessionCompactMd, compactOutcome, "utf8");
+		}
+
+		this.addTimelineEvent({
+			type: "outcome",
+			timestamp: now,
+			endReason,
+			durationMs: metrics.durationMs,
+			turns: metrics.turns,
+			totalInputTokens: this.totalInputTokens,
+			totalOutputTokens: this.totalOutputTokens,
+			totalCost: this.totalCost,
+			todos: todoLine,
+			plan: planLine,
+			verifyUi: metrics.verifyUi,
+		});
+		this.addTimelineEvent({
+			type: "metrics",
+			timestamp: now,
+			metrics,
+		});
+	}
+
+	private renderDerivedMetricsMd(metrics: SessionMetrics): string {
+		const rows: Array<[string, string]> = [
+			["Duration", formatDurationMs(metrics.durationMs)],
+			["Turns", String(metrics.turns)],
+			["Total tokens", metrics.totalTokens.toLocaleString()],
+			["Total cost", formatCost(metrics.totalCost)],
+			[
+				"Time to first mutation",
+				metrics.timeToFirstMutationMs !== null ? formatDurationMs(metrics.timeToFirstMutationMs) : "—",
+			],
+			[
+				"No-progress loops",
+				`${metrics.loops.noProgressLoopCount}${metrics.loops.maxNoProgressRun > 0 ? ` (max run ${metrics.loops.maxNoProgressRun})` : ""}`,
+			],
+			[
+				"Error loops",
+				`${metrics.loops.errorLoopCount}${metrics.loops.maxErrorRun > 0 ? ` (max run ${metrics.loops.maxErrorRun})` : ""}`,
+			],
+			["Retries", String(metrics.retries)],
+			["Stalls", String(metrics.stalls)],
+			["Compactions", String(metrics.compactions)],
+			[
+				"verify_ui",
+				`${metrics.verifyUi.pass} pass · ${metrics.verifyUi.fail} fail · ${metrics.verifyUi.unclear} unclear`,
+			],
+		];
+		for (const [type, nudge] of Object.entries(metrics.nudges)) {
+			const median =
+				nudge.medianTurnsToResolve !== null ? ` · median ${nudge.medianTurnsToResolve} turn(s) to resolve` : "";
+			rows.push([`Nudge ${type}`, `fired ${nudge.fired} · resolved ${nudge.resolved}${median}`]);
+		}
+
+		let md = `## Derived Metrics\n\n| Metric | Value |\n|--------|-------|\n`;
+		for (const [label, value] of rows) {
+			md += `| ${label} | ${value} |\n`;
+		}
+		return md;
+	}
+
+	private renderToolTotalsMd(metrics: SessionMetrics): string {
+		const entries = Object.entries(metrics.tools).sort((a, b) => b[1].calls - a[1].calls);
+		if (entries.length === 0) return `## Tool Totals\n\nNo tool calls recorded.\n`;
+		let md = `## Tool Totals\n\n| Tool | Calls | Failures | Time | Bytes |\n|------|-------|----------|------|-------|\n`;
+		for (const [name, totals] of entries) {
+			md += `| ${name} | ${totals.calls} | ${totals.failures} | ${formatMsSum(totals.totalMs)} | ${formatBytes(totals.totalBytes)} |\n`;
+		}
+		return md;
 	}
 
 	private appendSessionStartEvent(): void {
@@ -1358,6 +1856,96 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 		return result;
 	}
 
+	/**
+	 * Emit a typed harness-action event: timeline entry plus one `⚑` line in
+	 * session.md (inside the current turn block, or appended directly when the
+	 * event fires outside a turn).
+	 */
+	private emitHarnessEvent(line: string, event: TimelineEvent): void {
+		this.addTimelineEvent(event);
+		if (this.currentTurn) {
+			this.currentTurn.harnessLines.push(line);
+			return;
+		}
+		if (!this.sessionMd) return;
+		this.enqueueWrite(() => {
+			fs.appendFileSync(this.sessionMd!, `  ⚑ ${line}\n\n`, "utf8");
+		});
+	}
+
+	/**
+	 * Capture the per-turn state snapshot: model, thinking level, active tools,
+	 * todo summary, plan summary. Diffs active tools against the previous
+	 * snapshot so callers can emit a tools_changed event.
+	 */
+	private captureTurnStateSnapshot(turn: TurnState): {
+		stateText: string;
+		model: { provider: string; id: string } | null;
+		thinkingLevel: string;
+		activeTools: string[];
+		todos: { total: number; completed: number; inProgressTitle: string | null } | null;
+		plan: { revision: number; status: string; steps: number; completedSteps: number } | null;
+		toolsChanged: { added: string[]; removed: string[] } | null;
+	} {
+		const model = this.session.model ? { provider: this.session.model.provider, id: this.session.model.id } : null;
+
+		let activeTools: string[] = [];
+		try {
+			activeTools = this.session.getActiveToolNames();
+		} catch {
+			// ignore
+		}
+
+		let todos: { total: number; completed: number; inProgressTitle: string | null } | null = null;
+		let plan: { revision: number; status: string; steps: number; completedSteps: number } | null = null;
+		try {
+			const entries = this.session.sessionManager.getEntries();
+			const snapshot = readLatestTodoSnapshot(entries);
+			if (snapshot) todos = summarizeTodos(snapshot);
+			const artifact = getLatestInteractivePlanArtifact(entries);
+			if (artifact) {
+				plan = {
+					revision: artifact.revision,
+					status: artifact.status,
+					steps: artifact.steps.length,
+					completedSteps: getCompletedStepCount(artifact),
+				};
+			}
+		} catch {
+			// ignore journal read errors
+		}
+
+		// Diff active tools against the previous snapshot
+		let toolsChanged: { added: string[]; removed: string[] } | null = null;
+		if (this.prevActiveTools) {
+			const added = activeTools.filter((tool) => !this.prevActiveTools!.includes(tool));
+			const removed = this.prevActiveTools.filter((tool) => !activeTools.includes(tool));
+			if (added.length > 0 || removed.length > 0) toolsChanged = { added, removed };
+		}
+		this.prevActiveTools = [...activeTools];
+
+		// Muted one-line state summary for session.md
+		const parts: string[] = [];
+		if (todos && todos.total > 0) {
+			let todoPart = `todos ${todos.completed}/${todos.total}`;
+			if (todos.inProgressTitle) todoPart += ` in:${todos.inProgressTitle}`;
+			parts.push(todoPart);
+		}
+		if (plan) parts.push(`plan v${plan.revision} ${plan.status}`);
+		parts.push(`tools ${activeTools.length}`);
+		if (turn.contextPercent !== null) parts.push(`ctx ${Math.round(turn.contextPercent)}%`);
+
+		return {
+			stateText: parts.join(" · "),
+			model,
+			thinkingLevel: this.session.thinkingLevel,
+			activeTools,
+			todos,
+			plan,
+			toolsChanged,
+		};
+	}
+
 	private resolveDebugRoot(): string {
 		return path.join(this.projectRoot, "Debug");
 	}
@@ -1366,7 +1954,15 @@ Turn | Input ↓ | Output ↑ | Tools | Context | Cost | Anomaly
 		const dateTimeStr = toSessionDateTimeStr(this.sessionStartTimestamp || Date.now());
 		const model = this.session.model || { provider: "unknown", id: "unknown" };
 		const modelName = modelToFolderName(model.provider, model.id);
-		const baseName = `${dateTimeStr}_${modelName}`;
+		// Subagent convention: sessions spawned as a delegate (e.g. by the
+		// `subagent` extension, which sets AG1_DEBUG_SESSION_NAME for the child
+		// process) get the same `subagent_<datetime>_<name>_<model>` naming as
+		// built-in `task` runs, so delegated work is instantly recognizable in
+		// the Debug root instead of looking like an unrelated top-level session.
+		const subagentName = process.env.AG1_DEBUG_SESSION_NAME?.trim();
+		const baseName = subagentName
+			? `subagent_${dateTimeStr}_${sanitizeNamePart(subagentName)}_${modelName}`
+			: `${dateTimeStr}_${modelName}`;
 		const debugRoot = this.resolveDebugRoot();
 
 		// Check for counter suffix
@@ -1442,4 +2038,26 @@ function formatToolForCompact(toolName: string, args: Record<string, unknown>, i
 	const argsSummary = summarizeToolArgs(args, 30);
 	const status = isError ? "✗" : "✓";
 	return `${toolName}(${argsSummary})${status}`;
+}
+
+/** Format a timestamp as a UTC time-of-day: "14:02:11Z". */
+function formatUtcClock(timestamp: number): string {
+	const d = new Date(timestamp);
+	const hour = String(d.getUTCHours()).padStart(2, "0");
+	const min = String(d.getUTCMinutes()).padStart(2, "0");
+	const sec = String(d.getUTCSeconds()).padStart(2, "0");
+	return `${hour}:${min}:${sec}Z`;
+}
+
+/** Format a byte count for display: "364 B", "3.4 KB", "1.2 MB". */
+function formatBytes(n: number): string {
+	if (n < 1024) return `${n} B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Format a summed millisecond total: sub-second stays in ms, larger uses m/s. */
+function formatMsSum(ms: number): string {
+	if (ms < 1000) return `${Math.round(ms)}ms`;
+	return formatDurationMs(ms);
 }

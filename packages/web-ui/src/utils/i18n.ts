@@ -131,6 +131,7 @@ declare module "@mariozechner/mini-lit" {
 		"Download Markdown": string;
 		Download: string;
 		"No logs for {filename}": string;
+		"Some artifact changes could not be reconstructed; content may differ from the live session": string;
 		"API Keys Settings": string;
 		Settings: string;
 		"API Keys": string;
@@ -138,6 +139,7 @@ declare module "@mariozechner/mini-lit" {
 		"Use CORS Proxy": string;
 		"Proxy URL": string;
 		"Format: The proxy must accept requests as <proxy-url>/?url=<target-url>": string;
+		"Proxy URL must use https:// (http:// is only allowed for localhost)": string;
 		"Settings are stored locally in your browser": string;
 		Clear: string;
 		"API Key Required": string;
@@ -341,6 +343,8 @@ export const translations = {
 		"Download Markdown": "Download Markdown",
 		Download: "Download",
 		"No logs for {filename}": "No logs for {filename}",
+		"Some artifact changes could not be reconstructed; content may differ from the live session":
+			"Some artifact changes could not be reconstructed; content may differ from the live session",
 		"API Keys Settings": "API Keys Settings",
 		Settings: "Settings",
 		"API Keys": "API Keys",
@@ -349,6 +353,8 @@ export const translations = {
 		"Proxy URL": "Proxy URL",
 		"Format: The proxy must accept requests as <proxy-url>/?url=<target-url>":
 			"Format: The proxy must accept requests as <proxy-url>/?url=<target-url>",
+		"Proxy URL must use https:// (http:// is only allowed for localhost)":
+			"Proxy URL must use https:// (http:// is only allowed for localhost)",
 		"Settings are stored locally in your browser": "Settings are stored locally in your browser",
 		Clear: "Clear",
 		"API Key Required": "API Key Required",
@@ -560,6 +566,8 @@ export const translations = {
 		"Download Markdown": "Markdown herunterladen",
 		Download: "Herunterladen",
 		"No logs for {filename}": "Keine Logs für {filename}",
+		"Some artifact changes could not be reconstructed; content may differ from the live session":
+			"Einige Artefakt-Änderungen konnten nicht rekonstruiert werden; der Inhalt kann von der Live-Sitzung abweichen",
 		"API Keys Settings": "API-Schlüssel Einstellungen",
 		Settings: "Einstellungen",
 		"API Keys": "API-Schlüssel",
@@ -568,6 +576,8 @@ export const translations = {
 		"Proxy URL": "Proxy-URL",
 		"Format: The proxy must accept requests as <proxy-url>/?url=<target-url>":
 			"Format: Der Proxy muss Anfragen als <proxy-url>/?url=<ziel-url> akzeptieren",
+		"Proxy URL must use https:// (http:// is only allowed for localhost)":
+			"Proxy-URL muss https:// verwenden (http:// ist nur für localhost erlaubt)",
 		"Settings are stored locally in your browser": "Einstellungen werden lokal in Ihrem Browser gespeichert",
 		Clear: "Löschen",
 		"API Key Required": "API-Schlüssel erforderlich",

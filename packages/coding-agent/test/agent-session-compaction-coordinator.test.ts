@@ -110,4 +110,62 @@ describe("AgentSessionCompactionCoordinator", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("rejects a manual compact while another compaction is in progress", async () => {
+		const coordinator = new AgentSessionCompactionCoordinator({
+			agent: { state: { messages: [], isStreaming: false } } as any,
+			sessionManager: SessionManager.inMemory(),
+			settingsManager: SettingsManager.inMemory({}),
+			modelRegistry: {} as any,
+			getModel: () => undefined,
+			getContextWindow: () => undefined,
+			getExtensionRunner: () => undefined,
+			getRequiredRequestAuth: async () => ({ apiKey: "test-key" }),
+			emit: vi.fn(),
+			disconnectFromAgent: () => {},
+			reconnectToAgent: () => {},
+			abortAgent: async () => {},
+			recoveryArbiter: new AgentSessionRecoveryArbiter(),
+		});
+
+		// Simulate an active compaction (manual or auto).
+		(coordinator as any).manualAbortController = new AbortController();
+
+		await expect(coordinator.compact()).rejects.toThrow("Compaction already in progress");
+	});
+
+	it("skips auto-compaction while another compaction is in progress", async () => {
+		const agent = {
+			state: {
+				messages: [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 }],
+				isStreaming: false,
+			},
+		};
+		const events: any[] = [];
+		const coordinator = new AgentSessionCompactionCoordinator({
+			agent: agent as any,
+			sessionManager: SessionManager.inMemory(),
+			settingsManager: SettingsManager.inMemory({}),
+			modelRegistry: {} as any,
+			getModel: () => undefined,
+			getContextWindow: () => undefined,
+			getExtensionRunner: () => undefined,
+			getRequiredRequestAuth: async () => ({ apiKey: "test-key" }),
+			emit: (event) => events.push(event),
+			disconnectFromAgent: () => {},
+			reconnectToAgent: () => {},
+			abortAgent: async () => {},
+			recoveryArbiter: new AgentSessionRecoveryArbiter(),
+		});
+
+		// Simulate an active manual compaction.
+		(coordinator as any).manualAbortController = new AbortController();
+
+		await coordinator.runAuto("threshold", false);
+
+		// No compaction_start, a single no-op compaction_end, and no state churn.
+		expect(events).toEqual([
+			{ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false },
+		]);
+	});
 });

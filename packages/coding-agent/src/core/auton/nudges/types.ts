@@ -17,12 +17,41 @@ export interface ToolOutcome {
 	detail?: string;
 	/** Stable fingerprint for duplicate-call detection when available. */
 	fingerprint?: string;
+	/**
+	 * Semantic identity of the call itself (tool + relevant arguments content),
+	 * e.g. includes edit text for edit/write, command for bash. Two calls with
+	 * the same callDigest are the same operation; different edits to the same
+	 * file have different callDigests.
+	 */
+	callDigest?: string;
+	/**
+	 * Identity of what the call produced (error flag + result content/diff).
+	 * Same callDigest + same resultDigest means the call yielded no new information.
+	 */
+	resultDigest?: string;
 	/** Structured tool metadata when available, e.g. screenshot details. */
 	metadata?: Record<string, unknown>;
 }
 
 export function normalizeToolName(tool: string): string {
 	return tool.trim().toLowerCase();
+}
+
+/**
+ * Identity of the call (not its outcome). Prefers the content-aware callDigest;
+ * falls back to the legacy tool|file|detail fingerprint for outcomes recorded
+ * without digests (e.g. synthesized by compaction).
+ */
+export function buildToolOutcomeCallKey(outcome: ToolOutcome): string {
+	if (typeof outcome.callDigest === "string" && outcome.callDigest.trim().length > 0) {
+		return outcome.callDigest.trim();
+	}
+	return buildToolOutcomeFingerprint(outcome);
+}
+
+/** Identity of the outcome; empty string when nothing was recorded. */
+export function buildToolOutcomeResultKey(outcome: ToolOutcome): string {
+	return (outcome.resultDigest ?? "").trim();
 }
 
 export function buildToolOutcomeFingerprint(outcome: ToolOutcome): string {

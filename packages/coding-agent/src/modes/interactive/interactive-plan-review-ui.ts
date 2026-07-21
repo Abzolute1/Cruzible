@@ -1,11 +1,11 @@
 import {
-	getClarificationAnswers,
 	getAnsweredClarificationCount,
+	getClarificationAnswers,
 	getCompletedStepCount,
 	getCompletedStepIndexes,
 	getLatestInteractivePlanStepExecutionRecord,
-	getNextInteractivePlanStepIndex,
 	getNextInteractivePlanStep,
+	getNextInteractivePlanStepIndex,
 	type InteractivePlanArtifact,
 } from "./interactive-plan-artifacts.js";
 
@@ -49,16 +49,10 @@ export function summarizeInteractivePlanForModeLine(
 	return summary;
 }
 
-export function buildInteractivePlanReviewLines(
-	artifact: InteractivePlanArtifact | undefined,
-): string[] {
+export function buildInteractivePlanReviewLines(artifact: InteractivePlanArtifact | undefined): string[] {
 	if (!artifact || artifact.status === "discarded") return [];
 
-	const lines = [
-		formatPlanReviewTitle(artifact),
-		`Goal: ${artifact.goal}`,
-		formatPlanProgressLine(artifact),
-	];
+	const lines = [formatPlanReviewTitle(artifact), `Goal: ${artifact.goal}`, formatPlanProgressLine(artifact)];
 
 	const nextStep = getNextInteractivePlanStep(artifact);
 	const latestReview = getLatestInteractivePlanStepExecutionRecord(artifact);
@@ -102,14 +96,15 @@ export function buildInteractivePlanReviewLines(
 			}
 			lines.push("Actions: review • mark done • reopen step");
 			break;
+		case "completed":
+			lines.push("Actions: review • reopen step • revise");
+			break;
 	}
 
 	return lines;
 }
 
-export function buildInteractivePlanCardLines(
-	artifact: InteractivePlanArtifact,
-): string[] {
+export function buildInteractivePlanCardLines(artifact: InteractivePlanArtifact): string[] {
 	const lines = [
 		`Plan v${artifact.revision} · ${artifact.status}`,
 		`Goal: ${artifact.goal}`,
@@ -165,9 +160,7 @@ export function buildInteractivePlanCardLines(
 	return lines;
 }
 
-export function buildInteractivePlanInterviewLines(
-	artifact: InteractivePlanArtifact,
-): string[] {
+export function buildInteractivePlanInterviewLines(artifact: InteractivePlanArtifact): string[] {
 	const lines = [
 		`Goal: ${artifact.goal}`,
 		`Interview: ${getAnsweredClarificationCount(artifact)}/${artifact.openQuestions.length} answered`,
@@ -203,9 +196,7 @@ export function buildInteractivePlanInterviewLines(
 	return lines;
 }
 
-export function buildInteractiveExpandedPlanCardLines(
-	artifact: InteractivePlanArtifact,
-): string[] {
+export function buildInteractiveExpandedPlanCardLines(artifact: InteractivePlanArtifact): string[] {
 	const lines = [
 		`Plan v${artifact.revision} · ${artifact.status}`,
 		`Goal: ${artifact.goal}`,
@@ -257,6 +248,11 @@ export function buildInteractiveExpandedPlanCardLines(
 			lines.push("Execution Actions");
 			lines.push("Track step progress, mark the current step done, or reopen completed work.");
 			lines.push("Hotkeys: Alt+R review, Alt+N execute next step");
+			break;
+		case "completed":
+			lines.push("Execution Actions");
+			lines.push("All steps are complete. Reopen a step or revise the plan to continue work.");
+			lines.push("Hotkeys: Alt+R review");
 			break;
 		default:
 			lines.push("Review Actions");
@@ -323,9 +319,7 @@ function formatClarificationAnswerLines(artifact: InteractivePlanArtifact): stri
 	});
 }
 
-function formatExecutionReviewLines(
-	record: ReturnType<typeof getLatestInteractivePlanStepExecutionRecord>,
-): string[] {
+function formatExecutionReviewLines(record: ReturnType<typeof getLatestInteractivePlanStepExecutionRecord>): string[] {
 	if (!record) return [];
 	const lines = [`Step ${record.stepIndex + 1} · ${record.status}`];
 	if (record.summary) lines.push(record.summary);

@@ -237,86 +237,90 @@ export const webFetchToolDefinition: ToolDefinition<typeof webFetchParamsSchema,
 				fetchCache.set(fetchUrl, { content, contentType, timestamp: Date.now() });
 			}
 
-				// Convert HTML to markdown if it looks like HTML
-				let markdown: string;
-				if (content.trim().startsWith("<") || contentType.includes("html")) {
-					markdown = htmlToMarkdown(extractResearchPrimaryHtml(content));
-				} else {
-					markdown = content;
-				}
+			// Convert HTML to markdown if it looks like HTML
+			let markdown: string;
+			if (content.trim().startsWith("<") || contentType.includes("html")) {
+				markdown = htmlToMarkdown(extractResearchPrimaryHtml(content));
+			} else {
+				markdown = content;
+			}
 
-				// Truncate to max chars
-				const truncated = markdown.length > MAX_CHARS;
-				const htmlTitle = extractResearchDocumentTitle(content);
-				const metaDescription = extractResearchMetaDescription(content);
-				const titleMatch = markdown.match(/^#\s+(.+)$/m);
-				const hint = getResearchUrlHint(fetchUrl);
-				const preview = buildPreview(markdown);
-				const compression = getEffectiveFetchCompressionProfile(
-					deriveResearchCompressionProfile(ctx?.getContextUsage?.() as any),
-					hint,
-				);
-				const title = htmlTitle ?? titleMatch?.[1]?.trim();
-				const facts = extractResearchFacts(markdown, compression.fetchTranscriptFacts + 1, compression.fetchTranscriptLineChars);
-				const enrichedFacts = [...facts];
-				if (
-					metaDescription &&
-					metaDescription.length >= 40 &&
-					hint?.intent !== "docs_reference" &&
-					!enrichedFacts.some((fact) => fact.toLowerCase() === metaDescription.toLowerCase())
-				) {
-					enrichedFacts.unshift(metaDescription);
-				}
-				const selectedFacts = enrichedFacts.slice(0, compression.fetchTranscriptFacts);
-				const assessment = assessResearchFetchContent({
-					markdown,
+			// Truncate to max chars
+			const truncated = markdown.length > MAX_CHARS;
+			const htmlTitle = extractResearchDocumentTitle(content);
+			const metaDescription = extractResearchMetaDescription(content);
+			const titleMatch = markdown.match(/^#\s+(.+)$/m);
+			const hint = getResearchUrlHint(fetchUrl);
+			const preview = buildPreview(markdown);
+			const compression = getEffectiveFetchCompressionProfile(
+				deriveResearchCompressionProfile(ctx?.getContextUsage?.() as any),
+				hint,
+			);
+			const title = htmlTitle ?? titleMatch?.[1]?.trim();
+			const facts = extractResearchFacts(
+				markdown,
+				compression.fetchTranscriptFacts + 1,
+				compression.fetchTranscriptLineChars,
+			);
+			const enrichedFacts = [...facts];
+			if (
+				metaDescription &&
+				metaDescription.length >= 40 &&
+				hint?.intent !== "docs_reference" &&
+				!enrichedFacts.some((fact) => fact.toLowerCase() === metaDescription.toLowerCase())
+			) {
+				enrichedFacts.unshift(metaDescription);
+			}
+			const selectedFacts = enrichedFacts.slice(0, compression.fetchTranscriptFacts);
+			const assessment = assessResearchFetchContent({
+				markdown,
+				facts: selectedFacts,
+				preview,
+				title,
+				metaDescription,
+				intent: hint?.intent,
+				coverageKind: hint?.coverageKind,
+			});
+			rememberResearchFetchOutcome(fetchUrl, assessment.status);
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: formatFetchTranscriptContent({
+							url: fetchUrl,
+							title,
+							facts: selectedFacts,
+							preview,
+							profile: compression,
+							truncated,
+							metaDescription,
+							status: assessment.status,
+							statusReason: assessment.reason,
+							intent: hint?.intent,
+							authoritative: hint?.authoritative === true,
+							coverage: assessment.coverage,
+						}),
+					},
+				],
+				details: {
+					url: fetchUrl,
+					contentType,
+					title,
 					facts: selectedFacts,
 					preview,
-					title,
+					truncated,
+					compressionMode: compression.mode,
+					cacheHit,
 					metaDescription,
+					status: assessment.status,
+					statusReason: assessment.reason,
 					intent: hint?.intent,
+					authoritative: hint?.authoritative === true,
 					coverageKind: hint?.coverageKind,
-				});
-				rememberResearchFetchOutcome(fetchUrl, assessment.status);
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: formatFetchTranscriptContent({
-								url: fetchUrl,
-								title,
-								facts: selectedFacts,
-								preview,
-								profile: compression,
-								truncated,
-								metaDescription,
-								status: assessment.status,
-								statusReason: assessment.reason,
-								intent: hint?.intent,
-								authoritative: hint?.authoritative === true,
-								coverage: assessment.coverage,
-							}),
-						},
-					],
-					details: {
-						url: fetchUrl,
-						contentType,
-						title,
-						facts: selectedFacts,
-						preview,
-						truncated,
-						compressionMode: compression.mode,
-						cacheHit,
-						metaDescription,
-						status: assessment.status,
-						statusReason: assessment.reason,
-						intent: hint?.intent,
-						authoritative: hint?.authoritative === true,
-						coverageKind: hint?.coverageKind,
-						coverage: assessment.coverage,
-					},
-				};
+					coverage: assessment.coverage,
+				},
+			};
 		} catch (err: any) {
 			if (err.name === "AbortError") {
 				return {

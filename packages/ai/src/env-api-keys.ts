@@ -25,34 +25,41 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 
 import type { KnownProvider } from "./types.js";
 
-let cachedVertexAdcCredentialsExists: boolean | null = null;
+// Short-TTL cache for the ADC credential check. existsSync is cheap, but re-statting on
+// every getEnvApiKey call is wasteful; a TTL (rather than a permanent cache) means a
+// `gcloud auth application-default login` in a long-lived process becomes visible
+// without a restart. Trade-off: credential removal also takes up to TTL to be noticed.
+const ADC_CACHE_TTL_MS = 30_000;
+let cachedVertexAdcCredentialsExists: { value: boolean; checkedAt: number } | null = null;
 
 function hasVertexAdcCredentials(): boolean {
-	if (cachedVertexAdcCredentialsExists === null) {
-		// If node modules haven't loaded yet (async import race at startup),
-		// return false WITHOUT caching so the next call retries once they're ready.
-		// Only cache false permanently in a browser environment where fs is never available.
-		if (!_existsSync || !_homedir || !_join) {
-			const isNode = typeof process !== "undefined" && (process.versions?.node || process.versions?.bun);
-			if (!isNode) {
-				// Definitively in a browser — safe to cache false permanently
-				cachedVertexAdcCredentialsExists = false;
-			}
-			return false;
-		}
-
-		// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
-		const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-		if (gacPath) {
-			cachedVertexAdcCredentialsExists = _existsSync(gacPath);
-		} else {
-			// Fall back to default ADC path (lazy evaluation)
-			cachedVertexAdcCredentialsExists = _existsSync(
-				_join(_homedir(), ".config", "gcloud", "application_default_credentials.json"),
-			);
-		}
+	if (cachedVertexAdcCredentialsExists && Date.now() - cachedVertexAdcCredentialsExists.checkedAt < ADC_CACHE_TTL_MS) {
+		return cachedVertexAdcCredentialsExists.value;
 	}
-	return cachedVertexAdcCredentialsExists;
+
+	// If node modules haven't loaded yet (async import race at startup),
+	// return false WITHOUT caching so the next call retries once they're ready.
+	// Only cache false permanently in a browser environment where fs is never available.
+	if (!_existsSync || !_homedir || !_join) {
+		const isNode = typeof process !== "undefined" && (process.versions?.node || process.versions?.bun);
+		if (!isNode) {
+			// Definitively in a browser — safe to cache false permanently
+			cachedVertexAdcCredentialsExists = { value: false, checkedAt: Number.POSITIVE_INFINITY };
+		}
+		return false;
+	}
+
+	let credentialsExist: boolean;
+	// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
+	const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+	if (gacPath) {
+		credentialsExist = _existsSync(gacPath);
+	} else {
+		// Fall back to default ADC path (lazy evaluation)
+		credentialsExist = _existsSync(_join(_homedir(), ".config", "gcloud", "application_default_credentials.json"));
+	}
+	cachedVertexAdcCredentialsExists = { value: credentialsExist, checkedAt: Date.now() };
+	return credentialsExist;
 }
 
 /**
@@ -107,6 +114,11 @@ export function getEnvApiKey(provider: any): string | undefined {
 		) {
 			return "<authenticated>";
 		}
+	}
+
+	// NVIDIA NIM shares integrate.api.nvidia.com with the nvidia provider.
+	if (provider === "nvidia-nim") {
+		return process.env.NVIDIA_NIM_API_KEY || process.env.NVIDIA_API_KEY;
 	}
 
 	const envMap: Record<string, string> = {

@@ -112,4 +112,45 @@ describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
 
 		expect(toolCall.thoughtSignature).toBeUndefined();
 	});
+
+	it("flushes orphaned tool calls when history ends with an assistant tool call", () => {
+		const model = makeCopilotClaudeModel();
+		const messages: Message[] = [
+			{ role: "user", content: "run a command", timestamp: Date.now() },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "call_123",
+						name: "bash",
+						arguments: { command: "ls" },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "github-copilot",
+				model: "claude-sonnet-4",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			},
+		];
+
+		const result = transformMessages(messages, model, anthropicNormalizeToolCallId);
+		const last = result[result.length - 1];
+
+		// A synthetic error tool result must be appended so APIs don't reject the dangling call
+		expect(last.role).toBe("toolResult");
+		if (last.role === "toolResult") {
+			expect(last.toolCallId).toBe("call_123");
+			expect(last.isError).toBe(true);
+		}
+	});
 });

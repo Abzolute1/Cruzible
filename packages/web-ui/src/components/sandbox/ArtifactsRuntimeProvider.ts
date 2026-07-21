@@ -143,6 +143,12 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 
 		const { action, filename, content } = message;
 
+		// Enforce read-only mode (e.g. HTML artifacts): only non-mutating operations
+		if (!this.readWrite && action !== "list" && action !== "get") {
+			respond({ success: false, error: "Artifacts are read-only in this context" });
+			return;
+		}
+
 		try {
 			switch (action) {
 				case "list": {

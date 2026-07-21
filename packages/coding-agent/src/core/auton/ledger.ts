@@ -1,3 +1,4 @@
+import { DELEGATION_TOOL_NAMES } from "../delegation-evidence.js";
 import type { SessionEntry } from "../session-manager.js";
 import {
 	hasAutonomousLocalReferenceContext,
@@ -6,8 +7,15 @@ import {
 	looksLikeAutonomousResearchTask,
 	looksLikeAutonomousVerifyOnlyTask,
 } from "../task-intent.js";
-import type { AutonomousCheckpointState, AutonomousRunResult } from "./runner.js";
 import type { ToolOutcome } from "./nudges/types.js";
+import type { AutonomousCheckpointState, AutonomousRunResult } from "./runner.js";
+import { getVerifyUiVerdict, isVerificationOutcome } from "./verification-control.js";
+
+// Re-exported so existing ledger consumers keep a single import site; the
+// implementations live in verification-control.ts, the one home for all
+// verification classification (previously duplicated here with a second,
+// broader pattern set — that divergence produced false drift-stops).
+export { getVerifyUiVerdict, isLaunderedVerificationCommand } from "./verification-control.js";
 
 export interface AutonomousRunLedger {
 	goal: string;
@@ -240,7 +248,7 @@ export function updateAutonomousRunLedger(options: {
 	const verificationAttempts = verificationOutcomes.length;
 	const verificationFailures = uniqueTail(
 		verificationOutcomes
-			.filter((outcome) => !outcome.success)
+			.filter((outcome) => !isPassedVerificationOutcome(outcome))
 			.map((outcome) => formatVerificationFailure(outcome))
 			.filter((value): value is string => typeof value === "string" && value.length > 0),
 		4,
@@ -260,7 +268,10 @@ export function updateAutonomousRunLedger(options: {
 	const recentMutations = uniqueTail(
 		options.toolHistory
 			.filter((outcome) => outcome.success && isMutatingOutcome(outcome))
-			.map((outcome) => normalizeWorkspaceReference(outcome.detail, 120) ?? normalizeWorkspaceReference(outcome.file, 120))
+			.map(
+				(outcome) =>
+					normalizeWorkspaceReference(outcome.detail, 120) ?? normalizeWorkspaceReference(outcome.file, 120),
+			)
 			.filter((value): value is string => typeof value === "string" && value.length > 0),
 		6,
 	);
@@ -271,28 +282,21 @@ export function updateAutonomousRunLedger(options: {
 	const discoveredFiles = uniqueTail(
 		[
 			...(options.current.discoveredFiles ?? []),
-			...options.toolHistory
-				.flatMap((outcome) => {
-					if (!outcome.success) return [];
-					const directFile = normalizeWorkspaceFilePath(outcome.file);
-					const discoveryFile = getDiscoveryTargetFile(outcome);
-					return [directFile, discoveryFile].filter((value): value is string => typeof value === "string");
-				}),
+			...options.toolHistory.flatMap((outcome) => {
+				if (!outcome.success) return [];
+				const directFile = normalizeWorkspaceFilePath(outcome.file);
+				const discoveryFile = getDiscoveryTargetFile(outcome);
+				return [directFile, discoveryFile].filter((value): value is string => typeof value === "string");
+			}),
 		],
 		12,
 	);
 	const latestAction = getLatestMeaningfulAction(options.toolHistory, options.fileAccessHistory);
 	const progressDetail = latestAction?.detail ?? options.current.progressDetail;
 	const currentFocus =
-		latestAction?.focus ??
-		extractFocusNote(options.lastAssistantText) ??
-		options.current.currentFocus;
+		latestAction?.focus ?? extractFocusNote(options.lastAssistantText) ?? options.current.currentFocus;
 	const baseResidualRisks = uniqueTail(
-		[
-			...options.current.residualRisks,
-			...verificationFailures,
-			...extractRiskNotes(options.lastAssistantText),
-		],
+		[...options.current.residualRisks, ...verificationFailures, ...extractRiskNotes(options.lastAssistantText)],
 		4,
 	);
 	const completedCheckpoints = uniqueTail(
@@ -388,7 +392,11 @@ export function updateAutonomousRunLedger(options: {
 		verificationFailures,
 	});
 	const residualRisks = uniqueTail(
-		[...baseResidualRisks, ...(visualAssessment?.blockingIssues ?? []), ...(visualIteration?.outstandingIssues ?? [])],
+		[
+			...baseResidualRisks,
+			...(visualAssessment?.blockingIssues ?? []),
+			...(visualIteration?.outstandingIssues ?? []),
+		],
 		4,
 	);
 
@@ -439,7 +447,8 @@ export function formatAutonomousRunLedger(ledger: AutonomousRunLedger): string {
 	if (ledger.taskJournal.nextAction) lines.push(`Next action: ${ledger.taskJournal.nextAction}`);
 	if (ledger.taskJournal.plannedNextStep) lines.push(`Planned next step: ${ledger.taskJournal.plannedNextStep}`);
 	if (ledger.taskJournal.stepRationale) lines.push(`Why: ${ledger.taskJournal.stepRationale}`);
-	if (ledger.taskJournal.expectedVerification) lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
+	if (ledger.taskJournal.expectedVerification)
+		lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
 	if (ledger.taskJournal.intentStatus) lines.push(`Intent status: ${ledger.taskJournal.intentStatus}`);
 	if (ledger.taskJournal.lastIntentOutcome) lines.push(`Intent outcome: ${ledger.taskJournal.lastIntentOutcome}`);
 	if (ledger.taskJournal.planItems.length > 0) {
@@ -458,13 +467,17 @@ export function formatAutonomousRunLedger(ledger: AutonomousRunLedger): string {
 		if (ledger.resume.lastStableCheckpoint) lines.push(`Stable checkpoint: ${ledger.resume.lastStableCheckpoint}`);
 	}
 	if (ledger.research) {
-		if (ledger.research.searchQueries.length > 0) lines.push(`Research queries: ${summarizeList(ledger.research.searchQueries, 3)}`);
-		if (ledger.research.fetchedUrls.length > 0) lines.push(`Fetched sources: ${summarizeList(ledger.research.fetchedUrls, 3)}`);
-		if (ledger.research.sourceUrls.length > 0) lines.push(`Source URLs: ${summarizeList(ledger.research.sourceUrls, 3)}`);
+		if (ledger.research.searchQueries.length > 0)
+			lines.push(`Research queries: ${summarizeList(ledger.research.searchQueries, 3)}`);
+		if (ledger.research.fetchedUrls.length > 0)
+			lines.push(`Fetched sources: ${summarizeList(ledger.research.fetchedUrls, 3)}`);
+		if (ledger.research.sourceUrls.length > 0)
+			lines.push(`Source URLs: ${summarizeList(ledger.research.sourceUrls, 3)}`);
 		if (ledger.research.preferredSourceUrls.length > 0) {
 			lines.push(`Preferred sources: ${summarizeList(ledger.research.preferredSourceUrls, 3)}`);
 		}
-		if (ledger.research.recentFindings.length > 0) lines.push(`Research findings: ${summarizeList(ledger.research.recentFindings, 3)}`);
+		if (ledger.research.recentFindings.length > 0)
+			lines.push(`Research findings: ${summarizeList(ledger.research.recentFindings, 3)}`);
 		if (ledger.research.evidence) {
 			lines.push(
 				`Research evidence: ${ledger.research.evidence.status} (${ledger.research.evidence.authoritativeSourceCount} authoritative, ${ledger.research.evidence.fetchedSourceCount} fetched, ${ledger.research.evidence.citedSourceCount} cited)`,
@@ -476,13 +489,15 @@ export function formatAutonomousRunLedger(ledger: AutonomousRunLedger): string {
 	}
 	if (ledger.currentFocus) lines.push(`Focus: ${ledger.currentFocus}`);
 	if (ledger.progressDetail) lines.push(`Progress: ${ledger.progressDetail}`);
-	if (ledger.lastActionType && ledger.lastActionDetail) lines.push(`Last action: ${ledger.lastActionType} - ${ledger.lastActionDetail}`);
+	if (ledger.lastActionType && ledger.lastActionDetail)
+		lines.push(`Last action: ${ledger.lastActionType} - ${ledger.lastActionDetail}`);
 	if (ledger.visualIteration?.enabled) {
 		lines.push(
 			`Visual iteration: ${ledger.visualIteration.phase}${ledger.visualIteration.lastScreenshotDetail ? ` via ${ledger.visualIteration.lastScreenshotDetail}` : ""}`,
 		);
 		lines.push(`Screenshot attempts: ${ledger.visualIteration.screenshotAttempts}`);
-		if (ledger.visualIteration.observationSummary) lines.push(`Visual observation: ${ledger.visualIteration.observationSummary}`);
+		if (ledger.visualIteration.observationSummary)
+			lines.push(`Visual observation: ${ledger.visualIteration.observationSummary}`);
 		if (ledger.visualIteration.outstandingIssues.length > 0) {
 			lines.push(`Visual issues: ${summarizeList(ledger.visualIteration.outstandingIssues, 3)}`);
 		}
@@ -511,15 +526,18 @@ export function formatAutonomousRunLedger(ledger: AutonomousRunLedger): string {
 	}
 	if (ledger.touchedFiles.length > 0) lines.push(`Changed: ${summarizeList(ledger.touchedFiles, 4)}`);
 	if (ledger.readFiles.length > 0) lines.push(`Read: ${summarizeList(ledger.readFiles, 4)}`);
-	if (ledger.recentMutations.length > 0) lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
+	if (ledger.recentMutations.length > 0)
+		lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
 	lines.push(
 		ledger.verificationSatisfied
 			? `Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`
 			: "Verification: pending",
 	);
 	if (ledger.verificationAttempts > 0) lines.push(`Verification attempts: ${ledger.verificationAttempts}`);
-	if (ledger.verificationFailures.length > 0) lines.push(`Verification failures: ${summarizeList(ledger.verificationFailures, 2)}`);
-	if (ledger.taskJournal.blockedReasons.length > 0) lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
+	if (ledger.verificationFailures.length > 0)
+		lines.push(`Verification failures: ${summarizeList(ledger.verificationFailures, 2)}`);
+	if (ledger.taskJournal.blockedReasons.length > 0)
+		lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
 	if (ledger.residualRisks.length > 0) lines.push(`Risks: ${summarizeList(ledger.residualRisks, 2)}`);
 	lines.push("Use this ledger as the current state. Continue from it without rehashing older transcript.");
 	return lines.join("\n");
@@ -538,7 +556,8 @@ export function formatAutonomousPromptLedger(ledger: AutonomousRunLedger): strin
 		if (ledger.resume.lastStableCheckpoint) lines.push(`Stable checkpoint: ${ledger.resume.lastStableCheckpoint}`);
 	}
 	if (ledger.taskJournal.plannedNextStep) lines.push(`Planned next step: ${ledger.taskJournal.plannedNextStep}`);
-	if (ledger.taskJournal.expectedVerification) lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
+	if (ledger.taskJournal.expectedVerification)
+		lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
 	if (ledger.taskJournal.intentStatus) lines.push(`Intent status: ${ledger.taskJournal.intentStatus}`);
 	if (ledger.taskJournal.lastIntentOutcome) lines.push(`Intent outcome: ${ledger.taskJournal.lastIntentOutcome}`);
 	if (ledger.research?.evidence) {
@@ -559,14 +578,19 @@ export function formatAutonomousPromptLedger(ledger: AutonomousRunLedger): strin
 	if (ledger.visualTarget?.actionRecipe && ledger.visualTarget.actionRecipe.length > 0) {
 		lines.push(`Visual recipe: ${formatVisualActionRecipe(ledger.visualTarget.actionRecipe)}`);
 	}
-	if (ledger.lastActionType && ledger.lastActionDetail) lines.push(`Last action: ${ledger.lastActionType} - ${ledger.lastActionDetail}`);
-	if (ledger.recentMutations.length > 0) lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
+	if (ledger.lastActionType && ledger.lastActionDetail)
+		lines.push(`Last action: ${ledger.lastActionType} - ${ledger.lastActionDetail}`);
+	if (ledger.recentMutations.length > 0)
+		lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
 	if (ledger.verificationSatisfied) {
-		lines.push(`Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`);
+		lines.push(
+			`Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`,
+		);
 	} else if (ledger.verificationFailures.length > 0) {
 		lines.push(`Verification failures: ${summarizeList(ledger.verificationFailures, 2)}`);
 	}
-	if (ledger.taskJournal.blockedReasons.length > 0) lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
+	if (ledger.taskJournal.blockedReasons.length > 0)
+		lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
 	if (ledger.residualRisks.length > 0) lines.push(`Risks: ${summarizeList(ledger.residualRisks, 2)}`);
 	lines.push("Continue from this state only. Do not restate older transcript.");
 	return lines.join("\n");
@@ -583,7 +607,8 @@ export function formatAutonomousContinuationLedger(ledger: AutonomousRunLedger):
 		lines.push(`Next action: ${ledger.taskJournal.nextAction}`);
 	}
 	if (ledger.taskJournal.stepRationale) lines.push(`Why: ${ledger.taskJournal.stepRationale}`);
-	if (ledger.taskJournal.expectedVerification) lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
+	if (ledger.taskJournal.expectedVerification)
+		lines.push(`Expected verification: ${ledger.taskJournal.expectedVerification}`);
 	if (ledger.taskJournal.intentStatus && ledger.taskJournal.intentStatus !== "on_track") {
 		lines.push(`Intent status: ${ledger.taskJournal.intentStatus}`);
 	}
@@ -612,13 +637,16 @@ export function formatAutonomousContinuationLedger(ledger: AutonomousRunLedger):
 		lines.push(`Recent mutation: ${ledger.recentMutations[ledger.recentMutations.length - 1]}`);
 	}
 	if (ledger.verificationSatisfied) {
-		lines.push(`Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`);
+		lines.push(
+			`Verification: satisfied${ledger.lastVerificationDetail ? ` via ${ledger.lastVerificationDetail}` : ""}`,
+		);
 	} else if (ledger.verificationFailures.length > 0) {
 		lines.push(`Verification failures: ${summarizeList(ledger.verificationFailures, 1)}`);
 	} else {
 		lines.push("Verification: pending");
 	}
-	if (ledger.taskJournal.blockedReasons.length > 0) lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
+	if (ledger.taskJournal.blockedReasons.length > 0)
+		lines.push(`Blockers: ${summarizeList(ledger.taskJournal.blockedReasons, 2)}`);
 	if (ledger.residualRisks.length > 0) lines.push(`Risks: ${summarizeList(ledger.residualRisks, 2)}`);
 	lines.push("Continue from this state only. Do not restate older transcript.");
 	return lines.join("\n");
@@ -632,7 +660,9 @@ export function buildAutonomousCompactionInstructions(ledger: AutonomousRunLedge
 		ledger.taskJournal.nextAction ? `Next action: ${ledger.taskJournal.nextAction}` : undefined,
 		ledger.taskJournal.plannedNextStep ? `Planned next step: ${ledger.taskJournal.plannedNextStep}` : undefined,
 		ledger.taskJournal.stepRationale ? `Why this step: ${ledger.taskJournal.stepRationale}` : undefined,
-		ledger.taskJournal.expectedVerification ? `Expected verification: ${ledger.taskJournal.expectedVerification}` : undefined,
+		ledger.taskJournal.expectedVerification
+			? `Expected verification: ${ledger.taskJournal.expectedVerification}`
+			: undefined,
 		ledger.taskJournal.intentStatus ? `Intent status: ${ledger.taskJournal.intentStatus}` : undefined,
 		ledger.taskJournal.lastIntentOutcome ? `Intent outcome: ${ledger.taskJournal.lastIntentOutcome}` : undefined,
 		ledger.taskJournal.planItems.length > 0
@@ -676,7 +706,9 @@ export function buildAutonomousCompactionInstructions(ledger: AutonomousRunLedge
 			? `Visual iteration: ${ledger.visualIteration.phase}${ledger.visualIteration.lastScreenshotDetail ? ` via ${ledger.visualIteration.lastScreenshotDetail}` : ""}`
 			: undefined,
 		ledger.visualIteration?.enabled ? `Screenshot attempts: ${ledger.visualIteration.screenshotAttempts}` : undefined,
-		ledger.visualIteration?.observationSummary ? `Visual observation: ${ledger.visualIteration.observationSummary}` : undefined,
+		ledger.visualIteration?.observationSummary
+			? `Visual observation: ${ledger.visualIteration.observationSummary}`
+			: undefined,
 		ledger.visualIteration && ledger.visualIteration.outstandingIssues.length > 0
 			? `Visual issues: ${ledger.visualIteration.outstandingIssues.join(" | ")}`
 			: undefined,
@@ -758,10 +790,7 @@ export function appendAutonomousRunSnapshot(
 	sessionManager: { appendCustomEntry: (customType: string, data?: unknown) => string },
 	result: AutonomousRunResult,
 ): void {
-	appendAutonomousRunSnapshotState(
-		sessionManager,
-		createAutonomousRunSnapshot(result),
-	);
+	appendAutonomousRunSnapshotState(sessionManager, createAutonomousRunSnapshot(result));
 }
 
 export function appendAutonomousRunSnapshotState(
@@ -869,7 +898,9 @@ function getLatestMeaningfulAction(
 			return {
 				type: "verification",
 				detail,
-				focus: outcome.success ? `Running verification: ${detail}` : `Address verification failure: ${detail}`,
+				focus: isPassedVerificationOutcome(outcome)
+					? `Running verification: ${detail}`
+					: `Address verification failure: ${detail}`,
 			};
 		}
 		if (isMutatingOutcome(outcome) && !outcome.success) {
@@ -926,10 +957,7 @@ function normalizeWorkspaceReference(value: string | undefined, maxLength: numbe
 	const normalized = value.replace(/\\/g, "/").replace(/\s+/g, " ").trim();
 	if (!normalized) return undefined;
 
-	const withoutWorkspaceCd = normalized.replace(
-		/^cd\s+(?:\/?(?:tmp|home)\/[^\s;&|]+\/workspace)\s*&&\s*/i,
-		"",
-	);
+	const withoutWorkspaceCd = normalized.replace(/^cd\s+(?:\/?(?:tmp|home)\/[^\s;&|]+\/workspace)\s*&&\s*/i, "");
 	if (withoutWorkspaceCd !== normalized) {
 		return normalizeSnippet(withoutWorkspaceCd, maxLength);
 	}
@@ -959,10 +987,7 @@ function extractWorkspaceRelativePath(value: string): string | undefined {
 	return undefined;
 }
 
-function deriveDiscoveryTargetFile(options: {
-	current?: string;
-	toolHistory: ToolOutcome[];
-}): string | undefined {
+function deriveDiscoveryTargetFile(options: { current?: string; toolHistory: ToolOutcome[] }): string | undefined {
 	for (const outcome of [...options.toolHistory].reverse()) {
 		if (!outcome.success) continue;
 		const directFile = normalizeWorkspaceFilePath(outcome.file);
@@ -973,11 +998,7 @@ function deriveDiscoveryTargetFile(options: {
 	return options.current;
 }
 
-function choosePreferredDiscoveryTarget(
-	current: string | undefined,
-	next: string,
-	outcome: ToolOutcome,
-): string {
+function choosePreferredDiscoveryTarget(current: string | undefined, next: string, outcome: ToolOutcome): string {
 	if (!current || current === next) return next;
 	if (!/^(?:src|tests?)\//i.test(current)) return next;
 	if (/^(?:src|tests?)\//i.test(next)) return next;
@@ -1049,7 +1070,7 @@ function deriveResearchState(options: {
 				if (result.url) sourceUrls.push(result.url);
 				if (result.url && isLikelyAuthoritativeSource(result.url)) preferredSourceUrls.push(result.url);
 				const finding = normalizeSnippet(
-					result.title && result.url ? `${result.title} — ${result.url}` : result.title ?? result.url,
+					result.title && result.url ? `${result.title} — ${result.url}` : (result.title ?? result.url),
 					180,
 				);
 				if (finding) recentFindings.push(finding);
@@ -1064,7 +1085,7 @@ function deriveResearchState(options: {
 				if (isLikelyAuthoritativeSource(url)) preferredSourceUrls.push(url);
 			}
 			const finding = normalizeSnippet(
-				metadata?.title && url ? `Fetched ${metadata.title} — ${url}` : metadata?.title ?? url,
+				metadata?.title && url ? `Fetched ${metadata.title} — ${url}` : (metadata?.title ?? url),
 				180,
 			);
 			if (finding) recentFindings.push(finding);
@@ -1152,16 +1173,29 @@ function scoreResearchSource(url: string): number {
 		const host = parsed.hostname.toLowerCase();
 		const path = parsed.pathname.toLowerCase();
 		let score = 0;
-		if (host.startsWith("docs.") || host.startsWith("developer.") || host.startsWith("api.") || host.startsWith("learn.")) {
+		if (
+			host.startsWith("docs.") ||
+			host.startsWith("developer.") ||
+			host.startsWith("api.") ||
+			host.startsWith("learn.")
+		) {
 			score += 5;
 		}
-		if (/(^|\.)(readthedocs\.io|mozilla\.org|react\.dev|nodejs\.org|python\.org|golang\.org|rust-lang\.org)$/.test(host)) {
+		if (
+			/(^|\.)(readthedocs\.io|mozilla\.org|react\.dev|nodejs\.org|python\.org|golang\.org|rust-lang\.org)$/.test(
+				host,
+			)
+		) {
 			score += 5;
 		}
 		if (/(docs|doc|reference|manual|guide|api|spec|specification|changelog|release)/.test(path)) {
 			score += 3;
 		}
-		if (/(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)/.test(host)) {
+		if (
+			/(stackoverflow\.com|reddit\.com|medium\.com|dev\.to|hashnode\.com|youtube\.com|x\.com|twitter\.com)/.test(
+				host,
+			)
+		) {
 			score -= 4;
 		}
 		if (/(duckduckgo\.com|google\.com|bing\.com)/.test(host)) {
@@ -1177,9 +1211,7 @@ function isLikelyAuthoritativeSource(url: string): boolean {
 	return scoreResearchSource(url) >= 3;
 }
 
-function parseResearchSearchMetadata(
-	metadata: Record<string, unknown> | undefined,
-):
+function parseResearchSearchMetadata(metadata: Record<string, unknown> | undefined):
 	| {
 			query?: string;
 			results?: Array<{ title?: string; url?: string }>;
@@ -1261,7 +1293,10 @@ function deriveVisualIteration(options: {
 		screenshotAttempts,
 		lastScreenshotDetail: lastScreenshotDetail ?? options.lastVerificationDetail,
 		observationSummary: buildVisualObservationSummary(visualArtifacts, phase),
-		outstandingIssues: uniqueTail(visualArtifacts.flatMap((artifact) => getVisualArtifactIssues(artifact)), 4),
+		outstandingIssues: uniqueTail(
+			visualArtifacts.flatMap((artifact) => getVisualArtifactIssues(artifact)),
+			4,
+		),
 		recentArtifacts: visualArtifacts.slice(-3),
 	};
 }
@@ -1402,16 +1437,15 @@ function deriveVisualTarget(options: {
 		describeVisualRecipe(recordedRecipe) ??
 		inferInteractionHint(options.goal, inferredSurface) ??
 		options.current?.interactionHint;
-	const interactionMode = interactionHint || recordedRecipe ? "interactive" : (options.current?.interactionMode ?? "static");
+	const interactionMode =
+		interactionHint || recordedRecipe ? "interactive" : (options.current?.interactionMode ?? "static");
 	const recommendedTool =
 		interactionMode === "interactive"
 			? "interact_then_screenshot"
 			: (options.current?.recommendedTool ?? "screenshot_url");
 	const actionRecipe = recordedRecipe ?? inferVisualActionRecipe(options.goal, inferredSurface, interactionMode);
 	const goalSummary =
-		normalizeSnippet(options.goal, 180) ??
-		options.current?.goalSummary ??
-		"Improve the targeted UI surface";
+		normalizeSnippet(options.goal, 180) ?? options.current?.goalSummary ?? "Improve the targeted UI surface";
 	const acceptanceCriteria = uniqueTail(
 		[
 			...buildVisualAcceptanceCriteria(options.goal, inferredSurface, viewportProfile, interactionHint),
@@ -1438,7 +1472,11 @@ function getLatestRecordedVisualActionRecipe(
 	if (!visualIteration) return undefined;
 	for (let i = visualIteration.recentArtifacts.length - 1; i >= 0; i--) {
 		const artifact = visualIteration.recentArtifacts[i];
-		if (artifact?.status === "captured" && artifact.tool === "interact_then_screenshot" && artifact.actionRecipe?.length) {
+		if (
+			artifact?.status === "captured" &&
+			artifact.tool === "interact_then_screenshot" &&
+			artifact.actionRecipe?.length
+		) {
 			return artifact.actionRecipe;
 		}
 	}
@@ -1484,7 +1522,9 @@ function buildVisualAcceptanceCriteria(
 		criteria.push(`the ${surface ?? "target UI"} should render the intended interactive state`);
 	}
 	if (interactionHint) {
-		criteria.push(`the capture should reflect the intended state after ${interactionHint.replace(/^open |^perform |^fill /i, "")}`);
+		criteria.push(
+			`the capture should reflect the intended state after ${interactionHint.replace(/^open |^perform |^fill /i, "")}`,
+		);
 	}
 	return uniqueTail(criteria, 4);
 }
@@ -1560,7 +1600,12 @@ function inferVisualActionRecipe(
 	}
 	if (/\b(login|sign in|signin|auth|authenticated|logged in)\b/i.test(goal)) {
 		return [
-			{ type: "fill", targetHint: "the username/email field", valueHint: "valid account email or username", source: "inferred" },
+			{
+				type: "fill",
+				targetHint: "the username/email field",
+				valueHint: "valid account email or username",
+				source: "inferred",
+			},
 			{ type: "fill", targetHint: "the password field", valueHint: "valid account password", source: "inferred" },
 			{ type: "click", targetHint: "the submit/sign-in button", source: "inferred" },
 			{ type: "wait", ms: 1000, source: "inferred" },
@@ -1600,6 +1645,8 @@ function formatVisualActionRecipe(steps: AutonomousVisualActionStep[]): string {
 				case "navigate":
 					return `navigate to ${step.url ?? step.urlHint ?? "the target page"}`;
 			}
+			// step.type is a closed union, so this is unreachable; it keeps the map callback total.
+			return "";
 		})
 		.join(" -> ");
 }
@@ -1618,7 +1665,9 @@ function inferSurfaceFromGoal(goal: string): string | undefined {
 
 function inferSurfaceFromFocus(focus: string | undefined): string | undefined {
 	if (!focus) return undefined;
-	const match = focus.match(/\b(ui|layout|page|screen|component|dashboard|landing page|homepage|modal|dialog|form|header|sidebar)\b/i);
+	const match = focus.match(
+		/\b(ui|layout|page|screen|component|dashboard|landing page|homepage|modal|dialog|form|header|sidebar)\b/i,
+	);
 	return match?.[0] ? normalizeSnippet(match[0], 80) : undefined;
 }
 
@@ -1662,7 +1711,10 @@ function deriveVisualAssessment(options: {
 			latestJudgment: "pass",
 			summary:
 				visualIteration.observationSummary ??
-				normalizeSnippet(`latest visual verification for ${target ?? "UI"} passed without console or network issues`, 180) ??
+				normalizeSnippet(
+					`latest visual verification for ${target ?? "UI"} passed without console or network issues`,
+					180,
+				) ??
 				"latest visual verification passed",
 			blockingIssues: [],
 			lastEvaluatedDetail: visualIteration.lastScreenshotDetail,
@@ -1674,8 +1726,10 @@ function deriveVisualAssessment(options: {
 			target,
 			latestJudgment: "fail",
 			summary:
-				normalizeSnippet(`latest visual verification for ${target ?? "UI"} found blocking issues: ${blockingIssues.join("; ")}`, 180) ??
-				"latest visual verification found blocking issues",
+				normalizeSnippet(
+					`latest visual verification for ${target ?? "UI"} found blocking issues: ${blockingIssues.join("; ")}`,
+					180,
+				) ?? "latest visual verification found blocking issues",
 			blockingIssues,
 			lastEvaluatedDetail: visualIteration.lastScreenshotDetail,
 			basis: "screenshot_metadata",
@@ -1747,9 +1801,11 @@ function deriveNextAction(options: {
 		}
 		return "Inspect one directly relevant file or path, then answer and stop";
 	}
-	if (!options.verificationSatisfied && options.recentMutations.length > 0) return "Run verification on the latest changes";
+	if (!options.verificationSatisfied && options.recentMutations.length > 0)
+		return "Run verification on the latest changes";
 	if (options.latestActionType === "inspection") return "Make the next concrete code change";
-	if (options.latestActionType === "verification" && options.verificationSatisfied) return "Summarize the verified result and any residual risks";
+	if (options.latestActionType === "verification" && options.verificationSatisfied)
+		return "Summarize the verified result and any residual risks";
 	if (options.latestActionType === "mutation") return "Verify the recent implementation change";
 	if (options.readFiles.length > 0) return "Use the inspected files to make a concrete implementation step";
 	return "Continue with the next concrete step";
@@ -1767,13 +1823,16 @@ function derivePlannerState(options: {
 }): AutonomousPlannerState {
 	const previous = options.current;
 	const phase =
-		options.status === "error" || options.taskJournal.blockedReasons.length > 0 || options.verificationFailures.length > 0
+		options.status === "error" ||
+		options.taskJournal.blockedReasons.length > 0 ||
+		options.verificationFailures.length > 0
 			? "blocked"
 			: options.status === "complete" || getPlanStatus(options.taskJournal.planItems, "summarize") === "active"
 				? "summarizing"
 				: getPlanStatus(options.taskJournal.planItems, "verify") === "active" || options.verificationSatisfied
 					? "verifying"
-					: getPlanStatus(options.taskJournal.planItems, "implement") === "active" || getPlanStatus(options.taskJournal.planItems, "implement") === "completed"
+					: getPlanStatus(options.taskJournal.planItems, "implement") === "active" ||
+							getPlanStatus(options.taskJournal.planItems, "implement") === "completed"
 						? "executing"
 						: "planning";
 	const lane =
@@ -1783,12 +1842,14 @@ function derivePlannerState(options: {
 				? "visual"
 				: options.taskMode === "answer"
 					? "generic"
-				: getPlanStatus(options.taskJournal.planItems, "implement") !== "pending"
-					? "implementation"
-					: "generic";
+					: getPlanStatus(options.taskJournal.planItems, "implement") !== "pending"
+						? "implementation"
+						: "generic";
 	const shouldBumpRevision =
 		previous &&
-		(previous.phase !== phase || previous.lane !== lane || previous.handoffSummary !== buildPlannerHandoffSummary(options.taskJournal, options.research));
+		(previous.phase !== phase ||
+			previous.lane !== lane ||
+			previous.handoffSummary !== buildPlannerHandoffSummary(options.taskJournal, options.research));
 	return {
 		phase,
 		lane,
@@ -1858,10 +1919,7 @@ function deriveResumeMode(options: {
 	return "resume_execute";
 }
 
-function applyAutonomousLedgerEvent(
-	current: AutonomousRunLedger,
-	event: AutonomousLedgerEvent,
-): AutonomousRunLedger {
+function applyAutonomousLedgerEvent(current: AutonomousRunLedger, event: AutonomousLedgerEvent): AutonomousRunLedger {
 	const journal = cloneTaskJournal(current.taskJournal);
 	const taskMode = getAutonomousTaskMode(current);
 	const detail = normalizeSnippet("detail" in event ? event.detail : undefined, 160);
@@ -1875,17 +1933,15 @@ function applyAutonomousLedgerEvent(
 				journal.activeSubtask = detailWithPrefix(detail, "Use the inspected context to answer directly");
 				journal.nextAction = "Answer directly from the inspected evidence and stop";
 				journal.plannedNextStep = "Answer directly from the inspected evidence and stop.";
-				journal.stepRationale = "The task is answer-only, so once the relevant local evidence is inspected the run should answer instead of widening into implementation.";
+				journal.stepRationale =
+					"The task is answer-only, so once the relevant local evidence is inspected the run should answer instead of widening into implementation.";
 			} else {
 				journal.activeSubtask = detail
 					? `Turn inspected context into a concrete change: ${detail}`
 					: "Turn inspected context into a concrete change";
 				journal.nextAction = "Make the next concrete code change";
 			}
-			journal.completedCheckpoints = uniqueTail(
-				[...journal.completedCheckpoints, "relevant files inspected"],
-				6,
-			);
+			journal.completedCheckpoints = uniqueTail([...journal.completedCheckpoints, "relevant files inspected"], 6);
 			break;
 		case "implementation_changed":
 			setPlanStatus(journal.planItems, "inspect", "completed");
@@ -1895,10 +1951,7 @@ function applyAutonomousLedgerEvent(
 			}
 			journal.activeSubtask = detail ? `Validate the recent change: ${detail}` : "Validate the recent change";
 			journal.nextAction = "Run verification on the latest changes";
-			journal.completedCheckpoints = uniqueTail(
-				[...journal.completedCheckpoints, "workspace changes applied"],
-				6,
-			);
+			journal.completedCheckpoints = uniqueTail([...journal.completedCheckpoints, "workspace changes applied"], 6);
 			break;
 		case "mutation_repair_required":
 			setPlanStatus(journal.planItems, "inspect", "completed");
@@ -1915,7 +1968,8 @@ function applyAutonomousLedgerEvent(
 				? `Retry one valid edit on the same target: ${detail}`
 				: "Retry one valid edit on the same target";
 			journal.plannedNextStep = journal.nextAction;
-			journal.stepRationale = "The previous edit did not apply, so recover on the same target instead of widening scope.";
+			journal.stepRationale =
+				"The previous edit did not apply, so recover on the same target instead of widening scope.";
 			break;
 		case "verification_required":
 			if (getPlanStatus(journal.planItems, "verify") !== "completed") {
@@ -1973,7 +2027,9 @@ function applyAutonomousLedgerEvent(
 		case "completion_confirmed":
 			setPlanStatus(journal.planItems, "summarize", "completed");
 			journal.activeSubtask =
-				taskMode === "answer" ? "Finalize and present the answer clearly" : "Finalize and report verified completion";
+				taskMode === "answer"
+					? "Finalize and present the answer clearly"
+					: "Finalize and report verified completion";
 			journal.nextAction =
 				taskMode === "answer" ? "Stop after presenting the direct answer" : "Stop and present the verified result";
 			journal.plannedNextStep =
@@ -1994,17 +2050,11 @@ function applyAutonomousLedgerEvent(
 			journal.nextAction = "Resolve blocker and continue";
 			break;
 		case "budget_exhausted":
-			journal.blockedReasons = uniqueTail(
-				[...journal.blockedReasons, "autonomous budget limit reached"],
-				4,
-			);
+			journal.blockedReasons = uniqueTail([...journal.blockedReasons, "autonomous budget limit reached"], 4);
 			journal.nextAction = "Resume with a larger budget or a smaller task slice";
 			break;
 		case "nudge_stop":
-			journal.blockedReasons = uniqueTail(
-				[...journal.blockedReasons, "nudge engine stopped the run"],
-				4,
-			);
+			journal.blockedReasons = uniqueTail([...journal.blockedReasons, "nudge engine stopped the run"], 4);
 			journal.nextAction = "Review the stalled run before resuming";
 			break;
 	}
@@ -2105,12 +2155,7 @@ function derivePlanItems(options: {
 		{
 			key: "summarize",
 			title: "Summarize verified result",
-			status:
-				options.status === "complete"
-					? "completed"
-					: options.verificationSatisfied
-						? "active"
-						: "pending",
+			status: options.status === "complete" ? "completed" : options.verificationSatisfied ? "active" : "pending",
 		},
 	];
 }
@@ -2159,7 +2204,8 @@ function createInitialTaskState(taskMode: AutonomousTaskMode): {
 			activeSubtask: "Inspect the task and gather only the minimum evidence needed to answer",
 			nextAction: "Take one focused inspection step, then answer directly and stop",
 			plannedNextStep: "Take one focused inspection step, then answer directly and stop.",
-			stepRationale: "This is an answer-first task, so the run should avoid widening into implementation or extra verification once the needed evidence is in hand.",
+			stepRationale:
+				"This is an answer-first task, so the run should avoid widening into implementation or extra verification once the needed evidence is in hand.",
 		};
 	}
 	return {
@@ -2221,22 +2267,42 @@ function isAutonomousRunSnapshot(value: unknown): value is AutonomousRunSnapshot
 }
 
 function isMutatingOutcome(outcome: ToolOutcome): boolean {
-	return MUTATING_TOOL_NAMES.has(outcome.tool.toLowerCase());
+	if (MUTATING_TOOL_NAMES.has(outcome.tool.toLowerCase())) return true;
+	// A delegation subagent mutates below the boundary; its file evidence is real.
+	if (DELEGATION_TOOL_NAMES.has(outcome.tool.toLowerCase())) {
+		return getTaskEvidence(outcome)?.some((entry) => entry.kind === "file") === true;
+	}
+	return false;
+}
+
+interface TaskEvidenceEntry {
+	kind?: string;
+	command?: string;
+	exitCode?: number | null;
+	action?: string;
+	path?: string;
+}
+
+function getTaskEvidence(outcome: ToolOutcome): TaskEvidenceEntry[] | undefined {
+	const metadata = outcome.metadata;
+	if (!metadata || typeof metadata !== "object") return undefined;
+	const evidence = (metadata as { evidence?: unknown }).evidence;
+	return Array.isArray(evidence) ? (evidence as TaskEvidenceEntry[]) : undefined;
 }
 
 function isReadOutcome(outcome: ToolOutcome): boolean {
 	return READ_TOOL_NAMES.has(outcome.tool.toLowerCase());
 }
 
-function isVerificationOutcome(outcome: ToolOutcome): boolean {
-	const toolName = outcome.tool.toLowerCase();
-	if (VERIFICATION_TOOL_NAMES.has(toolName)) return true;
-	if (VISUAL_VERIFICATION_TOOL_NAMES.has(toolName)) return true;
-	const detail = outcome.detail;
-	if (toolName === "bash" && typeof detail === "string") {
-		return VERIFICATION_COMMAND_PATTERNS.some((pattern) => pattern.test(detail));
-	}
-	return false;
+/**
+ * Passed/failed derivation for verification outcomes. Most tools pass when the
+ * execution succeeded; verify_ui reports a verdict, and a FAIL verdict means a
+ * failed verification even though the tool call itself succeeded.
+ */
+function isPassedVerificationOutcome(outcome: ToolOutcome): boolean {
+	if (!outcome.success) return false;
+	if (outcome.tool.toLowerCase() === "verify_ui" && getVerifyUiVerdict(outcome) === "FAIL") return false;
+	return true;
 }
 
 function isVisualVerificationOutcome(outcome: ToolOutcome): boolean {
@@ -2249,23 +2315,7 @@ function hasExplicitCompletionLikeSignal(text: string): boolean {
 
 const MUTATING_TOOL_NAMES = new Set(["edit", "write", "str_replace_editor", "notebook_edit"]);
 const READ_TOOL_NAMES = new Set(["read", "read_file"]);
-const VERIFICATION_TOOL_NAMES = new Set(["verify"]);
-const VISUAL_VERIFICATION_TOOL_NAMES = new Set(["screenshot_url", "interact_then_screenshot"]);
-const VERIFICATION_COMMAND_PATTERNS = [
-	/\b(test|tests)\b/i,
-	/\bvitest\b/i,
-	/\bjest\b/i,
-	/\bpytest\b/i,
-	/\bcargo test\b/i,
-	/\bgo test\b/i,
-	/\bplaywright test\b/i,
-	/\blint\b/i,
-	/\beslint\b/i,
-	/\btypecheck\b/i,
-	/\btsc\b/i,
-	/\bbuild\b/i,
-	/\bcheck\b/i,
-];
+const VISUAL_VERIFICATION_TOOL_NAMES = new Set(["screenshot_url", "interact_then_screenshot", "verify_ui"]);
 const COMPLETION_PATTERNS = [
 	/\b(task|work|implementation|fix|changes?)\s+(is\s+)?(complete|completed|done|finished)\b/i,
 	/\bno\s+(further|more)\s+(changes|work|action)\s+(are\s+)?needed\b/i,

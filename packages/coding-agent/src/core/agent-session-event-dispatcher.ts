@@ -1,6 +1,5 @@
 import type { AgentEvent } from "@ag1/agent-core";
-import { appendResearchArtifactFromToolResult } from "./research-artifacts.js";
-import type { SessionManager } from "./session-manager.js";
+import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session.js";
 import type {
 	ExtensionRunner,
 	MessageEndEvent,
@@ -12,15 +11,18 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "./extensions/index.js";
-import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session.js";
+import { appendResearchArtifactFromToolResult } from "./research-artifacts.js";
+import type { SessionManager } from "./session-manager.js";
 
 export class AgentSessionEventDispatcher {
 	private readonly listeners: AgentSessionEventListener[] = [];
 	private turnIndex = 0;
+	private readonly pendingToolArgs = new Map<string, any>();
 
 	constructor(
 		private readonly sessionManager: SessionManager,
 		private readonly getExtensionRunner: () => ExtensionRunner | undefined,
+		private readonly recordToolOutcome?: (outcome: any) => void,
 	) {}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -122,6 +124,9 @@ export class AgentSessionEventDispatcher {
 		}
 
 		if (event.type === "tool_execution_start") {
+			if (event.toolCallId) {
+				this.pendingToolArgs.set(event.toolCallId, event.args);
+			}
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
 				toolCallId: event.toolCallId,
@@ -147,6 +152,20 @@ export class AgentSessionEventDispatcher {
 		if (event.type === "tool_execution_end") {
 			if (!event.isError) {
 				appendResearchArtifactFromToolResult(this.sessionManager, event.toolName, event.result.details);
+				if (this.recordToolOutcome) {
+					const args = event.toolCallId ? this.pendingToolArgs.get(event.toolCallId) : undefined;
+					// Richer outcome for fact cache using tracked args (centralized, benefits all modes incl. autonomous)
+					const outcome = {
+						tool: event.toolName,
+						success: true,
+						args,
+						// file/detail enriched where possible; interactive adds more for its nudges
+					} as any;
+					this.recordToolOutcome(outcome);
+				}
+			}
+			if (event.toolCallId) {
+				this.pendingToolArgs.delete(event.toolCallId);
 			}
 			const extensionEvent: ToolExecutionEndEvent = {
 				type: "tool_execution_end",

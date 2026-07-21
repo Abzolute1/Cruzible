@@ -79,7 +79,9 @@ describe("buildPromptIntentAddendum", () => {
 	});
 
 	it("honors explicit no-web directives", () => {
-		const addendum = buildPromptIntentAddendum("find where buildSystemPrompt is defined and explain it; do not browse the web");
+		const addendum = buildPromptIntentAddendum(
+			"find where buildSystemPrompt is defined and explain it; do not browse the web",
+		);
 		expect(addendum).toContain("explicitly does not want web browsing");
 		expect(addendum).toContain("Do not use webSearch or webFetch");
 	});
@@ -213,18 +215,22 @@ describe("buildPromptIntentAddendum", () => {
 	});
 
 	it("steers self-contained benchmark patch tasks toward caller and test evidence first", () => {
-		const addendum = buildPromptIntentAddendum([
-			"You are in a self-contained benchmark workspace.",
-			"Fix the report rendering bug so the CLI output uses line breaks between summary items.",
-			"Be careful: there is a misleading similarly named formatter file in the workspace.",
-			"Run the verification command before your final answer.",
-			"Stay inside this workspace.",
-			"The intended verification command is: `node --test`",
-		].join("\n"));
+		const addendum = buildPromptIntentAddendum(
+			[
+				"You are in a self-contained benchmark workspace.",
+				"Fix the report rendering bug so the CLI output uses line breaks between summary items.",
+				"Be careful: there is a misleading similarly named formatter file in the workspace.",
+				"Run the verification command before your final answer.",
+				"Stay inside this workspace.",
+				"The intended verification command is: `node --test`",
+			].join("\n"),
+		);
 
 		expect(addendum).toContain("self-contained local implementation task");
 		expect(addendum).toContain("read the most likely implementation file, importing caller, failing test");
-		expect(addendum).toContain("do not burn turns on shell `find` commands that only search one extension family like `*.js`");
+		expect(addendum).toContain(
+			"do not burn turns on shell `find` commands that only search one extension family like `*.js`",
+		);
 		expect(addendum).toContain("misleading similarly named file");
 		expect(addendum).toContain("Verify the actual import/call path and expected output before editing");
 		expect(addendum).toContain("run the specified verification command promptly");

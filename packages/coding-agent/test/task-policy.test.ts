@@ -13,7 +13,10 @@ describe("task-policy", () => {
 		mkdirSync(join(rootDir, "src"), { recursive: true });
 		mkdirSync(join(rootDir, "tests"), { recursive: true });
 		writeFileSync(join(rootDir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
-		writeFileSync(join(rootDir, "src", "config-parser.mjs"), "export function parseConfig(input) { return input; }\n");
+		writeFileSync(
+			join(rootDir, "src", "config-parser.mjs"),
+			"export function parseConfig(input) { return input; }\n",
+		);
 		writeFileSync(
 			join(rootDir, "tests", "config-parser.test.mjs"),
 			'import { parseConfig } from "../src/config-parser.mjs";\n',

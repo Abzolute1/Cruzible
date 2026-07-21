@@ -127,7 +127,9 @@ export class AgentSessionModelCoordinator {
 	private async _cycleScopedModel(
 		direction: "forward" | "backward",
 	): Promise<AgentSessionModelCycleResult | undefined> {
-		const scopedModels = this._scopedModels.filter((scoped) => this.options.modelRegistry.hasConfiguredAuth(scoped.model));
+		const scopedModels = this._scopedModels.filter((scoped) =>
+			this.options.modelRegistry.hasConfiguredAuth(scoped.model),
+		);
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;

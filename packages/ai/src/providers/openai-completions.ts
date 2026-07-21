@@ -27,7 +27,30 @@ import type {
 	ToolResultMessage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseFinalToolCallJson, parseStreamingJson } from "../utils/json-parse.js";
+
+function formatOpenAICompletionsError(model: Model<"openai-completions">, error: unknown): string {
+	const message = error instanceof Error ? error.message : JSON.stringify(error);
+	const rawMetadata = (error as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
+	const combined = rawMetadata ? `${message}\n${rawMetadata}` : message;
+
+	const isNvidiaIntegrate =
+		model.provider === "nvidia" ||
+		model.provider === "nvidia-nim" ||
+		model.baseUrl.includes("integrate.api.nvidia.com");
+	if (isNvidiaIntegrate && /\b403\b/.test(combined)) {
+		return (
+			`${combined}\n\n` +
+			`NVIDIA accepted this API key for /v1/models but rejected /v1/chat/completions. ` +
+			`That pattern means the key is attached correctly, but the account usually lacks NVIDIA's ` +
+			`"Public API Endpoints" permission. Request it on build.nvidia.com or the NVIDIA developer forums, ` +
+			`then retry.`
+		);
+	}
+
+	return combined;
+}
+
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
@@ -84,7 +107,7 @@ function extractInlineThinkingSegments(state: InlineThinkingState, delta: string
 	const openTag = "<think>";
 	const closeTag = "</think>";
 	let cursor = 0;
-	let input = state.carry + delta;
+	const input = state.carry + delta;
 	state.carry = "";
 
 	while (cursor < input.length) {
@@ -198,7 +221,9 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 							partial: output,
 						});
 					} else if (block.type === "toolCall") {
-						block.arguments = parseStreamingJson(block.partialArgs);
+						const parsedArgs = parseFinalToolCallJson(block.partialArgs);
+						block.arguments = parsedArgs.arguments;
+						if (parsedArgs.malformed) block.malformedArguments = true;
 						delete block.partialArgs;
 						stream.push({
 							type: "toolcall_end",
@@ -411,10 +436,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 		} catch (error) {
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-			// Some providers via OpenRouter give additional information in this field.
-			const rawMetadata = (error as any)?.error?.metadata?.raw;
-			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
+			output.errorMessage = formatOpenAICompletionsError(model, error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -445,6 +467,24 @@ export const streamSimpleOpenAICompletions: StreamFunction<"openai-completions",
 	} satisfies OpenAICompletionsOptions);
 };
 
+// Node's built-in fetch (undici 6.x) applies ~300s bodyTimeout/headersTimeout defaults that
+// kill long streaming generations from slow local servers (e.g. LM Studio decoding a large
+// file at ~18 tok/s — observed as client disconnects at ~310s). Route requests through an
+// undici Agent with those timeouts disabled; true hangs are bounded by the stream-level
+// stall watchdog (AG1_STREAM_STALL_TIMEOUT_MS, default 600s) instead.
+let undiciModulePromise: Promise<typeof import("undici")> | undefined;
+let streamingAgent: import("undici").Agent | undefined;
+// Indirection keeps the specifier invisible to browser bundlers (this file ships in web-ui).
+const importUndici = (specifier: string): Promise<typeof import("undici")> => import(specifier);
+const isNodeRuntime = typeof process !== "undefined" && !!(process.versions?.node || process.versions?.bun);
+
+async function streamingFetch(url: unknown, init: Record<string, unknown>): Promise<Response> {
+	undiciModulePromise ??= importUndici("undici");
+	const undici = await undiciModulePromise;
+	streamingAgent ??= new undici.Agent({ bodyTimeout: 0, headersTimeout: 0 });
+	return undici.fetch(url as string, { ...init, dispatcher: streamingAgent }) as unknown as Promise<Response>;
+}
+
 function createClient(
 	model: Model<"openai-completions">,
 	context: Context,
@@ -455,12 +495,10 @@ function createClient(
 		// Local/LM Studio requires no API key — pass a dummy value
 		if (model.provider === "local") {
 			apiKey = "not-needed";
-		} else if (!process.env.OPENAI_API_KEY) {
-			throw new Error(
-				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
-			);
-		} else {
+		} else if (model.provider === "openai" && process.env.OPENAI_API_KEY) {
 			apiKey = process.env.OPENAI_API_KEY;
+		} else {
+			throw new Error(`No API key for provider: ${model.provider}`);
 		}
 	}
 
@@ -484,6 +522,10 @@ function createClient(
 		baseURL: model.baseUrl,
 		dangerouslyAllowBrowser: true,
 		defaultHeaders: headers,
+		// 1h instead of the SDK's 10min default: slow local servers can legitimately
+		// generate for longer than 10 minutes on large single-file writes.
+		timeout: 3_600_000,
+		...(isNodeRuntime ? { fetch: streamingFetch as typeof fetch } : {}),
 	});
 }
 
@@ -930,6 +972,9 @@ function detectCompat(model: Model<"openai-completions">): Required<OpenAIComple
 
 	const isZai = provider === "zai" || baseUrl.includes("api.z.ai");
 
+	const isNvidiaIntegrate =
+		provider === "nvidia" || provider === "nvidia-nim" || baseUrl.includes("integrate.api.nvidia.com");
+
 	const isNonStandard =
 		provider === "cerebras" ||
 		baseUrl.includes("cerebras.ai") ||
@@ -958,8 +1003,8 @@ function detectCompat(model: Model<"openai-completions">): Required<OpenAIComple
 			: {};
 	return {
 		supportsStore: !isNonStandard,
-		supportsDeveloperRole: !isNonStandard,
-		supportsReasoningEffort: !isGrok && !isZai,
+		supportsDeveloperRole: !isNonStandard && !isNvidiaIntegrate,
+		supportsReasoningEffort: !isGrok && !isZai && !isNvidiaIntegrate,
 		reasoningEffortMap,
 		supportsUsageInStreaming: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",

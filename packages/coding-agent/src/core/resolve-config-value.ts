@@ -93,7 +93,12 @@ export function resolveConfigValueUncached(config: string): string | undefined {
 		return executeCommandUncached(config);
 	}
 	const envValue = process.env[config];
-	return envValue || config;
+	if (envValue) return envValue;
+	// Avoid sending unresolved env-var references (e.g. "NVIDIA_API_KEY") as literal bearer tokens.
+	if (/^[A-Z][A-Z0-9_]*$/.test(config)) {
+		return undefined;
+	}
+	return config;
 }
 
 export function resolveConfigValueOrThrow(config: string, description: string): string {

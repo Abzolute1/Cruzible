@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@ag1/agent-core";
-import { calculateContextTokens, estimateContextTokens } from "../compaction/index.js";
+import { calculateContextTokens } from "../compaction/index.js";
 import type { CompactionEntry, ModelChangeEntry, SessionEntry } from "../session-manager.js";
 
 export interface TurnDebugInfo {
@@ -76,10 +76,6 @@ export function analyzeSessionDebug(entries: SessionEntry[], contextWindow: numb
 	let totalCacheWrite = 0;
 
 	let currentModel = "unknown";
-
-	// Build cumulative context pressure map
-	// After compaction, running total resets based on compaction data
-	const pressureAfterCompaction: Map<string, number> = new Map();
 
 	// First pass: collect compaction data
 	const compactionEntryMap: Map<string, { tokensBefore: number; entryId: string }> = new Map();

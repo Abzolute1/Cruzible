@@ -1,9 +1,9 @@
 import { rmSync } from "node:fs";
 import {
-	diffAutonomousWorkspace,
-	promoteAutonomousWorkspace,
 	type ActivatedAutonomousWorkspace,
+	diffAutonomousWorkspace,
 	type PreparedAutonomousWorkspace,
+	promoteAutonomousWorkspace,
 } from "../../core/auton/workspace.js";
 import {
 	formatWorkspaceCommandSummary,

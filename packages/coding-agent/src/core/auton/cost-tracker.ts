@@ -1,6 +1,8 @@
 // Auton — Cost Tracker
 // Calculates real-time USD cost based on token usage and model pricing.
 
+import type { Model } from "@ag1/ai";
+
 export interface PricingModel {
 	inputPerM: number; // Cost per 1M input tokens
 	outputPerM: number; // Cost per 1M output tokens
@@ -50,6 +52,7 @@ export const FREE_PRICING: PricingModel = { inputPerM: 0, outputPerM: 0, authori
  */
 export const MODEL_PRICING_MAP: Record<string, PricingModel> = {
 	nvidia: FREE_PRICING,
+	"nvidia-nim": FREE_PRICING,
 	local: FREE_PRICING,
 	dashscope: QWEN_PRICING,
 	openai: OPENAI_PRICING,
@@ -65,6 +68,7 @@ export class CostTracker {
 	private _pricingMap: Record<string, PricingModel>;
 	private _modelId: string;
 	private _authoritative: boolean;
+	private _declaredPricing: PricingModel | undefined;
 
 	constructor(
 		pricing: PricingModel = QWEN_PRICING,
@@ -76,6 +80,25 @@ export class CostTracker {
 		this._modelId = modelId ?? "";
 		this._pricingMap = pricingMap ?? MODEL_PRICING_MAP;
 		this._authoritative = authoritative;
+	}
+
+	/**
+	 * Apply a model's own declared cost metadata (from the provider registry).
+	 * Declared per-model rates are the prices the provider actually bills at,
+	 * and the usage they multiply comes from API responses — accurate enough
+	 * to hard-stop a budget, so they resolve as authoritative. All-zero rates
+	 * (local/free models) resolve as a non-authoritative zero estimate.
+	 */
+	setDeclaredModelCost(cost: Model<any>["cost"] | undefined): void {
+		if (!cost) return;
+		const hasRate = cost.input > 0 || cost.output > 0;
+		this._declaredPricing = {
+			inputPerM: cost.input,
+			outputPerM: cost.output,
+			cacheReadPerM: cost.cacheRead,
+			cacheWritePerM: cost.cacheWrite,
+			authoritative: hasRate,
+		};
 	}
 
 	/** Total input (prompt) tokens consumed. */
@@ -98,10 +121,13 @@ export class CostTracker {
 	}
 
 	/**
-	 * Resolve the pricing model from the current model ID or provider.
-	 * Checks the pricing map for exact matches, then prefix matches.
+	 * Resolve the pricing model: the model's own declared cost first, then the
+	 * pricing map by model ID prefix, then the constructor fallback.
 	 */
 	private _resolvePricing(): PricingModel {
+		if (this._declaredPricing) {
+			return this._declaredPricing;
+		}
 		const id = this._modelId.toLowerCase();
 
 		// Exact match (e.g., "nvidia/nemotron-3-super-120b-a12b")

@@ -12,16 +12,15 @@ import {
 	SessionManager,
 	type Skill,
 } from "@ag1/coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join, resolve, sep } from "path";
 import { createMomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack.js";
-import type { ChannelStore } from "./store.js";
-import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { createAttachState, createMomTools } from "./tools/index.js";
 
 // Hardcoded model for now - TODO: make configurable (issue #63)
 const model = getModel("anthropic", "claude-sonnet-4-5");
@@ -34,11 +33,7 @@ export interface PendingMessage {
 }
 
 export interface AgentRunner {
-	run(
-		ctx: SlackContext,
-		store: ChannelStore,
-		pendingMessages?: PendingMessage[],
-	): Promise<{ stopReason: string; errorMessage?: string }>;
+	run(ctx: SlackContext, pendingMessages?: PendingMessage[]): Promise<{ stopReason: string; errorMessage?: string }>;
 	abort(): void;
 }
 
@@ -65,6 +60,9 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
+
+// Image attachments larger than this are sent as paths instead of being buffered into memory
+const MAX_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 function getMemory(channelDir: string): string {
 	const parts: string[] = [];
@@ -388,32 +386,18 @@ function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>
 	return lines.join("\n");
 }
 
-// Cache runners per channel
-const channelRunners = new Map<string, AgentRunner>();
-
-/**
- * Get or create an AgentRunner for a channel.
- * Runners are cached - one per channel, persistent across messages.
- */
-export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
-	const existing = channelRunners.get(channelId);
-	if (existing) return existing;
-
-	const runner = createRunner(sandboxConfig, channelId, channelDir);
-	channelRunners.set(channelId, runner);
-	return runner;
-}
-
 /**
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
+ * Callers own the runner's lifetime (cache bound + teardown on eviction live in main.ts).
  */
-function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+export function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
-	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+	const workspacePath = executor.getWorkspacePath(dirname(channelDir));
 
-	// Create tools
-	const tools = createMomTools(executor);
+	// Create tools (attach state is per-runner so concurrent channels never cross-upload)
+	const attachState = createAttachState();
+	const tools = createMomTools(executor, attachState);
 
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
 	const memory = getMemory(channelDir);
@@ -639,7 +623,6 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 	return {
 		async run(
 			ctx: SlackContext,
-			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
 		): Promise<{ stopReason: string; errorMessage?: string }> {
 			// Ensure channel directory exists
@@ -674,11 +657,11 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			);
 			session.agent.state.systemPrompt = systemPrompt;
 
-			// Set up file upload function
-			setUploadFunction(async (filePath: string, title?: string) => {
+			// Set up file upload function for this run (per-runner state, not a module global)
+			attachState.uploadFn = async (filePath: string, title?: string) => {
 				const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
 				await ctx.uploadFile(hostPath, title);
-			});
+			};
 
 			// Reset per-run state
 			runState.ctx = ctx;
@@ -751,6 +734,12 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 				if (mimeType && existsSync(fullPath)) {
 					try {
+						// Stat before buffering: a huge image must not be read fully into memory
+						if (statSync(fullPath).size > MAX_IMAGE_ATTACHMENT_BYTES) {
+							log.logWarning(`[${channelId}] Image attachment too large, sending path instead`, fullPath);
+							nonImagePaths.push(fullPath);
+							continue;
+						}
 						imageAttachments.push({
 							type: "image",
 							mimeType,
@@ -768,14 +757,17 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
 			}
 
-			// Debug: write context to last_prompt.jsonl
-			const debugContext = {
-				systemPrompt,
-				messages: session.messages,
-				newUserMessage: userMessage,
-				imageAttachmentCount: imageAttachments.length,
-			};
-			await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+			// Debug: write full prompt + history to last_prompt.jsonl (opt-in; the file lands
+			// in the agent-readable channel dir and contains the entire message history)
+			if (process.env.MOM_DEBUG_PROMPTS === "1") {
+				const debugContext = {
+					systemPrompt,
+					messages: session.messages,
+					newUserMessage: userMessage,
+					imageAttachmentCount: imageAttachments.length,
+				};
+				await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+			}
 
 			await session.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
 
@@ -872,11 +864,23 @@ function translateToHostPath(
 	if (workspacePath === "/workspace") {
 		const prefix = `/workspace/${channelId}/`;
 		if (containerPath.startsWith(prefix)) {
-			return join(channelDir, containerPath.slice(prefix.length));
+			const resolved = resolve(join(channelDir, containerPath.slice(prefix.length)));
+			if (!resolved.startsWith(resolve(channelDir) + sep)) {
+				throw new Error(`Path escapes channel workspace: ${containerPath}`);
+			}
+			return resolved;
 		}
 		if (containerPath.startsWith("/workspace/")) {
-			return join(channelDir, "..", containerPath.slice("/workspace/".length));
+			const workspaceRoot = resolve(join(channelDir, ".."));
+			const resolved = resolve(join(workspaceRoot, containerPath.slice("/workspace/".length)));
+			if (!resolved.startsWith(workspaceRoot + sep)) {
+				throw new Error(`Path escapes workspace: ${containerPath}`);
+			}
+			return resolved;
 		}
+		// Container paths outside /workspace live in the container filesystem;
+		// reading them on the host would expose arbitrary host files.
+		throw new Error(`Path outside workspace: ${containerPath}`);
 	}
 	return containerPath;
 }

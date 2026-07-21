@@ -31,8 +31,11 @@ describe("Coding Agent Tools", () => {
 	let findTool: ReturnType<typeof createFindTool>;
 	let lsTool: ReturnType<typeof createLsTool>;
 	let cwdBashTool: ReturnType<typeof createBashTool>;
+	let previousBashFullOutputRetention: string | undefined;
 
 	beforeEach(() => {
+		previousBashFullOutputRetention = process.env.AG1_RETAIN_BASH_FULL_OUTPUT;
+		delete process.env.AG1_RETAIN_BASH_FULL_OUTPUT;
 		// Create a unique temporary directory for each test
 		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
@@ -48,6 +51,11 @@ describe("Coding Agent Tools", () => {
 	afterEach(() => {
 		// Clean up test directory
 		rmSync(testDir, { recursive: true, force: true });
+		if (previousBashFullOutputRetention === undefined) {
+			delete process.env.AG1_RETAIN_BASH_FULL_OUTPUT;
+		} else {
+			process.env.AG1_RETAIN_BASH_FULL_OUTPUT = previousBashFullOutputRetention;
+		}
 	});
 
 	describe("read tool", () => {
@@ -86,10 +94,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-3", { path: testFile });
 			const output = getTextOutput(result);
 
-				expect(output).toContain("Line 1");
-				expect(output).toContain("Line 2000");
-				expect(output).not.toContain("Line 2001");
-				expect(output).toContain("[lines 1-2000/2500; next offset=2001]");
+			expect(output).toContain("Line 1");
+			expect(output).toContain("Line 2000");
+			expect(output).not.toContain("Line 2001");
+			expect(output).toContain("[lines 1-2000/2500; next offset=2001]");
 			expect(result.details?.progress).toMatchObject({
 				startLine: 1,
 				endLine: 2000,
@@ -110,9 +118,9 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-4", { path: testFile });
 			const output = getTextOutput(result);
 
-				expect(output).toContain("Line 1:");
-				// Should show byte limit message
-				expect(output).toMatch(/\[lines 1-\d+\/500; byte limit hit; next offset=\d+\]/);
+			expect(output).toContain("Line 1:");
+			// Should show byte limit message
+			expect(output).toMatch(/\[lines 1-\d+\/500; byte limit hit; next offset=\d+\]/);
 			expect(result.details?.progress?.completion).toBe("partial");
 			expect(result.details?.progress?.reason).toBe("byte_limit");
 			expect(result.details?.progress?.nextOffset).toBeGreaterThan(1);
@@ -148,10 +156,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-6", { path: testFile, limit: 10 });
 			const output = getTextOutput(result);
 
-				expect(output).toContain("Line 1");
-				expect(output).toContain("Line 10");
-				expect(output).not.toContain("Line 11");
-				expect(output).toContain("[90 more lines; next offset=11]");
+			expect(output).toContain("Line 1");
+			expect(output).toContain("Line 10");
+			expect(output).not.toContain("Line 11");
+			expect(output).toContain("[90 more lines; next offset=11]");
 			expect(result.details?.progress).toMatchObject({
 				startLine: 1,
 				endLine: 10,
@@ -176,10 +184,10 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(output).not.toContain("Line 40");
-				expect(output).toContain("Line 41");
-				expect(output).toContain("Line 60");
-				expect(output).not.toContain("Line 61");
-				expect(output).toContain("[40 more lines; next offset=61]");
+			expect(output).toContain("Line 41");
+			expect(output).toContain("Line 60");
+			expect(output).not.toContain("Line 61");
+			expect(output).toContain("[40 more lines; next offset=61]");
 			expect(result.details?.progress).toMatchObject({
 				startLine: 41,
 				endLine: 60,
@@ -335,7 +343,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("next: read only-match.ts limit=120");
 		});
 
-		it("ls should suggest answering directly from a complete small listing", async () => {
+		it("ls renders a complete small listing without steering notices", async () => {
 			mkdirSync(join(testDir, "scripts-small"), { recursive: true });
 			writeFileSync(join(testDir, "scripts-small", "a.ts"), "a");
 			writeFileSync(join(testDir, "scripts-small", "b.ts"), "b");
@@ -345,8 +353,10 @@ describe("Coding Agent Tools", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("directory listed completely");
-			expect(output).toContain("answer now from this listing");
+			expect(output).toContain("a.ts");
+			expect(output).toContain("b.ts");
+			expect(output).not.toContain("answer now");
+			expect(output).not.toContain("instead of running");
 		});
 	});
 
@@ -516,6 +526,36 @@ describe("Coding Agent Tools", () => {
 
 			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
 		});
+
+		it("should reject fuzzy text mismatches by default", async () => {
+			const testFile = join(testDir, "edit-fuzzy-default.txt");
+			const originalContent = 'const label = "Hello";\n';
+			writeFileSync(testFile, originalContent);
+
+			await expect(
+				editTool.execute("test-call-fuzzy-default", {
+					path: testFile,
+					edits: [{ oldText: "const label = “Hello”;\n", newText: 'const label = "Hi";\n' }],
+				}),
+			).rejects.toThrow(/Could not find the exact text/);
+
+			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
+		});
+
+		it("should report when opt-in fuzzy matching is used", async () => {
+			const testFile = join(testDir, "edit-fuzzy-opt-in.txt");
+			writeFileSync(testFile, 'const label = "Hello";\n');
+
+			const result = await editTool.execute("test-call-fuzzy-opt-in", {
+				path: testFile,
+				edits: [{ oldText: "const label = “Hello”;\n", newText: 'const label = "Hi";\n' }],
+				allowFuzzyMatch: true,
+			});
+
+			expect(getTextOutput(result)).toContain("Fuzzy match used");
+			expect(result.details?.fuzzyMatchUsed).toBe(true);
+			expect(readFileSync(testFile, "utf-8")).toBe('const label = "Hi";\n');
+		});
 	});
 
 	describe("bash tool", () => {
@@ -526,12 +566,13 @@ describe("Coding Agent Tools", () => {
 			expect(result.details).toBeUndefined();
 		});
 
-		it("should add a stop-signal after inspection-style pwd commands", async () => {
+		it("should return plain output for inspection-style pwd commands (no steering notices)", async () => {
 			const result = await cwdBashTool.execute("test-call-pwd-hint", { command: "pwd" });
 			const output = getTextOutput(result);
 
 			expect(output).toContain(testDir);
-			expect(output).toContain("[location confirmed; switch to find, grep, ls, or read next instead of repeating pwd]");
+			expect(output).not.toContain("location confirmed");
+			expect(output).not.toContain("instead of repeating pwd");
 		});
 
 		it("should handle command errors", async () => {
@@ -612,17 +653,32 @@ describe("Coding Agent Tools", () => {
 			expect(result.output).toBe("red\n");
 		});
 
-		it("should persist full output when truncation happens by line count only", async () => {
+		it("should not persist full output by default when truncation happens by line count only", async () => {
 			const bash = createBashTool(testDir);
 			const result = await bash.execute("test-call-line-truncation", { command: "seq 3000" });
 			const output = getTextOutput(result);
 			const fullOutputPath = result.details?.fullOutputPath;
 
 			expect(result.details?.truncation?.truncated).toBe(true);
-				expect(result.details?.truncation?.truncatedBy).toBe("lines");
-				expect(fullOutputPath).toBeDefined();
-				expect(output).toMatch(/\[tail lines \d+-\d+\/\d+\] \[full output: /);
-				expect(output).not.toContain("Full output: undefined");
+			expect(result.details?.truncation?.truncatedBy).toBe("lines");
+			expect(fullOutputPath).toBeUndefined();
+			expect(output).toMatch(/\[tail lines \d+-\d+\/\d+\]/);
+			expect(output).not.toContain("[full output:");
+			expect(output).not.toContain("Full output: undefined");
+		});
+
+		it("should persist full output when retention is explicitly enabled", async () => {
+			process.env.AG1_RETAIN_BASH_FULL_OUTPUT = "1";
+			const bash = createBashTool(testDir);
+			const result = await bash.execute("test-call-line-truncation-retained", { command: "seq 3000" });
+			const output = getTextOutput(result);
+			const fullOutputPath = result.details?.fullOutputPath;
+
+			expect(result.details?.truncation?.truncated).toBe(true);
+			expect(result.details?.truncation?.truncatedBy).toBe("lines");
+			expect(fullOutputPath).toBeDefined();
+			expect(output).toMatch(/\[tail lines \d+-\d+\/\d+\] \[full output: /);
+			expect(output).not.toContain("Full output: undefined");
 
 			for (let i = 0; i < 20 && (!fullOutputPath || !existsSync(fullOutputPath)); i++) {
 				await new Promise((resolve) => setTimeout(resolve, 10));
@@ -631,28 +687,35 @@ describe("Coding Agent Tools", () => {
 			expect(fullOutputPath).toBeDefined();
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
-				expect(fullOutput).toContain("1\n2\n3");
-				expect(fullOutput).toContain("2998\n2999\n3000");
-			});
+			expect(fullOutput).toContain("1\n2\n3");
+			expect(fullOutput).toContain("2998\n2999\n3000");
+		});
 
-			it("should compact large listing-style bash output before transcript truncation", async () => {
-				for (let i = 1; i <= 80; i++) {
-					writeFileSync(join(testDir, `file-${i.toString().padStart(3, "0")}.txt`), String(i));
-				}
-				const bash = createBashTool(testDir);
-				const result = await bash.execute("test-call-listing-compact", { command: "ls" });
-				const output = getTextOutput(result);
+		it("should compact large listing-style bash output before transcript truncation", async () => {
+			for (let i = 1; i <= 80; i++) {
+				writeFileSync(join(testDir, `file-${i.toString().padStart(3, "0")}.txt`), String(i));
+			}
+			const bash = createBashTool(testDir);
+			const result = await bash.execute("test-call-listing-compact", { command: "ls" });
+			const output = getTextOutput(result);
 
-				expect(output).toContain("file-001.txt");
-				expect(output).toContain("file-025.txt");
-				expect(output).not.toContain("file-080.txt");
-				expect(output).toContain("[55 more lines omitted from inspection output]");
-				expect(output).toContain(
-					"[discovery output only; if the target path is visible here, inspect it directly instead of repeating shell discovery]",
-				);
-			});
+			expect(output).toContain("file-001.txt");
+			expect(output).toContain("file-025.txt");
+			expect(output).not.toContain("file-080.txt");
+			expect(output).toContain("[55 more lines omitted from inspection output]");
+			expect(output).not.toContain("discovery output only");
+		});
 
-		it("executeBash should persist full output when truncation happens by line count only", async () => {
+		it("executeBash should not persist full output by default when truncation happens by line count only", async () => {
+			const result = await executeBash("seq 3000");
+			const fullOutputPath = result.fullOutputPath;
+
+			expect(result.truncated).toBe(true);
+			expect(fullOutputPath).toBeUndefined();
+		});
+
+		it("executeBash should persist full output when retention is explicitly enabled", async () => {
+			process.env.AG1_RETAIN_BASH_FULL_OUTPUT = "1";
 			const result = await executeBash("seq 3000");
 			const fullOutputPath = result.fullOutputPath;
 
@@ -696,7 +759,9 @@ describe("Coding Agent Tools", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("single-match.ts:2: export function target() {}");
-			expect(output).toContain("[1 match in single-match.ts:2; if the user only asked which file/path, answer now; otherwise next: read single-match.ts offset=1 limit=120]");
+			expect(output).toContain(
+				"[1 match in single-match.ts:2; if the user only asked which file/path, answer now; otherwise next: read single-match.ts offset=1 limit=120]",
+			);
 		});
 
 		it("should explain no-match retries when literal search looks like regex syntax", async () => {
@@ -751,10 +816,7 @@ describe("Coding Agent Tools", () => {
 			const missionFile = join(testDir, "HARNESS_36_POINT_MISSION_2026-04-15.md");
 			const sourceDir = join(testDir, "packages", "coding-agent", "src", "core");
 			mkdirSync(sourceDir, { recursive: true });
-			writeFileSync(
-				missionFile,
-				"prompt-intent steering follow-up notes\nprompt-intent steering is tracked here\n",
-			);
+			writeFileSync(missionFile, "prompt-intent steering follow-up notes\nprompt-intent steering is tracked here\n");
 			writeFileSync(
 				join(sourceDir, "prompt-intent-steering.ts"),
 				"export function buildPromptIntentSteering() {\n\treturn 'prompt-intent steering';\n}\n",
@@ -814,11 +876,11 @@ describe("Coding Agent Tools", () => {
 			);
 			writeFileSync(
 				join(toolsDir, "research-output.ts"),
-				"lines.push(\"For a brief current-events summary, answer from it directly.\");\n",
+				'lines.push("For a brief current-events summary, answer from it directly.");\n',
 			);
 			writeFileSync(
 				join(promptDir, "prompt-intent-steering.ts"),
-				"const note = \"For local current-events normalization lookups, prefer the real web-search implementation module\";\n",
+				'const note = "For local current-events normalization lookups, prefer the real web-search implementation module";\n',
 			);
 
 			const result = await grepTool.execute("test-call-12d", {
@@ -833,8 +895,12 @@ describe("Coding Agent Tools", () => {
 				.filter(Boolean);
 			const firstMatchLine = outputLines.find((line) => line.includes(":"));
 			expect(firstMatchLine).toContain("packages/coding-agent/src/core/tools/websearch.ts");
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/tools/research-output.ts"))).toBe(true);
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/prompt-intent-steering.ts"))).toBe(true);
+			expect(
+				outputLines.some((line) => line.includes("packages/coding-agent/src/core/tools/research-output.ts")),
+			).toBe(true);
+			expect(
+				outputLines.some((line) => line.includes("packages/coding-agent/src/core/prompt-intent-steering.ts")),
+			).toBe(true);
 		});
 
 		it("should keep implementation files visible for descriptive current-events normalization queries", async () => {
@@ -851,11 +917,11 @@ describe("Coding Agent Tools", () => {
 			);
 			writeFileSync(
 				join(promptDir, "prompt-intent-steering.ts"),
-				"const note = \"For prompts about current-events query normalization in this repo, try the likely implementation symbol normalizeCurrentEventsQuery before a broad grep for the prose phrase current-events.\";\n",
+				'const note = "For prompts about current-events query normalization in this repo, try the likely implementation symbol normalizeCurrentEventsQuery before a broad grep for the prose phrase current-events.";\n',
 			);
 			writeFileSync(
 				join(testsDir, "web-tools-context.test.ts"),
-				"it(\"mentions current-events normalization\", () => {\n\texpect(\"current-events normalization\").toBeTruthy();\n});\n",
+				'it("mentions current-events normalization", () => {\n\texpect("current-events normalization").toBeTruthy();\n});\n',
 			);
 
 			const result = await grepTool.execute("test-call-12e", {
@@ -868,99 +934,18 @@ describe("Coding Agent Tools", () => {
 				.split("\n")
 				.map((line) => line.trim())
 				.filter(Boolean);
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/tools/websearch.ts"))).toBe(true);
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/prompt-intent-steering.ts"))).toBe(true);
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/test/web-tools-context.test.ts"))).toBe(true);
+			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/tools/websearch.ts"))).toBe(
+				true,
+			);
+			expect(
+				outputLines.some((line) => line.includes("packages/coding-agent/src/core/prompt-intent-steering.ts")),
+			).toBe(true);
+			expect(outputLines.some((line) => line.includes("packages/coding-agent/test/web-tools-context.test.ts"))).toBe(
+				true,
+			);
 		});
 
-		it("should emit a semantic recovery notice for current-events normalization trap hits", async () => {
-			const toolsDir = join(testDir, "packages", "coding-agent", "src", "core", "tools");
-			const testsDir = join(testDir, "packages", "coding-agent", "test");
-			mkdirSync(toolsDir, { recursive: true });
-			mkdirSync(testsDir, { recursive: true });
-
-			writeFileSync(
-				join(testsDir, "tools.test.ts"),
-				"export function normalizeCurrentEventsQuery(query: string) {\n\t// current-events normalization happens here\n\treturn query.trim();\n}\n",
-			);
-			writeFileSync(
-				join(toolsDir, "research-output.ts"),
-				"lines.push(\"For a brief current-events summary, answer from it directly.\");\n",
-			);
-
-			const result = await grepTool.execute("test-call-12f", {
-				pattern: "current-events",
-				path: testDir,
-				ignoreCase: true,
-			});
-
-			const output = getTextOutput(result);
-			expect(output).toContain("descriptive current-events normalization lookup");
-			expect(output).toContain("normalizeCurrentEventsQuery");
-			expect(output).toContain("next: grep normalizeCurrentEventsQuery path=packages/coding-agent/src/core/tools or src/core/tools");
-			expect(output).toContain("src/core/tools");
-			expect(result.details?.recoveryPattern).toBe("normalizeCurrentEventsQuery");
-			expect(result.details?.recoveryPath).toBe("packages/coding-agent/src/core/tools");
-			expect(result.details?.recoveryRequired).toBe(true);
-		});
-
-		it("should prefer a concrete implementation-symbol current-events match when one exists", async () => {
-			const toolsDir = join(testDir, "packages", "coding-agent", "src", "core", "tools");
-			const promptDir = join(testDir, "packages", "coding-agent", "src", "core");
-			mkdirSync(toolsDir, { recursive: true });
-			mkdirSync(promptDir, { recursive: true });
-
-			writeFileSync(
-				join(promptDir, "prompt-intent-steering.ts"),
-				"const note = \"For prompts about current-events query normalization in this repo, do not start by grepping the prose phrase current-events.\";\n",
-			);
-			writeFileSync(
-				join(toolsDir, "websearch.ts"),
-				"export function normalizeCurrentEventsQuery(query: string) {\n\t// normalizeCurrentEventsQuery handles current-events search normalization\n\treturn query.trim();\n}\n",
-			);
-
-			const result = await grepTool.execute("test-call-12f-2", {
-				pattern: "current-events",
-				path: testDir,
-				ignoreCase: true,
-			});
-
-			const output = getTextOutput(result);
-			const outputLines = output
-				.split("\n")
-				.map((line) => line.trim())
-				.filter(Boolean);
-			expect(output).toContain("next: read packages/coding-agent/src/core/tools/websearch.ts");
-			expect(result.details?.firstMatchPath).toBe("packages/coding-agent/src/core/tools/websearch.ts");
-			expect(outputLines.some((line) => line.includes("packages/coding-agent/src/core/tools/websearch.ts:2:"))).toBe(true);
-		});
-
-		it("should emit a semantic recovery notice for benchmark archive lookups", async () => {
-			const scriptsDir = join(testDir, "scripts");
-			mkdirSync(scriptsDir, { recursive: true });
-
-			writeFileSync(
-				join(scriptsDir, "harness-benchmark-archive.mjs"),
-				"if (suiteIds[0] === \"benchmark-v2\") return \"/home/alex/Desktop/Benchmark-v2\";\nreturn \"/home/alex/Desktop/Benchmark\";\n",
-			);
-			writeFileSync(
-				join(scriptsDir, "profile-coding-agent-node.mjs"),
-				"async function runBenchmarkRun(params) {\n\treturn params;\n}\n",
-			);
-
-			const result = await grepTool.execute("test-call-12g", {
-				pattern: "Benchmark|benchmark.*archive",
-				path: testDir,
-				glob: "**/*.mjs",
-			});
-
-			const output = getTextOutput(result);
-			expect(output).toContain("benchmark archive lookup");
-			expect(output).toContain("scripts/harness-benchmark-archive.mjs");
-			expect(result.details?.firstMatchPath).toBe("scripts/harness-benchmark-archive.mjs");
-		});
-
-		it("should prefer benchmark compare implementation over history artifacts for scorePer1kTokens lookups", async () => {
+		it("should prefer script implementation over history artifacts for metric lookups", async () => {
 			mkdirSync(join(testDir, "scripts"), { recursive: true });
 			mkdirSync(join(testDir, "benchmarks", "history"), { recursive: true });
 			writeFileSync(
@@ -969,7 +954,7 @@ describe("Coding Agent Tools", () => {
 			);
 			writeFileSync(
 				join(testDir, "benchmarks", "history", "history-summary.json"),
-				"{\"score_per_1k_tokens\": 0.5}\n",
+				'{"score_per_1k_tokens": 0.5}\n',
 			);
 
 			const result = await grepTool.execute("test-call-12h", {
@@ -979,7 +964,6 @@ describe("Coding Agent Tools", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("scripts/harness-benchmark-compare.mjs");
-			expect(output).toContain("benchmark metric lookup");
 			expect(result.details?.firstMatchPath).toBe("scripts/harness-benchmark-compare.mjs");
 		});
 	});
@@ -1042,7 +1026,9 @@ describe("Coding Agent Tools", () => {
 				path: testDir,
 			});
 
-			expect(getTextOutput(result)).toContain("[1 match in only.ts; if the user only asked which file/path, answer now; otherwise next: read only.ts limit=120]");
+			expect(getTextOutput(result)).toContain(
+				"[1 match in only.ts; if the user only asked which file/path, answer now; otherwise next: read only.ts limit=120]",
+			);
 		});
 
 		it("should keep single-match follow-up paths workspace-relative when searching inside a subdirectory", async () => {
@@ -1067,7 +1053,9 @@ describe("Coding Agent Tools", () => {
 				path: testDir,
 			});
 
-			expect(getTextOutput(result)).toContain("[1 directory match in src/; if the directory itself answers the question, answer now; otherwise next: ls src/]");
+			expect(getTextOutput(result)).toContain(
+				"[1 directory match in src/; if the directory itself answers the question, answer now; otherwise next: ls src/]",
+			);
 		});
 
 		it("should explain shared-anchor retries when an over-specific find pattern has no matches", async () => {
@@ -1086,7 +1074,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("shared anchor or common prefix");
 		});
 
-		it("should redirect benchmark harness script misses from package-local scripts to repo-root scripts", async () => {
+		it("should redirect repo-level script misses from package-local scripts to repo-root scripts", async () => {
 			const packageScriptsDir = join(testDir, "packages", "coding-agent", "scripts");
 			const rootScriptsDir = join(testDir, "scripts");
 			mkdirSync(packageScriptsDir, { recursive: true });
@@ -1099,9 +1087,9 @@ describe("Coding Agent Tools", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("for benchmark harness command scripts in this repo");
+			expect(output).toContain("for repo-level command/script lookups");
 			expect(output).toContain("repo-root `scripts/`");
-			expect(output).toContain("harness-benchmark-*");
+			expect(output).toContain("*archive*.mjs");
 		});
 
 		it("should rank likely script files ahead of benchmark history artifacts", async () => {
@@ -1170,6 +1158,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-1", {
 			path: testFile,
 			edits: [{ oldText: "line one\nline two\n", newText: "replaced\n" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1184,6 +1173,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-chinese", {
 			path: testFile,
 			edits: [{ oldText: "你好,世界\n你好(世界)\n", newText: "你好，ag1\n你好(ag1)\n" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1198,6 +1188,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-unicode", {
 			path: testFile,
 			edits: [{ oldText: "ABC123\ncafé\n", newText: "XYZ789\ncoffee\n" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1214,6 +1205,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-2", {
 			path: testFile,
 			edits: [{ oldText: "console.log('hello');", newText: "console.log('world');" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1230,6 +1222,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-3", {
 			path: testFile,
 			edits: [{ oldText: 'const msg = "Hello World";', newText: 'const msg = "Goodbye";' }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1246,6 +1239,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-4", {
 			path: testFile,
 			edits: [{ oldText: "range: 1-5\nbreak-here", newText: "range: 10-50\nbreak--here" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1262,6 +1256,7 @@ describe("edit tool fuzzy matching", () => {
 		const result = await editTool.execute("test-fuzzy-5", {
 			path: testFile,
 			edits: [{ oldText: "hello world", newText: "hello universe" }],
+			allowFuzzyMatch: true,
 		});
 
 		expect(getTextOutput(result)).toContain("Patched");
@@ -1292,6 +1287,7 @@ describe("edit tool fuzzy matching", () => {
 			editTool.execute("test-fuzzy-7", {
 				path: testFile,
 				edits: [{ oldText: "this does not exist", newText: "replacement" }],
+				allowFuzzyMatch: true,
 			}),
 		).rejects.toThrow(/Could not find the exact text/);
 	});
@@ -1305,6 +1301,7 @@ describe("edit tool fuzzy matching", () => {
 			editTool.execute("test-fuzzy-8", {
 				path: testFile,
 				edits: [{ oldText: "hello world", newText: "replaced" }],
+				allowFuzzyMatch: true,
 			}),
 		).rejects.toThrow(/Found 2 occurrences/);
 	});
@@ -1319,6 +1316,7 @@ describe("edit tool fuzzy matching", () => {
 				{ oldText: "console.log('hello');\n", newText: "console.log('world');\n" },
 				{ oldText: "hello world\n", newText: "hello universe\n" },
 			],
+			allowFuzzyMatch: true,
 		});
 
 		expect(readFileSync(testFile, "utf-8")).toBe("console.log('world');\nhello universe\n");

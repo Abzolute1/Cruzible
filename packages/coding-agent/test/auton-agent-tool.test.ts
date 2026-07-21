@@ -1,6 +1,7 @@
-import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { ExtensionContext } from "../src/core/extensions/types.js";
 
 const spawnMock = vi.fn();
 
@@ -9,10 +10,11 @@ vi.mock("node:child_process", () => ({
 }));
 
 function createFakeChild(): ChildProcess {
-	const child = new EventEmitter() as ChildProcess & {
+	const child = new EventEmitter() as EventEmitter & {
 		stdout: EventEmitter;
 		stderr: EventEmitter;
 		killed: boolean;
+		kill: ChildProcess["kill"];
 	};
 	child.stdout = new EventEmitter();
 	child.stderr = new EventEmitter();
@@ -21,7 +23,7 @@ function createFakeChild(): ChildProcess {
 		child.killed = true;
 		return true;
 	});
-	return child;
+	return child as unknown as ChildProcess;
 }
 
 describe("agentToolDefinition", () => {
@@ -44,14 +46,14 @@ describe("agentToolDefinition", () => {
 				{ task: "inspect the repo" },
 				undefined,
 				vi.fn().mockResolvedValue(undefined),
-				{ cwd: "/tmp" },
+				{ cwd: "/tmp" } as ExtensionContext,
 			);
 
 			await vi.waitFor(() => {
 				expect(spawnMock).toHaveBeenCalledWith(
 					"/usr/local/bin/ag1",
 					expect.arrayContaining(["--print", "--non-interactive", "inspect the repo"]),
-					expect.objectContaining({ cwd: "/tmp" }),
+					expect.objectContaining({ cwd: "/tmp" } as ExtensionContext),
 				);
 			});
 
@@ -76,7 +78,9 @@ describe("agentToolDefinition", () => {
 			.mockReturnValueOnce(childB)
 			.mockReturnValueOnce(childC);
 
-		const failedExecution = agentToolDefinition.execute("call-failed", { task: "first task" }, undefined, onUpdate, { cwd: "/tmp" });
+		const failedExecution = agentToolDefinition.execute("call-failed", { task: "first task" }, undefined, onUpdate, {
+			cwd: "/tmp",
+		} as ExtensionContext);
 		await vi.waitFor(() => {
 			expect(spawnMock).toHaveBeenCalledTimes(1);
 		});
@@ -84,21 +88,31 @@ describe("agentToolDefinition", () => {
 		failedChild.emit("close", 1);
 
 		const failedResult = await failedExecution;
-		expect(failedResult.content[0]?.type).toBe("text");
-		expect(failedResult.content[0]?.text).toContain("Child Agent Error: Failed to spawn process. spawn failed");
+		const failedText = failedResult.content[0] as { type: "text"; text: string } | undefined;
+		expect(failedText?.type).toBe("text");
+		expect(failedText?.text).toContain("Child Agent Error: Failed to spawn process. spawn failed");
 
-		const executionA = agentToolDefinition.execute("call-a", { task: "task a" }, undefined, onUpdate, { cwd: "/tmp" });
-		const executionB = agentToolDefinition.execute("call-b", { task: "task b" }, undefined, onUpdate, { cwd: "/tmp" });
-		const executionC = agentToolDefinition.execute("call-c", { task: "task c" }, undefined, onUpdate, { cwd: "/tmp" });
-		const blockedExecution = agentToolDefinition.execute("call-d", { task: "task d" }, undefined, onUpdate, { cwd: "/tmp" });
+		const executionA = agentToolDefinition.execute("call-a", { task: "task a" }, undefined, onUpdate, {
+			cwd: "/tmp",
+		} as ExtensionContext);
+		const executionB = agentToolDefinition.execute("call-b", { task: "task b" }, undefined, onUpdate, {
+			cwd: "/tmp",
+		} as ExtensionContext);
+		const executionC = agentToolDefinition.execute("call-c", { task: "task c" }, undefined, onUpdate, {
+			cwd: "/tmp",
+		} as ExtensionContext);
+		const blockedExecution = agentToolDefinition.execute("call-d", { task: "task d" }, undefined, onUpdate, {
+			cwd: "/tmp",
+		} as ExtensionContext);
 
 		await vi.waitFor(() => {
 			expect(spawnMock).toHaveBeenCalledTimes(4);
 		});
 
 		const blockedResult = await blockedExecution;
-		expect(blockedResult.content[0]?.type).toBe("text");
-		expect(blockedResult.content[0]?.text).toContain("Maximum concurrent child agents (3)");
+		const blockedText = blockedResult.content[0] as { type: "text"; text: string } | undefined;
+		expect(blockedText?.type).toBe("text");
+		expect(blockedText?.text).toContain("Maximum concurrent child agents (3)");
 
 		childA.emit("close", 0);
 		childB.emit("close", 0);
@@ -116,11 +130,12 @@ describe("agentToolDefinition", () => {
 			{ task: "cancelled task" },
 			controller.signal,
 			vi.fn().mockResolvedValue(undefined),
-			{ cwd: "/tmp" },
+			{ cwd: "/tmp" } as ExtensionContext,
 		);
 
 		expect(spawnMock).not.toHaveBeenCalled();
-		expect(result.content[0]?.type).toBe("text");
-		expect(result.content[0]?.text).toContain("Child Agent Cancelled before launch.");
+		const resultText = result.content[0] as { type: "text"; text: string } | undefined;
+		expect(resultText?.type).toBe("text");
+		expect(resultText?.text).toContain("Child Agent Cancelled before launch.");
 	});
 });

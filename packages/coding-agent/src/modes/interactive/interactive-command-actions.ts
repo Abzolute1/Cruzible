@@ -18,6 +18,7 @@ export interface InteractiveBuiltinCommandActions {
 	handleWorkspaceCommand: (text: string) => void;
 	handleChangelogCommand: () => void;
 	handleHotkeysCommand: () => void;
+	handleTodoCommand: () => void;
 	showUserMessageSelector: () => void;
 	showTreeSelector: () => void;
 	showOAuthSelector: (mode: "login" | "logout") => void | Promise<void>;
@@ -30,6 +31,7 @@ export interface InteractiveBuiltinCommandActions {
 	handleReloadCommand: () => Promise<void>;
 	handleArminSaysHi: () => void;
 	showSessionSelector: () => void;
+	toggleVerboseMode: () => void;
 	shutdown: () => Promise<void>;
 }
 
@@ -98,6 +100,10 @@ export async function dispatchInteractiveBuiltinCommand(
 			actions.handleHotkeysCommand();
 			actions.clearEditor();
 			return;
+		case "todo":
+			actions.handleTodoCommand();
+			actions.clearEditor();
+			return;
 		case "fork":
 			actions.showUserMessageSelector();
 			actions.clearEditor();
@@ -151,6 +157,10 @@ export async function dispatchInteractiveBuiltinCommand(
 			return;
 		case "resume":
 			actions.showSessionSelector();
+			actions.clearEditor();
+			return;
+		case "verbose":
+			actions.toggleVerboseMode();
 			actions.clearEditor();
 			return;
 		case "quit":

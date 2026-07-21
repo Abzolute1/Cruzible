@@ -28,13 +28,17 @@ function isLikelyTest(path: string): boolean {
 function mutationCandidates(policy: TaskPolicy): string[] {
 	const expected = policy.expectedChangedPaths;
 	if (expected.length > 0) return expected;
-	return policy.allowedPaths.filter((path) => !isLikelyTest(path)).slice(0, policy.intent === "multi_file_change" ? 6 : 1);
+	return policy.allowedPaths
+		.filter((path) => !isLikelyTest(path))
+		.slice(0, policy.intent === "multi_file_change" ? 6 : 1);
 }
 
 export function buildEvidencePlan(policy: TaskPolicy): EvidencePlanStep[] {
 	const steps: EvidencePlanStep[] = [];
 	const targets = unique(mutationCandidates(policy));
-	const likelyTests = unique(policy.likelyTests.filter((path) => policy.allowedPaths.length === 0 || policy.allowedPaths.includes(path)));
+	const likelyTests = unique(
+		policy.likelyTests.filter((path) => policy.allowedPaths.length === 0 || policy.allowedPaths.includes(path)),
+	);
 
 	if (policy.mutationExpected) {
 		for (const path of likelyTests) {
@@ -55,7 +59,9 @@ export function buildEvidencePlan(policy: TaskPolicy): EvidencePlanStep[] {
 		}
 		const plannedReadPaths = new Set(steps.filter((step) => step.action === "read").map((step) => step.path));
 		const optionalSupportLimit = policy.intent === "multi_file_change" ? 2 : 1;
-		for (const path of policy.allowedPaths.filter((path) => !plannedReadPaths.has(path)).slice(0, optionalSupportLimit)) {
+		for (const path of policy.allowedPaths
+			.filter((path) => !plannedReadPaths.has(path))
+			.slice(0, optionalSupportLimit)) {
 			steps.push({
 				action: "read",
 				path,
@@ -119,7 +125,10 @@ export function formatEvidencePlanStep(step: EvidencePlanStep): string {
 	return "final_answer";
 }
 
-export function nextEvidencePlanStep(plan: EvidencePlanStep[], state: EvidencePlanState = {}): EvidencePlanStep | undefined {
+export function nextEvidencePlanStep(
+	plan: EvidencePlanStep[],
+	state: EvidencePlanState = {},
+): EvidencePlanStep | undefined {
 	if (state.verifierPassedAfterMutation) return plan.find((step) => step.action === "final_answer");
 
 	const readPaths = new Set(state.readPaths ?? []);
@@ -141,4 +150,3 @@ export function nextEvidencePlanStep(plan: EvidencePlanStep[], state: EvidencePl
 
 	return plan.find((step) => step.action === "final_answer");
 }
-

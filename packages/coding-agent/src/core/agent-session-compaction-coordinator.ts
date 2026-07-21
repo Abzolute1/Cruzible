@@ -1,28 +1,52 @@
 import type { Agent } from "@ag1/agent-core";
 import type { AssistantMessage, Model } from "@ag1/ai";
-import { isContextOverflow } from "@ag1/ai";
-import { getAutoCompactTrigger, selectCompactionPolicy } from "./auton/compaction-policy.js";
+import type { AgentSessionEvent } from "./agent-session.js";
 import type { AgentSessionRecoveryArbiter } from "./agent-session-recovery-arbiter.js";
 import { AgentSessionRecoveryReplayScheduler } from "./agent-session-recovery-replay-scheduler.js";
+import { getAutoCompactTrigger, selectCompactionPolicy } from "./auton/compaction-policy.js";
 import {
+	type CompactionPreparation,
 	type CompactionResult,
-	calculateContextTokens,
 	compact,
 	estimateContextTokens,
 	microCompact,
 	prepareCompaction,
 	selectCompactionStrategy,
-	shouldCompact,
 	snipHistory,
 } from "./compaction/index.js";
 import type { ExtensionRunner, SessionBeforeCompactResult } from "./extensions/index.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { selectCheapModelForTask } from "./model-routing.js";
 import type { CompactionEntry, SessionManager } from "./session-manager.js";
-import { getLatestCompactionEntry } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
-import type { AgentSessionEvent } from "./agent-session.js";
 
 type AutoCompactionReason = "overflow" | "threshold";
+
+/**
+ * Bound on the summarization LLM call during compaction. The call sits on the
+ * session event loop's critical path — a provider that accepts the request and
+ * then hangs would otherwise stall the whole session forever. Local models can
+ * be slow to prefill large contexts, so the default is generous; the guard
+ * exists to catch *unresponsive* providers, not to tune latency.
+ * Override with AG1_COMPACTION_TIMEOUT_MS (read at call time so tests and
+ * embedders can adjust without re-importing).
+ */
+const DEFAULT_COMPACTION_LLM_TIMEOUT_MS = 180_000;
+
+function compactionLlmTimeoutMs(): number {
+	const raw = Number(process.env.AG1_COMPACTION_TIMEOUT_MS);
+	return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_COMPACTION_LLM_TIMEOUT_MS;
+}
+
+export class CompactionTimeoutError extends Error {
+	constructor(timeoutMs: number) {
+		const budget = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`;
+		super(
+			`Compaction summarization timed out after ${budget} (provider unresponsive). Continuing without compaction.`,
+		);
+		this.name = "CompactionTimeoutError";
+	}
+}
 
 interface RequestAuth {
 	apiKey: string;
@@ -43,6 +67,7 @@ export interface AgentSessionCompactionCoordinatorOptions {
 	reconnectToAgent: () => void;
 	abortAgent: () => Promise<void>;
 	recoveryArbiter: AgentSessionRecoveryArbiter;
+	recordToolOutcome?: (outcome: any) => void;
 }
 
 export class AgentSessionCompactionCoordinator {
@@ -88,6 +113,12 @@ export class AgentSessionCompactionCoordinator {
 	}
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		// Concurrency guard: a second manual compact (or an auto-compaction
+		// triggered from the event queue while a manual one is active) would
+		// overwrite manualAbortController and interleave commits.
+		if (this.isCompacting) {
+			throw new Error("Compaction already in progress");
+		}
 		this.options.disconnectFromAgent();
 		await this.options.abortAgent();
 		this.manualAbortController = new AbortController();
@@ -99,7 +130,6 @@ export class AgentSessionCompactionCoordinator {
 				throw new Error("No model selected");
 			}
 
-			const { apiKey, headers } = await this.options.getRequiredRequestAuth(model);
 			const pathEntries = this.options.sessionManager.getBranch();
 			const settings = this.options.settingsManager.getCompactionSettings();
 			const preparation = prepareCompaction(pathEntries, settings);
@@ -110,6 +140,8 @@ export class AgentSessionCompactionCoordinator {
 				}
 				throw new Error("Nothing to compact (session too small)");
 			}
+			const summaryModel = this.selectSummarizationModel(model, preparation.tokensBefore);
+			const { apiKey, headers } = await this.options.getRequiredRequestAuth(summaryModel);
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -135,9 +167,9 @@ export class AgentSessionCompactionCoordinator {
 
 			const result = extensionCompaction
 				? extensionCompaction
-				: await compact(
+				: await this.compactWithTimeout(
 						preparation,
-						model,
+						summaryModel,
 						apiKey,
 						headers,
 						customInstructions,
@@ -175,70 +207,14 @@ export class AgentSessionCompactionCoordinator {
 		}
 	}
 
-	async check(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
-		const settings = this.options.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return;
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
-
-		const contextWindow = this.options.getContextWindow() ?? 0;
-		const model = this.options.getModel();
-		const sameModel =
-			model !== undefined && assistantMessage.provider === model.provider && assistantMessage.model === model.id;
-
-		const compactionEntry = getLatestCompactionEntry(this.options.sessionManager.getBranch());
-		const assistantIsFromBeforeCompaction =
-			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
-		if (assistantIsFromBeforeCompaction) {
-			return;
-		}
-
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
-			if (this.overflowRecoveryAttempted) {
-				this.options.emit({
-					type: "compaction_end",
-					reason: "overflow",
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-					errorMessage:
-						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
-				});
-				return;
-			}
-
-			this.overflowRecoveryAttempted = true;
-			const messages = this.options.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.options.agent.state.messages = messages.slice(0, -1);
-			}
-			await this.runAuto("overflow", true);
-			return;
-		}
-
-		let contextTokens: number;
-		if (assistantMessage.stopReason === "error") {
-			const messages = this.options.agent.state.messages;
-			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return;
-			const usageMsg = messages[estimate.lastUsageIndex];
-			if (
-				compactionEntry &&
-				usageMsg.role === "assistant" &&
-				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
-			) {
-				return;
-			}
-			contextTokens = estimate.tokens;
-		} else {
-			contextTokens = calculateContextTokens(assistantMessage.usage);
-		}
-
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			await this.runAuto("threshold", false);
-		}
-	}
-
 	async runAuto(reason: AutoCompactionReason, willRetry: boolean): Promise<void> {
+		// Skip auto-compaction while another compaction (manual or auto) is
+		// active instead of interleaving abort controllers and commits.
+		if (this.isCompacting) {
+			this.emitNoopAutoCompaction(reason);
+			return;
+		}
+
 		const settings = this.options.settingsManager.getCompactionSettings();
 		const contextWindow = this.options.getContextWindow() ?? 32768;
 		const policy = selectCompactionPolicy(contextWindow);
@@ -253,18 +229,22 @@ export class AgentSessionCompactionCoordinator {
 				return;
 			}
 
-			const authResult = await this.options.modelRegistry.getApiKeyAndHeaders(model);
-			if (!authResult.ok || !authResult.apiKey) {
-				this.emitNoopAutoCompaction(reason);
-				return;
-			}
-			const { apiKey, headers } = authResult;
-
 			const currentEstimate = estimateContextTokens(this.options.agent.state.messages);
 			const strategy = selectCompactionStrategy(currentEstimate.tokens, policy);
 
 			if (strategy === "micro") {
-				const truncated = microCompact(this.options.agent.state.messages, policy.autoCompactKeepTurns);
+				// TODO(S1b): microCompact/snipHistory mutate only the live message
+				// array (truncating tool results, replacing/splicing message
+				// objects), while the session file keeps the full history — the
+				// savings vanish on any rebuild/reload. Persisting these edits
+				// needs entry-level context editing (entries are append-only and
+				// snip removes whole messages mid-branch), i.e. a rearchitecture;
+				// until then the session file cannot be the source of truth here.
+				const truncated = microCompact(
+					this.options.agent.state.messages,
+					policy.autoCompactKeepTurns,
+					this.options.recordToolOutcome,
+				);
 				if (truncated > 0) {
 					const newEstimate = estimateContextTokens(this.options.agent.state.messages);
 					const freedTokens = currentEstimate.tokens - newEstimate.tokens;
@@ -309,6 +289,14 @@ export class AgentSessionCompactionCoordinator {
 				this.emitNoopAutoCompaction(reason);
 				return;
 			}
+			const summaryModel = this.selectSummarizationModel(model, preparation.tokensBefore);
+			const authResult = await this.options.modelRegistry.getApiKeyAndHeaders(summaryModel);
+			if (!authResult.ok) {
+				this.emitNoopAutoCompaction(reason);
+				return;
+			}
+			const { headers } = authResult;
+			const apiKey = authResult.apiKey ?? "not-needed";
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -341,9 +329,9 @@ export class AgentSessionCompactionCoordinator {
 
 			const result = extensionCompaction
 				? extensionCompaction
-				: await compact(
+				: await this.compactWithTimeout(
 						preparation,
-						model,
+						summaryModel,
 						apiKey,
 						headers,
 						undefined,
@@ -408,6 +396,70 @@ export class AgentSessionCompactionCoordinator {
 		});
 	}
 
+	private selectSummarizationModel(currentModel: Model<any>, tokensBefore: number): Model<any> {
+		const minContextWindow = Math.min(Math.max(tokensBefore, 32_768), 128_000);
+		return selectCheapModelForTask({
+			task: "summarization",
+			currentModel,
+			candidates: this.getAvailableRoutingModels(),
+			minContextWindow,
+			minMaxTokens: 2_048,
+		}).model;
+	}
+
+	/**
+	 * Run the summarization pass bounded by compactionLlmTimeoutMs(). The
+	 * timeout aborts a linked controller (cancelling the HTTP request where the
+	 * provider honors the signal) and rejects with CompactionTimeoutError either
+	 * way — even a provider that ignores aborts cannot stall the event loop.
+	 * The parent signal still wins for genuine user cancellation.
+	 */
+	private compactWithTimeout(
+		preparation: CompactionPreparation,
+		summaryModel: Model<any>,
+		apiKey: string,
+		headers: Record<string, string> | undefined,
+		customInstructions: string | undefined,
+		parentSignal: AbortSignal,
+	): Promise<CompactionResult> {
+		const timeoutMs = compactionLlmTimeoutMs();
+		const controller = new AbortController();
+		const onParentAbort = () => controller.abort();
+		if (parentSignal.aborted) {
+			controller.abort();
+		} else {
+			parentSignal.addEventListener("abort", onParentAbort, { once: true });
+		}
+
+		const compactPromise = compact(preparation, summaryModel, apiKey, headers, customInstructions, controller.signal);
+		// When the timeout wins the race this promise is abandoned; swallow any
+		// late rejection so it never surfaces as an unhandledRejection.
+		compactPromise.catch(() => {});
+
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				controller.abort();
+				reject(new CompactionTimeoutError(timeoutMs));
+			}, timeoutMs);
+		});
+
+		return Promise.race([compactPromise, timeoutPromise]).finally(() => {
+			if (timer) {
+				clearTimeout(timer);
+			}
+			parentSignal.removeEventListener("abort", onParentAbort);
+		});
+	}
+
+	private getAvailableRoutingModels(): Model<any>[] {
+		try {
+			return this.options.modelRegistry.getAvailable();
+		} catch {
+			return [];
+		}
+	}
+
 	private async commitCompaction(result: CompactionResult, fromExtension: boolean): Promise<void> {
 		this.options.sessionManager.appendCompaction(
 			result.summary,
@@ -444,6 +496,12 @@ export class AgentSessionCompactionCoordinator {
 			alreadyScheduledMessage: "Auto-continue skipped because another recovery path is already scheduled.",
 			stateChangedMessage: "Auto-continue skipped because the session changed before replay.",
 			run: () => this.options.agent.continue(),
+			onRunError: (error) => {
+				// Log + surface: a rejected continue() must not vanish into the scheduler's catch.
+				const message = error instanceof Error ? error.message : String(error);
+				console.error(`[AgentSession] Auto-continue after compaction failed: ${message}`);
+				this.options.emit({ type: "recovery_replay_error", owner: "compaction", message });
+			},
 		});
 	}
 }

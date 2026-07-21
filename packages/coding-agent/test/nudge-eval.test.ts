@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { evaluateNudge } from "../src/core/auton/nudges/nudge-eval.js";
+import { buildToolCallDigest } from "../src/core/tool-outcome-digests.js";
 
 describe("nudge evaluation", () => {
 	test("does not flag duplicate tool calls when the same tool reads different files", () => {
@@ -15,6 +16,72 @@ describe("nudge evaluation", () => {
 		});
 
 		expect(result.shouldNudge).toBe(false);
+	});
+
+	test("does not flag consecutive successful edits to the same file with different content", () => {
+		const result = evaluateNudge({
+			turnIndex: 3,
+			isContinuation: false,
+			toolCallHistory: [
+				{
+					tool: "edit",
+					success: true,
+					file: "src/a.ts",
+					detail: "src/a.ts",
+					callDigest: buildToolCallDigest("edit", {
+						path: "src/a.ts",
+						edits: [{ oldText: "foo", newText: "bar" }],
+					}),
+					resultDigest: "ok|1",
+				},
+				{
+					tool: "edit",
+					success: true,
+					file: "src/a.ts",
+					detail: "src/a.ts",
+					callDigest: buildToolCallDigest("edit", {
+						path: "src/a.ts",
+						edits: [{ oldText: "baz", newText: "qux" }],
+					}),
+					resultDigest: "ok|2",
+				},
+				{
+					tool: "edit",
+					success: true,
+					file: "src/a.ts",
+					detail: "src/a.ts",
+					callDigest: buildToolCallDigest("edit", {
+						path: "src/a.ts",
+						edits: [{ oldText: "one", newText: "two" }],
+					}),
+					resultDigest: "ok|3",
+				},
+			],
+			fileAccessHistory: [],
+		});
+
+		expect(result.shouldNudge).toBe(false);
+	});
+
+	test("flags identical failing edits as an error loop", () => {
+		const callDigest = buildToolCallDigest("edit", {
+			path: "src/a.ts",
+			edits: [{ oldText: "missing", newText: "x" }],
+		});
+		const result = evaluateNudge({
+			turnIndex: 3,
+			isContinuation: false,
+			toolCallHistory: [
+				{ tool: "edit", success: false, file: "src/a.ts", callDigest, resultDigest: "err|1" },
+				{ tool: "edit", success: false, file: "src/a.ts", callDigest, resultDigest: "err|1" },
+				{ tool: "edit", success: false, file: "src/a.ts", callDigest, resultDigest: "err|1" },
+			],
+			fileAccessHistory: [],
+		});
+
+		expect(result.shouldNudge).toBe(true);
+		expect(result.nudgeType).toBe("pivot");
+		expect(result.explanation).toContain("identical arguments");
 	});
 
 	test("detects lowercase verify failures", () => {
@@ -66,7 +133,7 @@ describe("nudge evaluation", () => {
 			turnIndex: 5,
 			isContinuation: true,
 			toolCallHistory: [
-				{ tool: "bash", success: true, detail: "find . -type f -name \"*.ts\" | head -50" },
+				{ tool: "bash", success: true, detail: 'find . -type f -name "*.ts" | head -50' },
 				{ tool: "bash", success: true, detail: "ls -la" },
 			],
 			fileAccessHistory: [],
@@ -91,7 +158,12 @@ describe("nudge evaluation", () => {
 				{ tool: "read", success: true, file: "src/search-url.mjs", detail: "src/search-url.mjs" },
 				{ tool: "edit", success: true, file: "src/search-url.mjs", detail: "preserved explicit zero limit" },
 				{ tool: "read", success: true, file: "tests/search-url.test.mjs", detail: "tests/search-url.test.mjs" },
-				{ tool: "read", success: true, file: "scripts/check-regression-test.mjs", detail: "scripts/check-regression-test.mjs" },
+				{
+					tool: "read",
+					success: true,
+					file: "scripts/check-regression-test.mjs",
+					detail: "scripts/check-regression-test.mjs",
+				},
 			],
 			fileAccessHistory: [],
 			trendTracker: {
@@ -159,7 +231,12 @@ describe("nudge evaluation", () => {
 			turnIndex: 10,
 			isContinuation: true,
 			toolCallHistory: [
-				{ tool: "read", success: true, file: "tests/render-report.test.mjs", detail: "tests/render-report.test.mjs" },
+				{
+					tool: "read",
+					success: true,
+					file: "tests/render-report.test.mjs",
+					detail: "tests/render-report.test.mjs",
+				},
 				{ tool: "read", success: true, file: "cli/render-report.mjs", detail: "cli/render-report.mjs" },
 				{ tool: "bash", success: false, detail: "node --test tests/render-report.test.mjs" },
 			],

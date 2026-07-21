@@ -77,16 +77,25 @@ function classifyPolicyBlock(reason: string): string {
 	if (normalized.includes("verifier already passed")) return "post_verifier_tool_block";
 	if (normalized.includes("run the verifier exactly")) return "non_exact_verifier_block";
 	if (normalized.includes("until expected mutation paths are edited")) return "early_verifier_block";
-	if (normalized.includes("repair before rerunning verifier") || normalized.includes("same verifier failure repeated")) {
+	if (
+		normalized.includes("repair before rerunning verifier") ||
+		normalized.includes("same verifier failure repeated")
+	) {
 		return "repair_loop_block";
 	}
 	if (normalized.includes("already edited")) return "duplicate_edit_block";
-	if (normalized.includes("already read") || normalized.includes("before reading more files")) return "over_read_block";
-	if (normalized.includes("broad directory") || normalized.includes("broad find") || normalized.includes("shell discovery")) {
+	if (normalized.includes("already read") || normalized.includes("before reading more files"))
+		return "over_read_block";
+	if (
+		normalized.includes("broad directory") ||
+		normalized.includes("broad find") ||
+		normalized.includes("shell discovery")
+	) {
 		return "broad_discovery_block";
 	}
 	if (normalized.includes("multiple tool calls in one assistant turn")) return "multi_tool_turn_block";
-	if (normalized.includes("outside the expected mutation set") || normalized.includes("outside allowed")) return "wrong_target_block";
+	if (normalized.includes("outside the expected mutation set") || normalized.includes("outside allowed"))
+		return "wrong_target_block";
 	if (normalized.includes("outside the workspace")) return "workspace_escape_block";
 	if (normalized.includes("bash requires a concrete command")) return "empty_bash_block";
 	return "controlled_runtime_block";
@@ -120,7 +129,9 @@ export function buildRunDiagnostics(input: RunDiagnosticInput): RunDiagnostics {
 		failureLabels.push("verification_missing_in_turn");
 	}
 
-	const missingRequired = requiredChangedPaths.filter((path) => !changedFiles.some((changed) => pathMatches(changed, [path])));
+	const missingRequired = requiredChangedPaths.filter(
+		(path) => !changedFiles.some((changed) => pathMatches(changed, [path])),
+	);
 	if (missingRequired.length > 0) failureLabels.push("missing_required_change");
 	if (allowedChangedPaths.length > 0 && changedFiles.some((path) => !pathMatches(path, allowedChangedPaths))) {
 		failureLabels.push("wrong_target");

@@ -11,8 +11,10 @@ function looksLikeNoWebDirective(text: string): boolean {
 }
 
 function looksLikeConversationalRequest(text: string): boolean {
-	return /^\s*(hello|hi|hey|yo|sup|good morning|good afternoon|good evening|thanks|thank you)\b/i.test(text)
-		|| /\b(can you help|help me|what can you do|are you there|how can you help|need assistance)\b/i.test(text);
+	return (
+		/^\s*(hello|hi|hey|yo|sup|good morning|good afternoon|good evening|thanks|thank you)\b/i.test(text) ||
+		/\b(can you help|help me|what can you do|are you there|how can you help|need assistance)\b/i.test(text)
+	);
 }
 
 function looksLikeLocalCodeLookup(text: string): boolean {
@@ -22,26 +24,13 @@ function looksLikeLocalCodeLookup(text: string): boolean {
 }
 
 function looksLikeLocalPathAnswerRequest(text: string): boolean {
-	return /\b(which file|which source file|which directory|which directory holds|where is|where's|contains the .*scripts?|contains the .*files?|defines the .*script|implements the .*command)\b/i.test(text);
-}
-
-function looksLikeLiteralPathNeedle(text: string): boolean {
-	return /(?:\/[A-Za-z0-9._-]+){2,}/.test(text)
-		|| /`[^`\n]*\/[^`\n]*`/.test(text);
-}
-
-function looksLikeDefinitionLookup(text: string): boolean {
-	return /\b(where is .* defined|where .* is defined|find where .* is defined|which file defines|which source file implements|definition of|defines?|implemented in this repo|where is .* implemented|where .* is implemented|find where .* is implemented|where is .* computed|where .* is computed|find where .* is computed)\b/i.test(
+	return /\b(which file|which source file|which directory|which directory holds|where is|where's|contains the .*scripts?|contains the .*files?|defines the .*script|implements the .*command)\b/i.test(
 		text,
 	);
 }
 
-function looksLikeComparativeDefinitionRequest(text: string): boolean {
-	return /\b(differs? from|difference between|compare .* with|compare .* and|how .* differs?)\b/i.test(text);
-}
-
-function looksLikeDirectoryInventoryRequest(text: string): boolean {
-	return /\b(which directory contains|which directory holds|what files are in it|list just those filenames|list the files|contains the .*scripts?)\b/i.test(text);
+function looksLikeLiteralPathNeedle(text: string): boolean {
+	return /(?:\/[A-Za-z0-9._-]+){2,}/.test(text) || /`[^`\n]*\/[^`\n]*`/.test(text);
 }
 
 function looksLikeDocsReferenceRequest(text: string): boolean {
@@ -49,16 +38,20 @@ function looksLikeDocsReferenceRequest(text: string): boolean {
 }
 
 function looksLikeBriefSummaryRequest(text: string): boolean {
-	return /\b(summar(?:ize|ise)|brief(?:ly)?|quick(?:ly)?|short(?:ly)?|concise|one sentence|single sentence)\b/i.test(text);
+	return /\b(summar(?:ize|ise)|brief(?:ly)?|quick(?:ly)?|short(?:ly)?|concise|one sentence|single sentence)\b/i.test(
+		text,
+	);
 }
 
-function looksLikeSelfContainedBenchmarkWorkspaceTask(text: string): boolean {
-	return /\bself-contained benchmark workspace\b/i.test(text);
+function looksLikeSelfContainedWorkspaceTask(text: string): boolean {
+	return /\bself-contained [a-z-]*\s*workspace\b|\bstay inside this workspace\b/i.test(text);
 }
 
 function looksLikeLocalImplementationTask(text: string): boolean {
-	return /\b(fix|debug|patch|migrate|update|refactor|repair)\b/i.test(text)
-		&& /\b(workspace|verification command|node --test|keep the patch minimal|stay inside this workspace)\b/i.test(text);
+	return (
+		/\b(fix|debug|patch|migrate|update|refactor|repair)\b/i.test(text) &&
+		/\b(workspace|verification command|node --test|keep the patch minimal|stay inside this workspace)\b/i.test(text)
+	);
 }
 
 function mentionsMisleadingSiblingWarning(text: string): boolean {
@@ -66,9 +59,11 @@ function mentionsMisleadingSiblingWarning(text: string): boolean {
 }
 
 function looksLikeStrongestSourcesResearchRequest(text: string): boolean {
-	return /\b(strongest|best|authoritative|independent)\s+sources?\b/i.test(text)
-		|| /\bcite\b.*\bsources?\b/i.test(text)
-		|| /\bcorroborat(?:e|ion|ing)\b/i.test(text);
+	return (
+		/\b(strongest|best|authoritative|independent)\s+sources?\b/i.test(text) ||
+		/\bcite\b.*\bsources?\b/i.test(text) ||
+		/\bcorroborat(?:e|ion|ing)\b/i.test(text)
+	);
 }
 
 export function buildPromptIntentAddendum(text: string): string | undefined {
@@ -78,9 +73,9 @@ export function buildPromptIntentAddendum(text: string): string | undefined {
 	const noWebOnly = noWebDirective && !looksLikeExplicitWebRequest(trimmed);
 
 	if (
-		looksLikeConversationalRequest(trimmed)
-		&& !looksLikeExplicitWebRequest(trimmed)
-		&& !looksLikeLocalCodeLookup(trimmed)
+		looksLikeConversationalRequest(trimmed) &&
+		!looksLikeExplicitWebRequest(trimmed) &&
+		!looksLikeLocalCodeLookup(trimmed)
 	) {
 		return "Intent steering: This is a conversational or simple assistance request. Answer directly in natural language. Do not use tools unless the user explicitly asks for information or actions that require them.";
 	}
@@ -118,7 +113,7 @@ export function buildPromptIntentAddendum(text: string): string | undefined {
 		return `Intent steering: This is a docs/reference lookup. Use a focused docs query with the concept terms from the user's request, and prefer an authoritative reference page for that exact concept over generic landing pages. If the user named a specific parameter, option, argument, or signature token, preserve that exact token in the first docs query instead of broadening immediately. If the first authoritative docs search snippet already includes that exact named token or signature detail, answer from the snippet before fetching. ${domainSpecificHints.join(" ")} Only broaden into more searches/fetches if the first official source is clearly missing the needed information.`;
 	}
 
-	if (looksLikeSelfContainedBenchmarkWorkspaceTask(trimmed) && looksLikeLocalImplementationTask(trimmed)) {
+	if (looksLikeSelfContainedWorkspaceTask(trimmed) && looksLikeLocalImplementationTask(trimmed)) {
 		const misleadingFileGuidance = mentionsMisleadingSiblingWarning(trimmed)
 			? "The task explicitly warns about a misleading similarly named file. Treat filename similarity as a trap, not evidence. Verify the actual import/call path and expected output before editing, and do not copy semantics from a sibling file just because the stem matches."
 			: "If there are multiple similarly named local files, verify the actual import/call path and expected output before editing; do not assume the first filename match is the right behavior source.";
@@ -133,7 +128,11 @@ export function buildPromptIntentAddendum(text: string): string | undefined {
 		].join(" ");
 	}
 
-	if (looksLikeLocalCodeLookup(trimmed) && looksLikeLocalPathAnswerRequest(trimmed) && looksLikeLiteralPathNeedle(trimmed)) {
+	if (
+		looksLikeLocalCodeLookup(trimmed) &&
+		looksLikeLocalPathAnswerRequest(trimmed) &&
+		looksLikeLiteralPathNeedle(trimmed)
+	) {
 		const noWebPrefix = noWebOnly
 			? "Intent steering: The user explicitly does not want web browsing. Do not use webSearch or webFetch. "
 			: "";

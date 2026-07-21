@@ -215,7 +215,9 @@ function cmdTheme(themeName: string): void {
 	["mdHeading", "mdLink", "mdCode", "mdCodeBlock", "mdCodeBlockBorder", "mdQuote", "mdListBullet"].forEach(logColor);
 
 	console.log("\n--- Diff ---");
-	["toolDiffAdded", "toolDiffRemoved", "toolDiffContext"].forEach(logColor);
+	["toolDiffAdded", "toolDiffRemoved", "toolDiffContext", "toolDiffLineNum"].forEach(logColor);
+	console.log("toolDiffAddedBg:", theme.bg("toolDiffAddedBg", " Sample "));
+	console.log("toolDiffRemovedBg:", theme.bg("toolDiffRemovedBg", " Sample "));
 
 	console.log("\n--- Thinking ---");
 	["thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh"].forEach(logColor);

@@ -287,7 +287,12 @@ describe("AgentSession concurrent prompt guard", () => {
 		await session.abort();
 		await firstPrompt.catch(() => {});
 
-		expect(sawSteeringMessage).toBe(true);
+		// Abort wins over queued steering: the agent loop's abort circuit breaker
+		// (packages/agent/src/agent-loop.ts) ends an aborted run instead of draining
+		// the steering queue into a post-abort turn, so the message is never
+		// delivered to the model and stays queued (e.g. for clearQueue() restore).
+		expect(sawSteeringMessage).toBe(false);
+		expect(session.getSteeringMessages()).toContain("Steer from extension");
 	});
 
 	it("should allow prompt() after previous completes", async () => {

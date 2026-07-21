@@ -17,7 +17,7 @@ describe("AgentSession degraded turn events", () => {
 			responses: [
 				{
 					text: "x".repeat(50_000),
-					stopReason: "max_tokens",
+					stopReason: "length",
 					usage: { output: 15_000 },
 				},
 			],
@@ -31,7 +31,7 @@ describe("AgentSession degraded turn events", () => {
 		expect(degraded[0]).toEqual(
 			expect.objectContaining({
 				severity: "critical",
-				stopReason: "max_tokens",
+				stopReason: "length",
 				outputTokens: 15_000,
 			}),
 		);

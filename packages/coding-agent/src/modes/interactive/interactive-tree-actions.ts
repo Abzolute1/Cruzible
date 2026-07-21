@@ -22,7 +22,7 @@ export function applyInteractiveTreeNavigationSuccess(options: {
 
 export async function performInteractiveTreeNavigation(options: {
 	navigateTree: () => Promise<InteractiveTreeNavigationResult>;
-	enableSummaryUi?: () => (() => void);
+	enableSummaryUi?: () => () => void;
 	applySuccess: (result: InteractiveTreeNavigationResult) => void;
 	showStatus: (message: string) => void;
 	showError: (message: string) => void;

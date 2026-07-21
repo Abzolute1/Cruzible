@@ -1,15 +1,5 @@
 import type { Model } from "@ag1/ai";
-import {
-	Container,
-	type Focusable,
-	fuzzyFilter,
-	getKeybindings,
-	Input,
-	Key,
-	matchesKey,
-	Spacer,
-	Text,
-} from "@ag1/tui";
+import { Container, type Focusable, fuzzyFilter, getKeybindings, Input, Key, matchesKey, Spacer, Text } from "@ag1/tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { formatCompactModelPricing, formatModelPricingDetails } from "./model-metrics.js";

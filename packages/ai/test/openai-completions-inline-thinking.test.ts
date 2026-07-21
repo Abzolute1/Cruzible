@@ -96,12 +96,15 @@ describe("openai-completions inline thinking normalization", () => {
 		]);
 
 		const textDeltas = events
-			.filter((event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta")
+			.filter(
+				(event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
+			)
 			.map((event) => event.delta)
 			.join("");
 		const thinkingDeltas = events
 			.filter(
-				(event): event is Extract<AssistantMessageEvent, { type: "thinking_delta" }> => event.type === "thinking_delta",
+				(event): event is Extract<AssistantMessageEvent, { type: "thinking_delta" }> =>
+					event.type === "thinking_delta",
 			)
 			.map((event) => event.delta)
 			.join("");

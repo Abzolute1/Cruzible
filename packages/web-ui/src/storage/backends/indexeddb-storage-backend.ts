@@ -169,7 +169,17 @@ export class IndexedDBStorageBackend implements StorageBackend {
 			},
 		};
 
-		return operation(storageTx);
+		const result = await operation(storageTx);
+
+		// Wait for the transaction to actually commit - a late abort after the
+		// last request's onsuccess would otherwise go unobserved
+		await new Promise<void>((resolve, reject) => {
+			idbTx.oncomplete = () => resolve();
+			idbTx.onerror = () => reject(idbTx.error);
+			idbTx.onabort = () => reject(idbTx.error ?? new Error("IndexedDB transaction aborted"));
+		});
+
+		return result;
 	}
 
 	async getQuotaInfo(): Promise<{ usage: number; quota: number; percent: number }> {

@@ -55,10 +55,7 @@ export function appendResearchArtifactFromToolResult(
 	return true;
 }
 
-export function getRecentResearchArtifacts(
-	entries: SessionEntry[],
-	limit = 5,
-): ResearchArtifactSnapshot[] {
+export function getRecentResearchArtifacts(entries: SessionEntry[], limit = 5): ResearchArtifactSnapshot[] {
 	const artifacts: ResearchArtifactSnapshot[] = [];
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];

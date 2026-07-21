@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@ag1/agent-core";
 import type { AssistantMessage, Model } from "@ag1/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { generateSummary } from "../src/core/compaction/index.js";
+import { generateSummary, type WorkingMemoryLedger } from "../src/core/compaction/index.js";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
@@ -104,5 +104,36 @@ describe("generateSummary reasoning options", () => {
 		expect(promptText).toContain("<previous-summary>\n## Goal\nExisting summary\n</previous-summary>");
 		expect(promptText).toContain("The messages above are NEW conversation messages");
 		expect(promptText).toContain("## Resume Checklist");
+	});
+
+	it("puts deterministic working memory before conversation in summary prompts", async () => {
+		const workingMemory: WorkingMemoryLedger = {
+			goals: ["Finish actionplan.md Phase 3"],
+			constraints: ["Keep token cost low"],
+			readFiles: ["packages/coding-agent/src/core/compaction/compaction.ts"],
+			modifiedFiles: ["packages/coding-agent/src/core/compaction/working-memory.ts"],
+			commandsRun: ["npm test --workspace packages/coding-agent"],
+			failedAttempts: [],
+			verification: [{ command: "npm test --workspace packages/coding-agent", status: "passed" }],
+			nextSteps: ["Mark the action plan item complete"],
+			openQuestions: [],
+		};
+
+		await generateSummary(
+			messages,
+			createModel(false),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			workingMemory,
+		);
+
+		const promptText = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(promptText.indexOf("<working-memory>")).toBeLessThan(promptText.indexOf("<conversation>"));
+		expect(promptText).toContain("- Finish actionplan.md Phase 3");
+		expect(promptText).toContain("treat it as deterministic primary state");
 	});
 });

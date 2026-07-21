@@ -105,6 +105,12 @@ export function parseArgs(args: string[]): Args {
 			result.model = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
+			result.diagnostics.push({
+				type: "warning",
+				message:
+					"--api-key exposes the key in your shell history and process list (ps). " +
+					"Prefer the provider's API key environment variable (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY) instead.",
+			});
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
 			result.systemPrompt = args[++i];
 		} else if (arg === "--append-system-prompt" && i + 1 < args.length) {
@@ -235,14 +241,10 @@ export function parseArgs(args: string[]): Args {
 			if (eqIndex !== -1) {
 				result.unknownFlags.set(arg.slice(2, eqIndex), arg.slice(eqIndex + 1));
 			} else {
-				const flagName = arg.slice(2);
-				const next = args[i + 1];
-				if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
-					result.unknownFlags.set(flagName, next);
-					i++;
-				} else {
-					result.unknownFlags.set(flagName, true);
-				}
+				// Treat unknown flags as boolean: consuming the next token would silently
+				// eat the first word of the prompt (`--foo do the thing`). String-valued
+				// extension flags must use --flag=value.
+				result.unknownFlags.set(arg.slice(2), true);
 			}
 		} else if (arg.startsWith("-") && !arg.startsWith("--")) {
 			result.diagnostics.push({ type: "error", message: `Unknown option: ${arg}` });
@@ -399,6 +401,7 @@ ${chalk.bold("Environment Variables:")}
   OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key
   KIMI_API_KEY                     - Kimi For Coding API key
   NVIDIA_API_KEY                   - NVIDIA Nemotron API key (build.nvidia.com)
+  NVIDIA_NIM_API_KEY               - NVIDIA NIM API key (nvidia-nim provider; falls back to NVIDIA_API_KEY)
   AWS_PROFILE                      - AWS profile for Amazon Bedrock
   AWS_ACCESS_KEY_ID                - AWS access key for Amazon Bedrock
   AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
@@ -407,6 +410,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_AGENT_DIR.padEnd(32)} - Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)
   AG1_PACKAGE_DIR                  - Override package directory (for Nix/Guix store paths)
   AG1_OFFLINE                      - Disable startup network operations when set to 1/true/yes
+  AG1_TRUST_PROJECT                - Trust (1/true/yes) or distrust (0/false/no) project-local extensions
   AG1_SHARE_VIEWER_URL             - Base URL for /share command (default: https://ag1.dev/session/)
   AG1_AI_ANTIGRAVITY_VERSION       - Override Antigravity User-Agent version (e.g., 1.23.0)
 

@@ -8,7 +8,7 @@ describe("interactive-debug-report", () => {
 			width: 120,
 			height: 40,
 			renderedLines: ["hello", "world"],
-			messages: [{ role: "user", content: [{ type: "text", text: "test" }] }],
+			messages: [{ role: "user", content: [{ type: "text", text: "test" }], timestamp: 1 }],
 			modelId: "provider/model",
 			mode: "autonomous",
 			stabilization: {

@@ -61,6 +61,7 @@ const NON_OVERFLOW_PATTERNS = [
 	/^(Throttling error|Service unavailable):/i, // AWS Bedrock non-overflow errors (human-readable prefixes from formatBedrockError)
 	/rate limit/i, // Generic rate limiting
 	/too many requests/i, // Generic HTTP 429 style
+	/tokens? per min/i, // Token-per-minute (TPM) rate limits, e.g. "too many tokens per minute" — retry, not compact
 ];
 
 /**

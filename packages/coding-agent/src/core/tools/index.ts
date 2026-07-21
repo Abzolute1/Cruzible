@@ -9,8 +9,18 @@ export {
 	bashToolDefinition,
 	createBashTool,
 	createBashToolDefinition,
+	createDefaultBashOperations,
 	createLocalBashOperations,
 } from "./bash.js";
+export {
+	type BashSandboxBackendConfig,
+	type BashSandboxBackendKind,
+	createSandboxedBashOperations,
+	describeBashSandboxBackend,
+	renderBashSandboxCommand,
+	resolveBashSandboxBackendFromEnv,
+	shellQuote,
+} from "./bash-sandbox.js";
 export {
 	createEditTool,
 	createEditToolDefinition,
@@ -63,6 +73,22 @@ export {
 	readToolDefinition,
 } from "./read.js";
 export {
+	createSubmitPlanToolDefinition,
+	type SubmitPlanToolDetails,
+	type SubmitPlanToolInput,
+	type SubmittedPlan,
+	type SubmittedPlanQuestion,
+	submitPlanToolDefinition,
+} from "./submit-plan.js";
+export { createTaskToolDefinition, TASK_SESSION_ENTRY_TYPE, type TaskToolDeps, type TaskToolDetails } from "./task.js";
+export {
+	createTodoToolDefinition,
+	type TodoToolDetails,
+	type TodoToolInput,
+	todoTool,
+	todoToolDefinition,
+} from "./todo.js";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
@@ -72,15 +98,21 @@ export {
 	truncateLine,
 	truncateTail,
 } from "./truncate.js";
+// Visual verification tools (conditionally loaded at runtime based on model vision capability)
 export {
-	createWriteTool,
-	createWriteToolDefinition,
-	type WriteOperations,
-	type WriteToolInput,
-	type WriteToolOptions,
-	writeTool,
-	writeToolDefinition,
-} from "./write.js";
+	closeBrowser,
+	createInteractThenScreenshotToolDefinition,
+	createScreenshotUrlToolDefinition,
+	getBrowser,
+	interactThenScreenshotTool,
+	interactThenScreenshotToolDefinition,
+	type PageAction,
+	runScreenshot,
+	type ScreenshotOptions,
+	type ScreenshotResult,
+	screenshotUrlTool,
+	screenshotUrlToolDefinition,
+} from "./visual/index.js";
 export {
 	createWebFetchTool,
 	type WebFetchToolOptions,
@@ -91,22 +123,15 @@ export {
 	type WebSearchToolOptions,
 	webSearchToolDefinition,
 } from "./websearch.js";
-
-// Visual verification tools (conditionally loaded at runtime based on model vision capability)
 export {
-	screenshotUrlTool,
-	screenshotUrlToolDefinition,
-	interactThenScreenshotTool,
-	interactThenScreenshotToolDefinition,
-	createScreenshotUrlToolDefinition,
-	createInteractThenScreenshotToolDefinition,
-	type PageAction,
-	type ScreenshotOptions,
-	type ScreenshotResult,
-	getBrowser,
-	closeBrowser,
-	runScreenshot,
-} from "./visual/index.js";
+	createWriteTool,
+	createWriteToolDefinition,
+	type WriteOperations,
+	type WriteToolInput,
+	type WriteToolOptions,
+	writeTool,
+	writeToolDefinition,
+} from "./write.js";
 
 import type { AgentTool } from "@ag1/agent-core";
 import type { ToolDefinition } from "../extensions/types.js";
@@ -128,6 +153,10 @@ import {
 	readTool,
 	readToolDefinition,
 } from "./read.js";
+import { createSubmitPlanToolDefinition } from "./submit-plan.js";
+import { createTaskToolDefinition, type TaskToolDeps } from "./task.js";
+import { createTodoToolDefinition, todoTool, todoToolDefinition } from "./todo.js";
+import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { createWebFetchTool, webFetchToolDefinition } from "./webfetch.js";
 import { createWebSearchTool, webSearchToolDefinition } from "./websearch.js";
 import { createWriteTool, createWriteToolDefinition, writeTool, writeToolDefinition } from "./write.js";
@@ -135,8 +164,22 @@ import { createWriteTool, createWriteToolDefinition, writeTool, writeToolDefinit
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
 
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, createWebSearchTool({ cwd: "." }), createWebFetchTool({ cwd: "." })];
-export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool, createWebSearchTool({ cwd: "." }), createWebFetchTool({ cwd: "." })];
+export const codingTools: Tool[] = [
+	readTool,
+	bashTool,
+	editTool,
+	writeTool,
+	createWebSearchTool({ cwd: "." }),
+	createWebFetchTool({ cwd: "." }),
+];
+export const readOnlyTools: Tool[] = [
+	readTool,
+	grepTool,
+	findTool,
+	lsTool,
+	createWebSearchTool({ cwd: "." }),
+	createWebFetchTool({ cwd: "." }),
+];
 
 export const allTools = {
 	read: readTool,
@@ -148,6 +191,8 @@ export const allTools = {
 	ls: lsTool,
 	webSearch: createWebSearchTool({ cwd: "." }),
 	webFetch: createWebFetchTool({ cwd: "." }),
+	submitPlan: createSubmitPlanToolDefinition(),
+	todo: createTodoToolDefinition(),
 };
 
 export const allToolDefinitions = {
@@ -160,6 +205,8 @@ export const allToolDefinitions = {
 	ls: lsToolDefinition,
 	webSearch: webSearchToolDefinition,
 	webFetch: webFetchToolDefinition,
+	submitPlan: createSubmitPlanToolDefinition(),
+	todo: todoToolDefinition,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -167,6 +214,14 @@ export type ToolName = keyof typeof allTools;
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;
+	/** Subagent delegation deps. When provided (and not env-disabled), a `task` tool definition is included. */
+	task?: TaskToolDeps;
+}
+
+/** Kill switch for the task tool (default: on). */
+export function isTaskToolDisabled(): boolean {
+	const value = process.env.AG1_DISABLE_TASK_TOOL;
+	return value === "1" || value?.toLowerCase() === "true";
 }
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
@@ -189,8 +244,11 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 	];
 }
 
-export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
-	return {
+export function createAllToolDefinitions(
+	cwd: string,
+	options?: ToolsOptions,
+): Record<ToolName, ToolDef> & { task?: ToolDef } {
+	const definitions: Record<ToolName, ToolDef> & { task?: ToolDef } = {
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd),
@@ -200,7 +258,13 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ls: createLsToolDefinition(cwd),
 		webSearch: webSearchToolDefinition,
 		webFetch: webFetchToolDefinition,
+		submitPlan: createSubmitPlanToolDefinition(),
+		todo: createTodoToolDefinition(),
 	};
+	if (options?.task && !isTaskToolDisabled()) {
+		definitions.task = createTaskToolDefinition(options.task);
+	}
+	return definitions;
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
@@ -236,5 +300,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ls: createLsTool(cwd),
 		webSearch: createWebSearchTool({ cwd }),
 		webFetch: createWebFetchTool({ cwd }),
+		submitPlan: wrapToolDefinition(createSubmitPlanToolDefinition()),
+		todo: todoTool,
 	};
 }

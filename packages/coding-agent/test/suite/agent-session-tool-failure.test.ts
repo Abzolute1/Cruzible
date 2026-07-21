@@ -1,3 +1,4 @@
+import { fauxAssistantMessage } from "@ag1/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
 
@@ -13,7 +14,7 @@ describe("AgentSession tool failure guidance", () => {
 	it("emits one corrective warning after repeated not-found tool failures", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses(["done"]);
+		harness.setResponses([fauxAssistantMessage("done")]);
 
 		harness.session.recordToolFailure("reed");
 		harness.session.recordToolFailure("reed");
@@ -34,7 +35,7 @@ describe("AgentSession tool failure guidance", () => {
 	it("does not repeat the same corrective warning on the next prompt", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses(["first", "second"]);
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
 
 		harness.session.recordToolFailure("reed");
 		harness.session.recordToolFailure("reed");

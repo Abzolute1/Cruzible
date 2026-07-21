@@ -38,7 +38,10 @@ const screenshotUrlSchema = Type.Object({
 				width: Type.Number({ description: "Viewport width in pixels. Defaults to 1280." }),
 				height: Type.Number({ description: "Viewport height in pixels. Defaults to 900." }),
 			},
-			{ description: "Viewport dimensions. Defaults to 1280x900 (desktop). Use e.g. { width: 390, height: 844 } for mobile." },
+			{
+				description:
+					"Viewport dimensions. Defaults to 1280x900 (desktop). Use e.g. { width: 390, height: 844 } for mobile.",
+			},
 		),
 	),
 	timeoutMs: Type.Optional(
@@ -128,11 +131,7 @@ function buildMetadataText(
 	consoleErrors: string[],
 	failedRequests: string[],
 ): string {
-	const lines = [
-		`URL: ${url}`,
-		`Title: ${title}`,
-		`Load time: ${loadTimeMs}ms`,
-	];
+	const lines = [`URL: ${url}`, `Title: ${title}`, `Load time: ${loadTimeMs}ms`];
 
 	if (consoleErrors.length > 0) {
 		lines.push(`Console errors:`);
@@ -180,6 +179,8 @@ function sanitizeRecordedActions(actions: PageAction[]): Array<Record<string, un
 					url: action.url,
 				};
 		}
+		// PageAction is a closed union, so this is unreachable; it keeps the map callback total.
+		return {};
 	});
 }
 
@@ -209,6 +210,7 @@ function validateAndNormalizeActions(actions: InteractThenScreenshotInput["actio
 				return { type: "navigate", url: targetUrl };
 			}
 		}
+		throw new Error(`Action ${index + 1} has an unsupported action type.`);
 	});
 }
 
@@ -224,6 +226,7 @@ export function createScreenshotUrlToolDefinition(): ToolDefinition<typeof scree
 			"Navigate to a URL and take a screenshot. Returns the screenshot image and page metadata including console errors and failed network requests. The fullPage flag defaults to false — only the viewport is captured unless you explicitly request full-page capture for content below the fold.",
 		promptSnippet: "Capture screenshots of web pages for visual verification",
 		promptGuidelines: [
+			"After creating or modifying frontend code (HTML, CSS, JS/TS UI), verify the result visually before claiming the task is done — use verify_ui for a PASS/FAIL verdict on a concrete claim, or screenshot_url to inspect the page yourself",
 			"Use screenshot_url to verify UI rendering, layout, and styling",
 			"Default is viewport-only — set fullPage: true only when you need to see content below the fold",
 			"Use viewport option to simulate mobile (e.g. { width: 390, height: 844 }) or other screen sizes",
@@ -246,7 +249,16 @@ export function createScreenshotUrlToolDefinition(): ToolDefinition<typeof scree
 				const result = await runScreenshot(url, [], opts, _signal);
 
 				const content: (TextContent | ImageContent)[] = [
-					{ type: "text", text: buildMetadataText(result.url, result.title, result.loadTimeMs, result.consoleErrors, result.failedRequests) },
+					{
+						type: "text",
+						text: buildMetadataText(
+							result.url,
+							result.title,
+							result.loadTimeMs,
+							result.consoleErrors,
+							result.failedRequests,
+						),
+					},
 					{ type: "image", data: result.image.data, mimeType: result.image.mimeType },
 				];
 
@@ -282,6 +294,7 @@ export function createInteractThenScreenshotToolDefinition(): ToolDefinition<typ
 		promptSnippet: "Interact with a page (click, fill, navigate) then take a screenshot",
 		promptGuidelines: [
 			"Use interact_then_screenshot for any flow requiring user actions — login, form submission, modal dialogs",
+			"After creating or modifying frontend flows, verify the interactive result before claiming the task is done — verify_ui with actions gives a PASS/FAIL verdict without loading the image into your context",
 			"Each call starts with a fresh browser session — you must log in within the same call to reach protected routes",
 			"Actions are executed sequentially: fill → click → wait → navigate",
 			"After login, add a navigate action to reach the protected page you want to verify",
@@ -305,7 +318,16 @@ export function createInteractThenScreenshotToolDefinition(): ToolDefinition<typ
 				const result = await runScreenshot(url, mappedActions, opts, _signal);
 
 				const content: (TextContent | ImageContent)[] = [
-					{ type: "text", text: buildMetadataText(result.url, result.title, result.loadTimeMs, result.consoleErrors, result.failedRequests) },
+					{
+						type: "text",
+						text: buildMetadataText(
+							result.url,
+							result.title,
+							result.loadTimeMs,
+							result.consoleErrors,
+							result.failedRequests,
+						),
+					},
 					{ type: "image", data: result.image.data, mimeType: result.image.mimeType },
 				];
 
@@ -340,7 +362,7 @@ export function createInteractThenScreenshotToolDefinition(): ToolDefinition<typ
 export const screenshotUrlToolDefinition = createScreenshotUrlToolDefinition();
 export const interactThenScreenshotToolDefinition = createInteractThenScreenshotToolDefinition();
 
-export const screenshotUrlTool: AgentTool<typeof screenshotUrlSchema> =
-	wrapToolDefinition(screenshotUrlToolDefinition);
-export const interactThenScreenshotTool: AgentTool<typeof interactThenScreenshotSchema> =
-	wrapToolDefinition(interactThenScreenshotToolDefinition);
+export const screenshotUrlTool: AgentTool<typeof screenshotUrlSchema> = wrapToolDefinition(screenshotUrlToolDefinition);
+export const interactThenScreenshotTool: AgentTool<typeof interactThenScreenshotSchema> = wrapToolDefinition(
+	interactThenScreenshotToolDefinition,
+);

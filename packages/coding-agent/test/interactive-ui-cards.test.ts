@@ -1,13 +1,13 @@
-import { type AssistantMessage } from "@ag1/ai";
+import type { AssistantMessage } from "@ag1/ai";
 import type { TUI } from "@ag1/tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
-import type { InteractivePlanArtifact } from "../src/modes/interactive/interactive-plan-artifacts.js";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import { NoticeCardComponent } from "../src/modes/interactive/components/notice-card.js";
 import { PlanReviewCardComponent } from "../src/modes/interactive/components/plan-review-card.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
+import type { InteractivePlanArtifact } from "../src/modes/interactive/interactive-plan-artifacts.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function createFakeTui(): TUI {
@@ -48,6 +48,19 @@ describe("interactive ui cards", () => {
 		const assistantMessage: AssistantMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "I updated the console surfaces." }],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5.4",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
 		};
 		const assistant = new AssistantMessageComponent(assistantMessage);
 
@@ -62,7 +75,14 @@ describe("interactive ui cards", () => {
 	});
 
 	test("tool execution cards expose lifecycle state in the header", () => {
-		const component = new ToolExecutionComponent("custom_tool", "tool-9", { foo: "bar" }, {}, undefined, createFakeTui());
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-9",
+			{ foo: "bar" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
 		expect(stripAnsi(component.render(120).join("\n"))).toContain("● CUSTOM_TOOL");
 
 		component.markExecutionStarted();

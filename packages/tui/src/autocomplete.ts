@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { readdirSync, statSync } from "fs";
+import { type Dirent, readdirSync, statSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { fuzzyFilter } from "./fuzzy.js";
@@ -260,9 +260,14 @@ export interface AutocompleteProvider {
 
 // Combined provider that handles both slash commands and file paths
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
+	private static readonly DIR_CACHE_TTL_MS = 1500;
+	private static readonly DIR_CACHE_MAX_ENTRIES = 100;
+
 	private commands: (SlashCommand | AutocompleteItem)[];
 	private basePath: string;
 	private fdPath: string | null;
+	private dirEntriesCache = new Map<string, { time: number; entries: Dirent[] | null }>();
+	private dirStatCache = new Map<string, { time: number; isDirectory: boolean }>();
 
 	constructor(
 		commands: (SlashCommand | AutocompleteItem)[] = [],
@@ -524,11 +529,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			baseDir = join(this.basePath, displayBase);
 		}
 
-		try {
-			if (!statSync(baseDir).isDirectory()) {
-				return null;
-			}
-		} catch {
+		if (!this.isDirectoryCached(baseDir)) {
 			return null;
 		}
 
@@ -541,6 +542,47 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return `/${normalizedRelativePath}`;
 		}
 		return `${toDisplayPath(displayBase)}${normalizedRelativePath}`;
+	}
+
+	// Directory listing with a short TTL cache so path completion does not hit
+	// the filesystem on every keystroke. Null entries mean the read failed.
+	private readDirCached(dir: string): Dirent[] | null {
+		const now = Date.now();
+		const cached = this.dirEntriesCache.get(dir);
+		if (cached && now - cached.time < CombinedAutocompleteProvider.DIR_CACHE_TTL_MS) {
+			return cached.entries;
+		}
+		let entries: Dirent[] | null = null;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			entries = null;
+		}
+		if (this.dirEntriesCache.size >= CombinedAutocompleteProvider.DIR_CACHE_MAX_ENTRIES) {
+			this.dirEntriesCache.clear();
+		}
+		this.dirEntriesCache.set(dir, { time: now, entries });
+		return entries;
+	}
+
+	// Directory-exists check with the same short TTL cache treatment.
+	private isDirectoryCached(path: string): boolean {
+		const now = Date.now();
+		const cached = this.dirStatCache.get(path);
+		if (cached && now - cached.time < CombinedAutocompleteProvider.DIR_CACHE_TTL_MS) {
+			return cached.isDirectory;
+		}
+		let isDirectory = false;
+		try {
+			isDirectory = statSync(path).isDirectory();
+		} catch {
+			isDirectory = false;
+		}
+		if (this.dirStatCache.size >= CombinedAutocompleteProvider.DIR_CACHE_MAX_ENTRIES) {
+			this.dirStatCache.clear();
+		}
+		this.dirStatCache.set(path, { time: now, isDirectory });
+		return isDirectory;
 	}
 
 	// Get file/directory suggestions for a given path prefix
@@ -593,7 +635,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				searchPrefix = file;
 			}
 
-			const entries = readdirSync(searchDir, { withFileTypes: true });
+			const entries = this.readDirCached(searchDir);
+			if (!entries) {
+				// Directory doesn't exist or not accessible
+				return [];
+			}
 			const suggestions: AutocompleteItem[] = [];
 
 			for (const entry of entries) {

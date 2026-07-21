@@ -8,10 +8,10 @@ import {
 
 describe("xml tool parser", () => {
 	test("parses known XML tool calls with child tags", () => {
-		const calls = parseXmlToolCalls(
-			"<bash><command>npm test</command></bash><unknown><x>1</x></unknown>",
-			["bash", "read"],
-		);
+		const calls = parseXmlToolCalls("<bash><command>npm test</command></bash><unknown><x>1</x></unknown>", [
+			"bash",
+			"read",
+		]);
 
 		expect(calls).toEqual([
 			expect.objectContaining({

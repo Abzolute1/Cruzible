@@ -1,20 +1,20 @@
 // Auton — Nudge evaluation
 // Ported from Kairos src/agent/nudges.ts (evaluateNudge, getNudgeMessage)
 
+import { detectErrorLoop, detectNoProgressLoop, detectPingPong } from "./loop-detection.js";
 import type { OutputTrendTracker } from "./output-trend.js";
 import {
-	buildToolOutcomeFingerprint,
-	normalizeToolName,
+	buildToolOutcomeCallKey,
 	type NudgeCooldownState,
 	type NudgeEvaluation,
 	type NudgeType,
+	normalizeToolName,
 	type OutputTrend,
 	type ToolOutcome,
 } from "./types.js";
 
 // ── Thresholds ─────────────────────────────────────────────────────────
 
-export const MAX_CONSECUTIVE_DUPLICATE_TOOLS = 3;
 export const MAX_CONSECUTIVE_SAME_FILE = 4;
 export const MAX_EXPLORATION_TURNS = 12;
 export const MAX_FORCED_WRAP_TURNS = 20;
@@ -104,13 +104,34 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 		};
 	}
 
-	// ── Duplicate tool call detection ──
-	if (hasDuplicateToolCalls(toolCallHistory, MAX_CONSECUTIVE_DUPLICATE_TOOLS)) {
+	// ── Loop detection (progress-based: identical calls, identical outcomes) ──
+	const errorLoop = detectErrorLoop(toolCallHistory);
+	if (errorLoop) {
 		return {
 			shouldNudge: true,
 			nudgeType: "pivot",
 			shouldStop: false,
-			explanation: "Model is repeating the same tool calls. Needs to change approach.",
+			explanation: `\`${errorLoop.tool}\` failed ${errorLoop.count} consecutive times with identical arguments. The same call will keep failing — change the arguments or fix the underlying problem first.`,
+		};
+	}
+
+	const noProgressLoop = detectNoProgressLoop(toolCallHistory);
+	if (noProgressLoop) {
+		return {
+			shouldNudge: true,
+			nudgeType: "pivot",
+			shouldStop: false,
+			explanation: `\`${noProgressLoop.tool}\` returned the same result ${noProgressLoop.count} consecutive times. You already have this information — act on it instead of repeating the call.`,
+		};
+	}
+
+	const pingPong = detectPingPong(toolCallHistory);
+	if (pingPong) {
+		return {
+			shouldNudge: true,
+			nudgeType: "pivot",
+			shouldStop: false,
+			explanation: `Oscillating between \`${pingPong.toolA}\` and \`${pingPong.toolB}\` without progress. Break the cycle and decide based on the results you already have.`,
 		};
 	}
 
@@ -152,7 +173,8 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 				shouldNudge: true,
 				nudgeType: "continue",
 				shouldStop: false,
-				explanation: "Output is shrinking, but there is recent unverified implementation progress. Finish the next concrete verify-or-patch step instead of stopping.",
+				explanation:
+					"Output is shrinking, but there is recent unverified implementation progress. Finish the next concrete verify-or-patch step instead of stopping.",
 			};
 		}
 		if (hasRecentFailedMutation(toolCallHistory)) {
@@ -160,7 +182,8 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 				shouldNudge: true,
 				nudgeType: "continue",
 				shouldStop: false,
-				explanation: "Output is shrinking after a failed change attempt. Recover with the smallest valid edit or verification step next.",
+				explanation:
+					"Output is shrinking after a failed change attempt. Recover with the smallest valid edit or verification step next.",
 			};
 		}
 		if (hasRecentFailedVerification(toolCallHistory)) {
@@ -168,7 +191,8 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 				shouldNudge: true,
 				nudgeType: "continue",
 				shouldStop: false,
-				explanation: "Output is shrinking right after a failed verification. Repair the reported blocker and rerun verification before stopping.",
+				explanation:
+					"Output is shrinking right after a failed verification. Repair the reported blocker and rerun verification before stopping.",
 			};
 		}
 		if (!hasConcreteTaskProgress(toolCallHistory)) {
@@ -176,7 +200,8 @@ export function evaluateNudge(context: NudgeContext): NudgeEvaluation {
 				shouldNudge: true,
 				nudgeType: "continue",
 				shouldStop: false,
-				explanation: "Output is shrinking, but no concrete task progress has happened yet. Keep going and make a change or run verification.",
+				explanation:
+					"Output is shrinking, but no concrete task progress has happened yet. Keep going and make a change or run verification.",
 			};
 		}
 		return {
@@ -235,10 +260,18 @@ function classifyBashDetail(detail: string | undefined): "inspection" | "mutatin
 	if (/(?:^|[;&]\s*)node\b/i.test(normalized)) {
 		return "other";
 	}
-	if (/(^|[;&|]\s*)(rm\b|mv\b|cp\b|touch\b|mkdir\b|pnpm\b|yarn\b|npm\s+(install|run|exec)\b|node\b|python\b|chmod\b|chown\b|git\s+(apply|checkout|reset|commit|rebase|merge)\b)/.test(normalized)) {
+	if (
+		/(^|[;&|]\s*)(rm\b|mv\b|cp\b|touch\b|mkdir\b|pnpm\b|yarn\b|npm\s+(install|run|exec)\b|node\b|python\b|chmod\b|chown\b|git\s+(apply|checkout|reset|commit|rebase|merge)\b)/.test(
+			normalized,
+		)
+	) {
 		return "mutating";
 	}
-	if (/(^|[;&|]\s*)(pwd\b|ls\b|find\b|fd\b|rg\b|grep\b|git\s+status(\s|$)|git\s+diff(\s|$)|which\b|cat\b|head\b|tail\b|sed\b|awk\b)/.test(normalized)) {
+	if (
+		/(^|[;&|]\s*)(pwd\b|ls\b|find\b|fd\b|rg\b|grep\b|git\s+status(\s|$)|git\s+diff(\s|$)|which\b|cat\b|head\b|tail\b|sed\b|awk\b)/.test(
+			normalized,
+		)
+	) {
 		return "inspection";
 	}
 	return "other";
@@ -249,17 +282,16 @@ function isReliableVerificationBashCommand(command: string): boolean {
 	if (/\|\s*(head|tail)\b/i.test(command) && !/\bset\s+-o\s+pipefail\b/i.test(command)) {
 		return false;
 	}
-	return /(?:^|[;&]\s*)node\b[^\n;&|]*\b(?:--test|test|check|verify|lint|build)\b/i.test(command)
-		|| /(?:^|[;&]\s*)(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|lint|typecheck|build|check)|lint|typecheck|build|check)\b/i.test(command)
-		|| /(?:^|[;&]\s*)npx\s+(?:vitest|jest|playwright|eslint|tsc)\b/i.test(command)
-		|| /(?:^|[;&]\s*)(?:vitest|jest|pytest|cargo test|go test|playwright test|eslint|tsc|make\s+(?:test|lint|build|check))\b/i.test(command);
-}
-
-function hasDuplicateToolCalls(history: ToolOutcome[], threshold: number): boolean {
-	if (history.length < threshold) return false;
-	const recent = history.slice(-threshold);
-	const firstFingerprint = buildToolOutcomeFingerprint(recent[0]);
-	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
+	return (
+		/(?:^|[;&]\s*)node\b[^\n;&|]*\b(?:--test|test|check|verify|lint|build)\b/i.test(command) ||
+		/(?:^|[;&]\s*)(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|lint|typecheck|build|check)|lint|typecheck|build|check)\b/i.test(
+			command,
+		) ||
+		/(?:^|[;&]\s*)npx\s+(?:vitest|jest|playwright|eslint|tsc)\b/i.test(command) ||
+		/(?:^|[;&]\s*)(?:vitest|jest|pytest|cargo test|go test|playwright test|eslint|tsc|make\s+(?:test|lint|build|check))\b/i.test(
+			command,
+		)
+	);
 }
 
 function hasConsecutiveVerifyFailures(history: ToolOutcome[]): boolean {
@@ -300,12 +332,18 @@ function hasFileChurn(history: ToolOutcome[]): boolean {
 	return uniqueFiles.size >= 6 && editOps.length === 0;
 }
 
+/** Tools whose successful execution mutates files — always progress, never "stuck". */
+const MUTATION_TOOLS = new Set(["edit", "write", "str_replace_editor", "patch", "multi_edit"]);
+
 function hasStuckFileAccess(history: ToolOutcome[], threshold: number): boolean {
 	const fileEntries = history.filter((e) => e.file);
 	if (fileEntries.length < threshold) return false;
 	const recent = fileEntries.slice(-threshold);
-	const firstFingerprint = buildToolOutcomeFingerprint(recent[0]);
-	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
+	// Successful mutations are progress, not stuckness — editing the same file
+	// repeatedly is normal work.
+	if (recent.some((entry) => entry.success && MUTATION_TOOLS.has(normalizeToolName(entry.tool)))) return false;
+	const firstKey = buildToolOutcomeCallKey(recent[0]);
+	return recent.every((entry) => buildToolOutcomeCallKey(entry) === firstKey);
 }
 
 /**
@@ -359,14 +397,20 @@ function hasRecentConcreteTaskProgress(history: ToolOutcome[], windowSize = 4): 
 function hasRecentFailedMutation(history: ToolOutcome[], windowSize = 4): boolean {
 	return history.slice(-windowSize).some((entry) => {
 		const toolName = normalizeToolName(entry.tool);
-		return !entry.success && (toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor");
+		return (
+			!entry.success &&
+			(toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor")
+		);
 	});
 }
 
 function hasRecentFailedVerification(history: ToolOutcome[], windowSize = 4): boolean {
 	return history.slice(-windowSize).some((entry) => {
 		const toolName = normalizeToolName(entry.tool);
-		return !entry.success && (toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"));
+		return (
+			!entry.success &&
+			(toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"))
+		);
 	});
 }
 
@@ -376,10 +420,16 @@ function hasRecentUnverifiedImplementationProgress(history: ToolOutcome[], windo
 	for (let index = recent.length - 1; index >= 0; index--) {
 		const entry = recent[index];
 		const toolName = normalizeToolName(entry.tool);
-		if (entry.success && (toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"))) {
+		if (
+			entry.success &&
+			(toolName === "verify" || (toolName === "bash" && classifyBashDetail(entry.detail) === "verification"))
+		) {
 			return false;
 		}
-		if (entry.success && (toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor")) {
+		if (
+			entry.success &&
+			(toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "str_replace_editor")
+		) {
 			sawRecentMutation = true;
 			break;
 		}

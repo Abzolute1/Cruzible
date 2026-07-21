@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { type AgentRunner, getOrCreateRunner } from "./agent.js";
+import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -24,7 +24,8 @@ interface ParsedArgs {
 
 function parseArgs(): ParsedArgs {
 	const args = process.argv.slice(2);
-	let sandbox: SandboxConfig = { type: "host" };
+	// Default to Docker sandbox: host mode gives any channel member a shell on this machine
+	let sandbox: SandboxConfig = { type: "docker", container: "mom-sandbox" };
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
 
@@ -64,7 +65,8 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] <working-directory>");
+	console.error("Usage: mom [--sandbox=docker:<name>|host] <working-directory>");
+	console.error("       (defaults to --sandbox=docker:mom-sandbox)");
 	console.error("       mom --download <channel-id>");
 	process.exit(1);
 }
@@ -78,6 +80,15 @@ if (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN) {
 
 await validateSandbox(sandbox);
 
+if (sandbox.type === "host") {
+	log.logWarning(
+		"SECURITY WARNING: running in HOST sandbox mode",
+		"Every Slack channel member who can message mom effectively has a shell on this machine\n" +
+			"with your user privileges. Prompt injection can also steer commands.\n" +
+			"Use --sandbox=docker:<name> unless you fully trust every member of every channel.",
+	);
+}
+
 // ============================================================================
 // State (per channel)
 // ============================================================================
@@ -85,25 +96,35 @@ await validateSandbox(sandbox);
 interface ChannelState {
 	running: boolean;
 	runner: AgentRunner;
-	store: ChannelStore;
 	stopRequested: boolean;
 	stopMessageTs?: string;
 }
 
+// Bound per-channel state: each runner holds a full Agent + message history,
+// and DMs would grow the map per user. Evict least-recently-used beyond the cap.
+const MAX_CHANNEL_STATES = 50;
 const channelStates = new Map<string, ChannelState>();
 
 function getState(channelId: string): ChannelState {
-	let state = channelStates.get(channelId);
-	if (!state) {
-		const channelDir = join(workingDir, channelId);
-		state = {
-			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir),
-			store: new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! }),
-			stopRequested: false,
-		};
-		channelStates.set(channelId, state);
+	const existing = channelStates.get(channelId);
+	if (existing) {
+		// Refresh LRU position
+		channelStates.delete(channelId);
+		channelStates.set(channelId, existing);
+		return existing;
 	}
+	if (channelStates.size >= MAX_CHANNEL_STATES) {
+		const oldestId = channelStates.keys().next().value!;
+		channelStates.get(oldestId)?.runner.abort(); // teardown: stop any in-flight run
+		channelStates.delete(oldestId);
+	}
+	const channelDir = join(workingDir, channelId);
+	const state: ChannelState = {
+		running: false,
+		runner: createRunner(sandbox, channelId, channelDir),
+		stopRequested: false,
+	};
+	channelStates.set(channelId, state);
 	return state;
 }
 
@@ -111,7 +132,7 @@ function getState(channelId: string): ChannelState {
 // Create SlackContext adapter
 // ============================================================================
 
-function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelState, isEvent?: boolean) {
+function createSlackContext(event: SlackEvent, slack: SlackBot, isEvent?: boolean) {
 	let messageTs: string | null = null;
 	const threadMessageTs: string[] = [];
 	let accumulatedText = "";
@@ -135,7 +156,6 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 			attachments: (event.attachments || []).map((a) => ({ local: a.local })),
 		},
 		channelName: slack.getChannel(event.channel)?.name,
-		store: state.store,
 		channels: slack.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
 		users: slack.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
 
@@ -307,12 +327,12 @@ const handler: MomHandler = {
 
 		try {
 			// Create context adapter
-			const ctx = createSlackContext(event, slack, state, isEvent);
+			const ctx = createSlackContext(event, slack, isEvent);
 
 			// Run the agent
 			await ctx.setTyping(true);
 			await ctx.setWorking(true);
-			const result = await state.runner.run(ctx as any, state.store);
+			const result = await state.runner.run(ctx as any);
 			await ctx.setWorking(false);
 
 			if (result.stopReason === "aborted" && state.stopRequested) {
@@ -337,7 +357,7 @@ const handler: MomHandler = {
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
 
-// Shared store for attachment downloads (also used per-channel in getState)
+// Shared store for attachment downloads
 const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
 
 const bot = new SlackBotClass(handler, {
@@ -364,4 +384,10 @@ process.on("SIGTERM", () => {
 	process.exit(0);
 });
 
-bot.start();
+bot.start().catch((err) => {
+	log.logWarning(
+		"Failed to start mom bot (check Slack tokens and network)",
+		err instanceof Error ? err.message : String(err),
+	);
+	process.exit(1);
+});

@@ -62,8 +62,7 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 
 	// Format 0: Wrapped tool call — <tool_call><function-bash>...</function-bash></tool_call>
 	const wrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
-	let wrappedMatch: RegExpExecArray | null;
-	while ((wrappedMatch = wrappedRegex.exec(strippedText)) !== null) {
+	for (const wrappedMatch of strippedText.matchAll(wrappedRegex)) {
 		const wrappedBody = wrappedMatch[1];
 		const rawXml = wrappedMatch[0];
 		const functionRegex = new RegExp(`<function-(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</function-\\1>`, "i");
@@ -75,15 +74,13 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 		const args: Record<string, string> = {};
 
 		const parameterRegex = /<parameter-([^>\s/]+)[^>]*>([\s\S]*?)<\/parameter-\1>/gi;
-		let parameterMatch: RegExpExecArray | null;
-		while ((parameterMatch = parameterRegex.exec(functionBody)) !== null) {
+		for (const parameterMatch of functionBody.matchAll(parameterRegex)) {
 			args[parameterMatch[1]] = parameterMatch[2].trim();
 		}
 
 		if (Object.keys(args).length === 0) {
 			const paramRegex = /<param\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/param>/gi;
-			let paramMatch: RegExpExecArray | null;
-			while ((paramMatch = paramRegex.exec(functionBody)) !== null) {
+			for (const paramMatch of functionBody.matchAll(paramRegex)) {
 				args[paramMatch[1]] = paramMatch[2].trim();
 			}
 		}
@@ -98,8 +95,7 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 
 	// Format 0b: Wrapped tool call — <tool_call><function=bash>...</function></tool_call>
 	const equalsWrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
-	let equalsWrappedMatch: RegExpExecArray | null;
-	while ((equalsWrappedMatch = equalsWrappedRegex.exec(strippedText)) !== null) {
+	for (const equalsWrappedMatch of strippedText.matchAll(equalsWrappedRegex)) {
 		const wrappedBody = equalsWrappedMatch[1];
 		const rawXml = equalsWrappedMatch[0];
 		const functionRegex = new RegExp(`<function=(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</function>`, "i");
@@ -111,15 +107,13 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 		const args: Record<string, string> = {};
 
 		const parameterRegex = /<parameter=([^>\s/]+)[^>]*>([\s\S]*?)<\/parameter>/gi;
-		let parameterMatch: RegExpExecArray | null;
-		while ((parameterMatch = parameterRegex.exec(functionBody)) !== null) {
+		for (const parameterMatch of functionBody.matchAll(parameterRegex)) {
 			args[parameterMatch[1]] = parameterMatch[2].trim();
 		}
 
 		if (Object.keys(args).length === 0) {
 			const paramRegex = /<param\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/param>/gi;
-			let paramMatch: RegExpExecArray | null;
-			while ((paramMatch = paramRegex.exec(functionBody)) !== null) {
+			for (const paramMatch of functionBody.matchAll(paramRegex)) {
 				args[paramMatch[1]] = paramMatch[2].trim();
 			}
 		}
@@ -135,8 +129,7 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 	// Format 1: Bare tool name — <read>...</read>, <bash>...</bash>
 	const bareRegex = new RegExp(`<(${namePattern})(?:\\s[^>]*)?>([\\s\\S]*?)</\\1>`, "gi");
 
-	let match: RegExpExecArray | null;
-	while ((match = bareRegex.exec(strippedText)) !== null) {
+	for (const match of strippedText.matchAll(bareRegex)) {
 		const toolName = match[1];
 		const content = match[2];
 		const rawXml = match[0];
@@ -145,16 +138,14 @@ export function parseXmlToolCalls(text: string, knownToolNames: string[]): XmlTo
 
 		// Support both <param name="x">value</param> and <x>value</x>
 		const paramRegex = /<param\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/param>/gi;
-		let paramMatch: RegExpExecArray | null;
-		while ((paramMatch = paramRegex.exec(content)) !== null) {
+		for (const paramMatch of content.matchAll(paramRegex)) {
 			args[paramMatch[1]] = paramMatch[2].trim();
 		}
 
 		// If no param tags found, treat each direct child tag as an argument
 		if (Object.keys(args).length === 0) {
 			const tagRegex = /<([^>\s/]+)[^>]*>([\s\S]*?)<\/\1>/gi;
-			let tagMatch: RegExpExecArray | null;
-			while ((tagMatch = tagRegex.exec(content)) !== null) {
+			for (const tagMatch of content.matchAll(tagRegex)) {
 				if (tagMatch[1] !== toolName) {
 					args[tagMatch[1]] = tagMatch[2].trim();
 				}
@@ -224,8 +215,12 @@ export function buildXmlFallbackRecoveryPrompt(
 	options?: { toolNames?: string[] },
 ): string | undefined {
 	const toolNames = options?.toolNames?.map((toolName) => toolName.toLowerCase()) ?? [];
-	const hasMutationTool = toolNames.some((toolName) =>
-		toolName === "edit" || toolName === "write" || toolName === "str_replace_editor" || toolName === "notebook_edit"
+	const hasMutationTool = toolNames.some(
+		(toolName) =>
+			toolName === "edit" ||
+			toolName === "write" ||
+			toolName === "str_replace_editor" ||
+			toolName === "notebook_edit",
 	);
 	if (!analysis.shouldInjectRecoveryPrompt && hasMutationTool) {
 		return [
@@ -238,7 +233,10 @@ export function buildXmlFallbackRecoveryPrompt(
 	}
 	if (!analysis.shouldInjectRecoveryPrompt) return undefined;
 	const allLocalDiscovery =
-		toolNames.length > 0 && toolNames.every((toolName) => toolName === "ls" || toolName === "find" || toolName === "grep" || toolName === "read");
+		toolNames.length > 0 &&
+		toolNames.every(
+			(toolName) => toolName === "ls" || toolName === "find" || toolName === "grep" || toolName === "read",
+		);
 	const localAnswerHint = allLocalDiscovery
 		? "If the appended local tool results already reveal the requested file or directory, answer directly now and do not call more tools."
 		: "If the appended tool results already answer the user's question, answer directly now and avoid another tool call.";

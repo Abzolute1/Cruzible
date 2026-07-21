@@ -11,7 +11,7 @@
  * - Guaranteed context cleanup in finally block (browser stays alive for reuse)
  */
 
-import type { BrowserContext, Page } from "playwright";
+import type { Page } from "playwright";
 import { getBrowser } from "./browser.js";
 import type { PageAction, ScreenshotOptions, ScreenshotResult } from "./types.js";
 
@@ -37,11 +37,7 @@ export async function runScreenshot(
 	opts: ScreenshotOptions = {},
 	signal?: AbortSignal,
 ): Promise<ScreenshotResult> {
-	const {
-		viewport = DEFAULT_VIEWPORT,
-		fullPage = false,
-		timeoutMs = DEFAULT_TIMEOUT_MS,
-	} = opts;
+	const { viewport = DEFAULT_VIEWPORT, fullPage = false, timeoutMs = DEFAULT_TIMEOUT_MS } = opts;
 
 	throwIfAborted(signal);
 	const browserResult = await withAbort(getBrowser(), signal);
@@ -157,10 +153,13 @@ async function captureWithSizeProtection(
 	// Step 4: Scale down viewport and retry JPEG
 	const currentViewport = page.viewportSize();
 	if (currentViewport && (currentViewport.width > 400 || currentViewport.height > 400)) {
-		await withAbort(page.setViewportSize({
-			width: Math.max(400, Math.floor(currentViewport.width / 2)),
-			height: Math.max(400, Math.floor(currentViewport.height / 2)),
-		}), signal);
+		await withAbort(
+			page.setViewportSize({
+				width: Math.max(400, Math.floor(currentViewport.width / 2)),
+				height: Math.max(400, Math.floor(currentViewport.height / 2)),
+			}),
+			signal,
+		);
 		const scaledBuf = await withAbort(page.screenshot({ type: "jpeg", quality: 60, fullPage }), signal);
 		return { data: scaledBuf.toString("base64"), mimeType: "image/jpeg" };
 	}

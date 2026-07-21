@@ -5,8 +5,7 @@ import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { listModels, showKnownModels, startModel, stopAllModels, stopModel, viewLogs } from "./commands/models.js";
-import { listPods, removePodCommand, setupPod, switchActivePod } from "./commands/pods.js";
-import { promptModel } from "./commands/prompt.js";
+import { listPods, modelsPathFromMount, removePodCommand, setupPod, switchActivePod } from "./commands/pods.js";
 import { getActivePod, loadConfig } from "./config.js";
 import { sshExecStream } from "./ssh.js";
 
@@ -39,11 +38,6 @@ Model Management:
   ag1-pods stop [<name>]                            Stop model (or all if no name)
   ag1-pods list                                     List running models
   ag1-pods logs <name>                              Stream model logs
-  ag1-pods agent <name> ["<message>"...] [options]  Chat with model using agent & tools
-  ag1-pods agent <name> [options]                   Interactive chat mode
-    --continue, -c       Continue previous session
-    --json              Output as JSONL
-    (All AG1 agent options are supported)
 
   All model commands support --pod <name> to override the active pod.
 
@@ -112,12 +106,7 @@ try {
 
 			// If --mount provided but no --models-path, try to extract path from mount command
 			if (options.mount && !options.modelsPath) {
-				// Extract last part of mount command as models path
-				const parts = options.mount.trim().split(" ");
-				const lastPart = parts[parts.length - 1];
-				if (lastPart?.startsWith("/")) {
-					options.modelsPath = lastPart;
-				}
+				options.modelsPath = modelsPathFromMount(options.mount);
 			}
 
 			await setupPod(name, sshCmd, options);
@@ -323,29 +312,6 @@ try {
 					process.exit(1);
 				}
 				await viewLogs(name, { pod: podOverride });
-				break;
-			}
-			case "agent": {
-				// ag1-pods agent <name> [messages...] [options]
-				const name = args[1];
-				if (!name) {
-					console.error("Usage: ag1-pods agent <name> [messages...] [options]");
-					process.exit(1);
-				}
-
-				const apiKey = process.env.AG1_API_KEY;
-
-				// Pass all args after the model name
-				const agentArgs = args.slice(2);
-
-				// If no messages provided, it's interactive mode
-				await promptModel(name, agentArgs, {
-					pod: podOverride,
-					apiKey,
-				}).catch(() => {
-					// Error already handled in promptModel, just exit cleanly
-					process.exit(0);
-				});
 				break;
 			}
 			default:

@@ -54,9 +54,6 @@ const THINKING_LEVEL_MAP: Record<GoogleThinkingLevel, ThinkingLevel> = {
 	HIGH: ThinkingLevel.HIGH,
 };
 
-// Counter for generating unique tool call IDs
-let toolCallCounter = 0;
-
 export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 	model: Model<"google-vertex">,
 	context: Context,
@@ -65,6 +62,8 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		// Per-request counter for generating unique tool call IDs
+		let toolCallCounter = 0;
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -217,7 +216,11 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
 				}
 
 				if (candidate?.finishReason) {
-					output.stopReason = mapStopReason(candidate.finishReason);
+					const finishReasonResult = mapStopReason(candidate.finishReason);
+					output.stopReason = finishReasonResult.stopReason;
+					if (finishReasonResult.errorMessage) {
+						output.errorMessage = finishReasonResult.errorMessage;
+					}
 					if (output.content.some((b) => b.type === "toolCall")) {
 						output.stopReason = "toolUse";
 					}
@@ -266,8 +269,11 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
 				throw new Error("Request was aborted");
 			}
 
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+			if (output.stopReason === "aborted") {
+				throw new Error("Request was aborted");
+			}
+			if (output.stopReason === "error") {
+				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -330,7 +336,12 @@ function createClient(
 	location: string,
 	optionsHeaders?: Record<string, string>,
 ): GoogleGenAI {
-	const httpOptions: { headers?: Record<string, string> } = {};
+	const httpOptions: { baseUrl?: string; headers?: Record<string, string> } = {};
+
+	// Honor custom Vertex endpoints; stock model baseUrls carry a {location} placeholder.
+	if (model.baseUrl) {
+		httpOptions.baseUrl = model.baseUrl.replace("{location}", location);
+	}
 
 	if (model.headers || optionsHeaders) {
 		httpOptions.headers = { ...model.headers, ...optionsHeaders };
@@ -352,7 +363,13 @@ function createClientWithApiKey(
 	apiKey: string,
 	optionsHeaders?: Record<string, string>,
 ): GoogleGenAI {
-	const httpOptions: { headers?: Record<string, string> } = {};
+	const httpOptions: { baseUrl?: string; headers?: Record<string, string> } = {};
+
+	// Honor custom Vertex endpoints. Stock model baseUrls carry a {location} placeholder
+	// that cannot be resolved here (no location in API-key mode); leave those to the SDK default.
+	if (model.baseUrl && !model.baseUrl.includes("{location}")) {
+		httpOptions.baseUrl = model.baseUrl;
+	}
 
 	if (model.headers || optionsHeaders) {
 		httpOptions.headers = { ...model.headers, ...optionsHeaders };

@@ -81,7 +81,9 @@ function decodeJwt(token: string): JwtPayload | null {
 		const parts = token.split(".");
 		if (parts.length !== 3) return null;
 		const payload = parts[1] ?? "";
-		const decoded = atob(payload);
+		// JWT uses base64url; strict atob implementations reject -/_ and unpadded input.
+		const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+		const decoded = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
 		return JSON.parse(decoded) as JwtPayload;
 	} catch {
 		return null;
@@ -103,11 +105,12 @@ async function exchangeAuthorizationCode(
 			code_verifier: verifier,
 			redirect_uri: redirectUri,
 		}),
+		signal: AbortSignal.timeout(30_000),
 	});
 
 	if (!response.ok) {
-		const text = await response.text().catch(() => "");
-		console.error("[openai-codex] code->token failed:", response.status, text);
+		// Never log the token endpoint response body: it may contain live secrets.
+		console.error("[openai-codex] code->token failed:", response.status);
 		return { type: "failed" };
 	}
 
@@ -118,7 +121,8 @@ async function exchangeAuthorizationCode(
 	};
 
 	if (!json.access_token || !json.refresh_token || typeof json.expires_in !== "number") {
-		console.error("[openai-codex] token response missing fields:", json);
+		// Log only which keys were returned, never the values (they may be live tokens).
+		console.error("[openai-codex] token response missing fields; received keys:", Object.keys(json));
 		return { type: "failed" };
 	}
 
@@ -126,7 +130,7 @@ async function exchangeAuthorizationCode(
 		type: "success",
 		access: json.access_token,
 		refresh: json.refresh_token,
-		expires: Date.now() + json.expires_in * 1000,
+		expires: Date.now() + json.expires_in * 1000 - 5 * 60 * 1000,
 	};
 }
 
@@ -140,11 +144,12 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
 				refresh_token: refreshToken,
 				client_id: CLIENT_ID,
 			}),
+			signal: AbortSignal.timeout(30_000),
 		});
 
 		if (!response.ok) {
-			const text = await response.text().catch(() => "");
-			console.error("[openai-codex] Token refresh failed:", response.status, text);
+			// Never log the token endpoint response body: it may contain live secrets.
+			console.error("[openai-codex] Token refresh failed:", response.status);
 			return { type: "failed" };
 		}
 
@@ -155,7 +160,8 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
 		};
 
 		if (!json.access_token || !json.refresh_token || typeof json.expires_in !== "number") {
-			console.error("[openai-codex] Token refresh response missing fields:", json);
+			// Log only which keys were returned, never the values (they may be live tokens).
+			console.error("[openai-codex] Token refresh response missing fields; received keys:", Object.keys(json));
 			return { type: "failed" };
 		}
 
@@ -163,7 +169,7 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
 			type: "success",
 			access: json.access_token,
 			refresh: json.refresh_token,
-			expires: Date.now() + json.expires_in * 1000,
+			expires: Date.now() + json.expires_in * 1000 - 5 * 60 * 1000,
 		};
 	} catch (error) {
 		console.error("[openai-codex] Token refresh error:", error);

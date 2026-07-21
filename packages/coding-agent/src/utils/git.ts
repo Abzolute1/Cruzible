@@ -73,6 +73,17 @@ function splitRef(url: string): { repo: string; ref?: string } {
 	};
 }
 
+/**
+ * Reject repository paths that could escape an install root when joined into a
+ * filesystem path: `..` segments, empty segments, backslashes, drive letters.
+ */
+function isSafeRepoPath(repoPath: string): boolean {
+	if (/^[A-Za-z]:/.test(repoPath) || repoPath.includes("\\")) {
+		return false;
+	}
+	return repoPath.split("/").every((segment) => segment !== "" && segment !== "..");
+}
+
 function parseGenericGitUrl(url: string): GitSource | null {
 	const { repo: repoWithoutRef, ref } = splitRef(url);
 	let repo = repoWithoutRef;
@@ -109,8 +120,8 @@ function parseGenericGitUrl(url: string): GitSource | null {
 		repo = `https://${repoWithoutRef}`;
 	}
 
-	const normalizedPath = path.replace(/\.git$/, "").replace(/^\/+/, "");
-	if (!host || !normalizedPath || normalizedPath.split("/").length < 2) {
+	const normalizedPath = path.replace(/\.git$/, "").replace(/^\/+|\/+$/g, "");
+	if (!host || !normalizedPath || normalizedPath.split("/").length < 2 || !isSafeRepoPath(normalizedPath)) {
 		return null;
 	}
 
@@ -151,6 +162,10 @@ export function parseGitUrl(source: string): GitSource | null {
 			if (split.ref && info.project?.includes("@")) {
 				continue;
 			}
+			const hostedPath = `${info.user}/${info.project}`.replace(/\.git$/, "");
+			if (!isSafeRepoPath(hostedPath)) {
+				continue;
+			}
 			const useHttpsPrefix =
 				!split.repo.startsWith("http://") &&
 				!split.repo.startsWith("https://") &&
@@ -161,7 +176,7 @@ export function parseGitUrl(source: string): GitSource | null {
 				type: "git",
 				repo: useHttpsPrefix ? `https://${split.repo}` : split.repo,
 				host: info.domain || "",
-				path: `${info.user}/${info.project}`.replace(/\.git$/, ""),
+				path: hostedPath,
 				ref: info.committish || split.ref || undefined,
 				pinned: Boolean(info.committish || split.ref),
 			};
@@ -177,11 +192,15 @@ export function parseGitUrl(source: string): GitSource | null {
 			if (split.ref && info.project?.includes("@")) {
 				continue;
 			}
+			const hostedPath = `${info.user}/${info.project}`.replace(/\.git$/, "");
+			if (!isSafeRepoPath(hostedPath)) {
+				continue;
+			}
 			return {
 				type: "git",
 				repo: `https://${split.repo}`,
 				host: info.domain || "",
-				path: `${info.user}/${info.project}`.replace(/\.git$/, ""),
+				path: hostedPath,
 				ref: info.committish || split.ref || undefined,
 				pinned: Boolean(info.committish || split.ref),
 			};

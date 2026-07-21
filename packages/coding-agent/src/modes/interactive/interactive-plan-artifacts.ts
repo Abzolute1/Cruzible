@@ -11,7 +11,8 @@ export type InteractivePlanStatus =
 	| "rejected"
 	| "superseded"
 	| "discarded"
-	| "executing";
+	| "executing"
+	| "completed";
 
 export type InteractivePlanStepExecutionStatus = "reviewed" | "blocked" | "completed" | "reopened";
 
@@ -74,16 +75,18 @@ const INTERACTIVE_PLAN_STATUSES = new Set<InteractivePlanStatus>([
 	"superseded",
 	"discarded",
 	"executing",
+	"completed",
 ]);
 
 const PLAN_STATUS_TRANSITIONS: Record<InteractivePlanStatus, ReadonlySet<InteractivePlanStatus>> = {
 	draft: new Set(["draft", "accepted", "rejected", "discarded", "superseded"]),
 	clarifying: new Set(["clarifying", "draft", "rejected", "discarded", "superseded"]),
-	accepted: new Set(["accepted", "executing", "rejected", "discarded", "superseded"]),
+	accepted: new Set(["accepted", "executing", "completed", "rejected", "discarded", "superseded"]),
 	rejected: new Set(["rejected", "discarded"]),
 	superseded: new Set(["superseded", "discarded"]),
 	discarded: new Set(["discarded"]),
-	executing: new Set(["executing", "accepted", "rejected", "discarded"]),
+	executing: new Set(["executing", "accepted", "completed", "rejected", "discarded"]),
+	completed: new Set(["completed", "accepted", "discarded"]),
 };
 
 export function getLatestInteractivePlanArtifact(entries: SessionEntry[]): InteractivePlanArtifact | undefined {
@@ -151,9 +154,9 @@ export function createInteractivePlanSelection(
 ): InteractivePlanSelection {
 	return {
 		version: 1,
-		planning: Object.prototype.hasOwnProperty.call(updates, "planning") ? updates.planning : previous?.planning,
-		accepted: Object.prototype.hasOwnProperty.call(updates, "accepted") ? updates.accepted : previous?.accepted,
-		executing: Object.prototype.hasOwnProperty.call(updates, "executing") ? updates.executing : previous?.executing,
+		planning: Object.hasOwn(updates, "planning") ? updates.planning : previous?.planning,
+		accepted: Object.hasOwn(updates, "accepted") ? updates.accepted : previous?.accepted,
+		executing: Object.hasOwn(updates, "executing") ? updates.executing : previous?.executing,
 		updatedAt: now ?? new Date().toISOString(),
 	};
 }
@@ -180,7 +183,8 @@ export function extractInteractivePlanArtifact(options: {
 	const normalizedQuestions = normalizeClarifyingPromptItems(
 		extractClarifyingPromptItems(questionSection, ["bullet", "numbered"]),
 	);
-	const fallbackQuestions = normalizedQuestions.length === 0 && questionSection ? buildFallbackClarifyingQuestions(options.goal) : [];
+	const fallbackQuestions =
+		normalizedQuestions.length === 0 && questionSection ? buildFallbackClarifyingQuestions(options.goal) : [];
 	const extractedQuestions = applyFallbackClarifyingOptions(
 		options.goal,
 		normalizedQuestions.length > 0 ? normalizedQuestions : fallbackQuestions,
@@ -208,7 +212,9 @@ export function extractInteractivePlanArtifact(options: {
 		extractClarifyingPromptItems(stepSection ?? rawPlan, ["numbered", "step"]),
 	);
 	const fallbackStepQuestions =
-		normalizedStepQuestions.length === 0 && stepQuestions.length > 0 ? buildFallbackClarifyingQuestions(options.goal) : [];
+		normalizedStepQuestions.length === 0 && stepQuestions.length > 0
+			? buildFallbackClarifyingQuestions(options.goal)
+			: [];
 	const extractedStepQuestions = applyFallbackClarifyingOptions(
 		options.goal,
 		normalizedStepQuestions.length > 0 ? normalizedStepQuestions : fallbackStepQuestions,
@@ -221,7 +227,7 @@ export function extractInteractivePlanArtifact(options: {
 		constraints.length === 0 &&
 		risks.length === 0 &&
 		verification.length === 0 &&
-		(summary && /clarif|need (?:a few )?clarif|need (?:a few )?answers|need to know|before i can/i.test(summary) ||
+		((summary && /clarif|need (?:a few )?clarif|need (?:a few )?answers|need to know|before i can/i.test(summary)) ||
 			/clarif|need (?:a few )?clarif|need (?:a few )?answers|need to know|before i can/i.test(rawPlan));
 	const effectiveOpenQuestions = shouldReclassifyStepsAsQuestions
 		? extractedStepQuestions.map((question) => question.prompt)
@@ -308,6 +314,116 @@ export function shouldStartWithFallbackPlanningInterview(goal: string): boolean 
 	return isGreenfieldGenericPlanningGoal(goal) && hasGoalMissingFoundationalPlanningChoices(goal);
 }
 
+/** Structured plan payload delivered by the submit_plan tool (normalized by the tool). */
+export interface SubmitPlanSubmission {
+	summary?: string;
+	steps?: string[];
+	openQuestions?: Array<{ question: string; options?: string[] }>;
+	assumptions?: string[];
+	constraints?: string[];
+	risks?: string[];
+	verification?: string[];
+}
+
+function normalizeSubmissionItems(items: string[] | undefined): string[] {
+	return (items ?? []).map((item) => item.replace(/\s+/g, " ").trim()).filter((item) => item.length > 0);
+}
+
+function formatSubmissionAsRawPlan(submission: {
+	summary?: string;
+	steps: string[];
+	openQuestions: string[];
+	assumptions: string[];
+	constraints: string[];
+	risks: string[];
+	verification: string[];
+}): string {
+	const lines: string[] = [];
+	if (submission.summary) {
+		lines.push("Summary:", submission.summary, "");
+	}
+	if (submission.steps.length > 0) {
+		lines.push("Steps:", ...submission.steps.map((step, index) => `${index + 1}. ${step}`), "");
+	}
+	if (submission.openQuestions.length > 0) {
+		lines.push(
+			"Clarifying Questions:",
+			...submission.openQuestions.map((question, index) => `${index + 1}. ${question}`),
+			"",
+		);
+	}
+	for (const [heading, items] of [
+		["Assumptions", submission.assumptions],
+		["Constraints", submission.constraints],
+		["Risks", submission.risks],
+		["Verification", submission.verification],
+	] as const) {
+		if (items.length > 0) {
+			lines.push(`${heading}:`, ...items.map((item) => `- ${item}`), "");
+		}
+	}
+	return lines.join("\n").trim();
+}
+
+/**
+ * Build a plan artifact from a structured submit_plan tool call.
+ * Preferred over markdown extraction: the tool's schema enforces the sections,
+ * so no heading parsing or reclassification heuristics are needed.
+ */
+export function buildInteractivePlanArtifactFromSubmission(options: {
+	goal: string;
+	submission: SubmitPlanSubmission;
+	previous?: InteractivePlanArtifact;
+	feedback?: string;
+	now?: string;
+}): InteractivePlanArtifact | undefined {
+	const submission = options.submission;
+	const steps = normalizeSubmissionItems(submission.steps);
+	const questionEntries = (submission.openQuestions ?? [])
+		.map((entry) => ({
+			question: entry.question?.replace(/\s+/g, " ").trim() ?? "",
+			options: normalizeSubmissionItems(entry.options).slice(0, 8),
+		}))
+		.filter((entry) => entry.question.length > 0);
+	if (steps.length === 0 && questionEntries.length === 0) return undefined;
+
+	const now = options.now ?? new Date().toISOString();
+	const openQuestions = questionEntries.map((entry) => entry.question);
+	const assumptions = normalizeSubmissionItems(submission.assumptions);
+	const constraints = normalizeSubmissionItems(submission.constraints);
+	const risks = normalizeSubmissionItems(submission.risks);
+	const verification = normalizeSubmissionItems(submission.verification);
+	const summary = submission.summary?.trim() || undefined;
+	return {
+		version: 1,
+		planId: options.previous?.planId ?? createPlanId(),
+		revision: (options.previous?.revision ?? 0) + 1,
+		status: steps.length > 0 ? "draft" : "clarifying",
+		goal: normalizeInteractivePlanGoal(options.goal),
+		summary,
+		assumptions,
+		constraints,
+		steps,
+		risks,
+		verification,
+		openQuestions,
+		clarificationOptionSets: questionEntries.map((entry) => entry.options),
+		clarificationAnswers: options.previous?.clarificationAnswers,
+		rawPlan: formatSubmissionAsRawPlan({
+			summary,
+			steps,
+			openQuestions,
+			assumptions,
+			constraints,
+			risks,
+			verification,
+		}),
+		feedback: options.feedback?.trim() || undefined,
+		createdAt: options.previous?.createdAt ?? now,
+		updatedAt: now,
+	};
+}
+
 export function updateInteractivePlanArtifactStatus(
 	artifact: InteractivePlanArtifact,
 	status: InteractivePlanStatus,
@@ -317,7 +433,8 @@ export function updateInteractivePlanArtifactStatus(
 			InteractivePlanArtifact,
 			"rejectedReason" | "completedStepIndexes" | "executionStepIndex" | "executionStep" | "stepExecutionRecords"
 		>
-	> & Pick<InteractivePlanArtifact, "clarificationAnswers">,
+	> &
+		Pick<InteractivePlanArtifact, "clarificationAnswers">,
 ): InteractivePlanArtifact {
 	if (!canTransitionInteractivePlanArtifact(artifact.status, status)) {
 		throw new Error(`Illegal interactive plan transition: ${artifact.status} -> ${status}`);
@@ -462,7 +579,9 @@ export function buildPlanExecutionPrompt(artifact: InteractivePlanArtifact): str
 		"- finish with exact markdown headings: Execution Status, Execution Summary, Files Touched, Verification, Remaining, Blockers",
 		"- under Execution Status, use exactly one of: reviewed, blocked, completed",
 		"- under Files Touched, Verification, Remaining, and Blockers, use bullet lists",
-		...(nextStepIndex === undefined ? [] : ["", `Next incomplete step: ${nextStepIndex + 1}. ${artifact.steps[nextStepIndex]}`]),
+		...(nextStepIndex === undefined
+			? []
+			: ["", `Next incomplete step: ${nextStepIndex + 1}. ${artifact.steps[nextStepIndex]}`]),
 		"",
 		"Accepted plan:",
 		formatInteractivePlanArtifact(artifact),
@@ -558,8 +677,22 @@ export function recordInteractivePlanStepExecutionReview(
 	const record = parseInteractivePlanStepExecutionReview(assistantText, stepIndex, artifact.steps[stepIndex], now);
 	if (!record) return artifact;
 	const records = normalizeStepExecutionRecords(artifact.stepExecutionRecords, artifact.steps);
-	return updateInteractivePlanArtifactStatus(artifact, artifact.status, now, {
-		stepExecutionRecords: [...records, record],
+	const nextRecords = [...records, record];
+	if (record.status !== "completed") {
+		return updateInteractivePlanArtifactStatus(artifact, artifact.status, now, {
+			stepExecutionRecords: nextRecords,
+		});
+	}
+	// The agent's own structured review says the step is done — advance the
+	// completion bookkeeping automatically (the user can still reopen it).
+	const completed = new Set(getCompletedStepIndexes(artifact));
+	completed.add(stepIndex);
+	const allDone = artifact.steps.length > 0 && artifact.steps.every((_, index) => completed.has(index));
+	return updateInteractivePlanArtifactStatus(artifact, allDone ? "completed" : artifact.status, now, {
+		completedStepIndexes: Array.from(completed).sort((a, b) => a - b),
+		executionStepIndex: undefined,
+		executionStep: undefined,
+		stepExecutionRecords: nextRecords,
 	});
 }
 
@@ -573,7 +706,8 @@ export function markInteractivePlanStepComplete(
 	}
 	const completed = new Set(getCompletedStepIndexes(artifact));
 	completed.add(stepIndex);
-	return updateInteractivePlanArtifactStatus(artifact, "accepted", now, {
+	const allDone = artifact.steps.length > 0 && artifact.steps.every((_, index) => completed.has(index));
+	return updateInteractivePlanArtifactStatus(artifact, allDone ? "completed" : "accepted", now, {
 		completedStepIndexes: Array.from(completed).sort((a, b) => a - b),
 		executionStepIndex: undefined,
 		executionStep: undefined,
@@ -592,7 +726,7 @@ export function reopenInteractivePlanStep(
 	stepIndex: number,
 	now?: string,
 ): InteractivePlanArtifact {
-	if (artifact.status !== "accepted" && artifact.status !== "executing") {
+	if (artifact.status !== "accepted" && artifact.status !== "executing" && artifact.status !== "completed") {
 		throw new Error(`Cannot reopen steps from ${artifact.status} plan state.`);
 	}
 	const completed = new Set(getCompletedStepIndexes(artifact));
@@ -621,18 +755,10 @@ export function parseInteractivePlanStepExecutionReview(
 	if (!raw || !step) return undefined;
 	const sections = parseExecutionReviewSections(raw);
 	if (!sections) return undefined;
-	const filesTouched = normalizeExecutionReviewItems(
-		extractBulletItems(sections.filesTouched),
-	);
-	const verification = normalizeExecutionReviewItems(
-		extractBulletItems(sections.verification),
-	);
-	const remaining = normalizeExecutionReviewItems(
-		extractBulletItems(sections.remaining),
-	);
-	const blockers = normalizeExecutionReviewItems(
-		extractBulletItems(sections.blockers),
-	);
+	const filesTouched = normalizeExecutionReviewItems(extractBulletItems(sections.filesTouched));
+	const verification = normalizeExecutionReviewItems(extractBulletItems(sections.verification));
+	const remaining = normalizeExecutionReviewItems(extractBulletItems(sections.remaining));
+	const blockers = normalizeExecutionReviewItems(extractBulletItems(sections.blockers));
 	const summary = normalizePlanItem(sections.summary);
 	const status = extractInteractivePlanStepExecutionStatus(sections.status, blockers);
 	if (!status) return undefined;
@@ -651,14 +777,20 @@ export function parseInteractivePlanStepExecutionReview(
 }
 
 function normalizeExecutionReviewItems(items: string[]): string[] {
-	return items.filter((item) => !/^(none|n\/a|no blockers|no remaining work|no files|no files touched)$/i.test(item.trim()));
+	return items.filter(
+		(item) => !/^(none|n\/a|no blockers|no remaining work|no files|no files touched)$/i.test(item.trim()),
+	);
 }
 
 function parseInteractivePlanArtifact(value: unknown): InteractivePlanArtifact | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const candidate = value as Partial<InteractivePlanArtifact>;
 	if (candidate.version !== 1) return undefined;
-	if (typeof candidate.planId !== "string" || typeof candidate.goal !== "string" || typeof candidate.rawPlan !== "string") {
+	if (
+		typeof candidate.planId !== "string" ||
+		typeof candidate.goal !== "string" ||
+		typeof candidate.rawPlan !== "string"
+	) {
 		return undefined;
 	}
 	if (typeof candidate.revision !== "number" || typeof candidate.status !== "string") return undefined;
@@ -754,7 +886,9 @@ function validateInteractivePlanArtifact(artifact: InteractivePlanArtifact): boo
 
 function normalizeStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
-	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+	return value
+		.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+		.map((item) => item.trim());
 }
 
 function normalizeStringSlots(value: unknown): string[] {
@@ -767,25 +901,22 @@ function normalizeQuestionOptionSets(value: unknown): string[][] {
 	return value.map((entry) => normalizeStringArray(entry));
 }
 
-function normalizeStepExecutionRecords(
-	value: unknown,
-	steps: string[],
-): InteractivePlanStepExecutionRecord[] {
+function normalizeStepExecutionRecords(value: unknown, steps: string[]): InteractivePlanStepExecutionRecord[] {
 	if (!Array.isArray(value)) return [];
 	return value
 		.map((entry) => normalizeStepExecutionRecord(entry, steps))
 		.filter((record): record is InteractivePlanStepExecutionRecord => Boolean(record));
 }
 
-function normalizeStepExecutionRecord(
-	value: unknown,
-	steps: string[],
-): InteractivePlanStepExecutionRecord | undefined {
+function normalizeStepExecutionRecord(value: unknown, steps: string[]): InteractivePlanStepExecutionRecord | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const candidate = value as Partial<InteractivePlanStepExecutionRecord>;
 	if (typeof candidate.stepIndex !== "number" || !Number.isInteger(candidate.stepIndex)) return undefined;
 	if (candidate.stepIndex < 0 || candidate.stepIndex >= steps.length) return undefined;
-	const step = typeof candidate.step === "string" && candidate.step.trim().length > 0 ? candidate.step.trim() : steps[candidate.stepIndex];
+	const step =
+		typeof candidate.step === "string" && candidate.step.trim().length > 0
+			? candidate.step.trim()
+			: steps[candidate.stepIndex];
 	if (!step) return undefined;
 	const status = normalizePlanExecutionRecordStatus(candidate.status);
 	if (!status) return undefined;
@@ -793,7 +924,10 @@ function normalizeStepExecutionRecord(
 		stepIndex: candidate.stepIndex,
 		step,
 		status,
-		summary: typeof candidate.summary === "string" && candidate.summary.trim().length > 0 ? candidate.summary.trim() : undefined,
+		summary:
+			typeof candidate.summary === "string" && candidate.summary.trim().length > 0
+				? candidate.summary.trim()
+				: undefined,
 		filesTouched: normalizeStringArray(candidate.filesTouched),
 		verification: normalizeStringArray(candidate.verification),
 		remaining: normalizeStringArray(candidate.remaining),
@@ -812,7 +946,10 @@ function normalizeCompletedStepIndexes(value: unknown, stepCount: number): numbe
 	if (!Array.isArray(value)) return [];
 	return Array.from(
 		new Set(
-			value.filter((item): item is number => typeof item === "number" && Number.isInteger(item) && item >= 0 && item < stepCount),
+			value.filter(
+				(item): item is number =>
+					typeof item === "number" && Number.isInteger(item) && item >= 0 && item < stepCount,
+			),
 		),
 	).sort((a, b) => a - b);
 }
@@ -881,19 +1018,27 @@ interface ParsedExecutionReviewSections {
 function parseExecutionReviewSections(text: string): ParsedExecutionReviewSections | undefined {
 	const status = findExecutionReviewSection(text, ["execution status"]);
 	const summary = findExecutionReviewSection(text, ["execution summary", "step summary", "review summary"]);
+	// Only status + summary are required; a missing optional section must not
+	// drop the whole review (it previously discarded everything if any one of
+	// six headings was absent).
 	const filesTouched = findExecutionReviewSection(text, ["files touched", "touched files", "changed files", "files"]);
 	const verification = findExecutionReviewSection(text, ["verification", "verified", "validation"]);
 	const remaining = findExecutionReviewSection(text, ["remaining", "remaining work", "next", "follow-up"]);
 	const blockers = findExecutionReviewSection(text, ["blockers", "blocked", "issues"]);
-	if (!status || !summary || !filesTouched || !verification || !remaining || !blockers) {
+	if (!status || !summary) {
 		return undefined;
 	}
-	return { status, summary, filesTouched, verification, remaining, blockers };
+	return {
+		status,
+		summary,
+		filesTouched: filesTouched ?? "",
+		verification: verification ?? "",
+		remaining: remaining ?? "",
+		blockers: blockers ?? "",
+	};
 }
 
-function formatInteractivePlanExecutionReview(
-	record: InteractivePlanStepExecutionRecord | undefined,
-): string[] {
+function formatInteractivePlanExecutionReview(record: InteractivePlanStepExecutionRecord | undefined): string[] {
 	if (!record) return [];
 	const lines = [`Step ${record.stepIndex + 1} · ${record.status}`];
 	if (record.summary) lines.push(record.summary);
@@ -978,7 +1123,9 @@ function isGreenfieldGenericPlanningGoal(goal: string): boolean {
 	const subject = extractPlanningGoalSubject(goal);
 	if (!normalizedGoal) return false;
 	if (hasCodebasePlanningAnchors(subject)) return false;
-	if (!/\b(plan|planning|build|create|make|implement|design|scaffold|start|enter|open|switch)\b/.test(normalizedGoal)) {
+	if (
+		!/\b(plan|planning|build|create|make|implement|design|scaffold|start|enter|open|switch)\b/.test(normalizedGoal)
+	) {
 		return false;
 	}
 	return /\b(game|app|website|site|tool|api|cli|dashboard|bot|agent|project|snake)\b/.test(subject);
@@ -1022,10 +1169,16 @@ function normalizeInteractivePlanGoal(goal: string): string {
 	}
 	const subjectMatch = normalizedText.match(/(.+)$/);
 	if (!subjectMatch) return trimmedGoal;
-	const lowerTrimmed = trimmedGoal.toLowerCase().replace(/\bplanmode\b/g, "plan mode").replace(/\bplanningmode\b/g, "planning mode");
+	const lowerTrimmed = trimmedGoal
+		.toLowerCase()
+		.replace(/\bplanmode\b/g, "plan mode")
+		.replace(/\bplanningmode\b/g, "planning mode");
 	const subjectStartIndex = lowerTrimmed.lastIndexOf(subject);
 	if (subjectStartIndex < 0) return trimmedGoal;
-	return trimmedGoal.slice(subjectStartIndex).replace(/^[\s,.:;!?-]+|[\s,.:;!?-]+$/g, "").trim();
+	return trimmedGoal
+		.slice(subjectStartIndex)
+		.replace(/^[\s,.:;!?-]+|[\s,.:;!?-]+$/g, "")
+		.trim();
 }
 
 function extractPlanningGoalSubject(goal: string): string {
@@ -1048,13 +1201,18 @@ function hasMissingFoundationalPlanningChoices(openQuestions: string[]): boolean
 	const categories = new Set(
 		openQuestions
 			.map((question) => classifyClarifyingQuestionCategory(question))
-			.filter((category): category is NonNullable<ReturnType<typeof classifyClarifyingQuestionCategory>> => Boolean(category)),
+			.filter((category): category is NonNullable<ReturnType<typeof classifyClarifyingQuestionCategory>> =>
+				Boolean(category),
+			),
 	);
 	return categories.has("language") || categories.has("platform");
 }
 
 function classifyClarifyingQuestionCategory(prompt: string): "language" | "platform" | "scope" | undefined {
-	const normalizedPrompt = prompt.replace(/[?:]+$/g, "").trim().toLowerCase();
+	const normalizedPrompt = prompt
+		.replace(/[?:]+$/g, "")
+		.trim()
+		.toLowerCase();
 	if (!normalizedPrompt) return undefined;
 	if (/\b(language|runtime|stack|framework|library)\b/.test(normalizedPrompt)) return "language";
 	if (/\b(platform|interface|ui|display|terminal|desktop|browser|web|mobile)\b/.test(normalizedPrompt)) {
@@ -1068,14 +1226,26 @@ function extractPlanSummary(text: string): string | undefined {
 	const summarySection = findSection(text, ["summary"]);
 	if (summarySection) return summarySection.replace(/\s+/g, " ").trim();
 	const beforeFirstSection = text
-		.split(/\n(?:(?:#{1,6}\s*)?(?:summary|plan|steps|assumptions|constraints|risks|verification|questions|open questions|clarifying questions)\b[:\s]*|\s*\d+[.)]\s+)/i)[0]
+		.split(
+			/\n(?:(?:#{1,6}\s*)?(?:summary|plan|steps|assumptions|constraints|risks|verification|questions|open questions|clarifying questions)\b[:\s]*|\s*\d+[.)]\s+)/i,
+		)[0]
 		?.trim();
 	if (!beforeFirstSection) return undefined;
 	return beforeFirstSection.replace(/\s+/g, " ").trim();
 }
 
 function findSection(text: string, names: string[]): string | undefined {
-	return findNamedSection(text, names, ["plan", "steps", "assumptions", "constraints", "risks", "verification", "questions", "open questions", "clarifying questions"]);
+	return findNamedSection(text, names, [
+		"plan",
+		"steps",
+		"assumptions",
+		"constraints",
+		"risks",
+		"verification",
+		"questions",
+		"open questions",
+		"clarifying questions",
+	]);
 }
 
 function findExecutionReviewSection(text: string, names: string[]): string | undefined {
@@ -1194,7 +1364,10 @@ function extractBulletItems(text: string | undefined): string[] {
 
 function normalizePlanItem(value: string | undefined): string | undefined {
 	if (!value) return undefined;
-	const cleaned = value.replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+	const cleaned = value
+		.replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1")
+		.replace(/`([^`]+)`/g, "$1")
+		.trim();
 	return cleaned.length > 0 ? cleaned : undefined;
 }
 
@@ -1208,7 +1381,9 @@ function normalizeClarifyingPromptItem(item: ParsedClarifyingPromptItem): Normal
 	const head = normalizePlanItem(item.head);
 	if (!head) return undefined;
 
-	const continuationOptions = item.continuations.map((part) => normalizePlanItem(part)).filter((part): part is string => Boolean(part));
+	const continuationOptions = item.continuations
+		.map((part) => normalizePlanItem(part))
+		.filter((part): part is string => Boolean(part));
 	const prompt = normalizeClarifyingQuestionPrompt(head, continuationOptions);
 	if (!prompt) return undefined;
 	const options = normalizeClarifyingQuestionOptions(head, continuationOptions);
@@ -1219,8 +1394,13 @@ function normalizeClarifyingPromptItem(item: ParsedClarifyingPromptItem): Normal
 function normalizeClarifyingQuestionPrompt(head: string, continuationOptions: string[]): string | undefined {
 	let prompt = head.trim();
 
-	const dashedSegments = prompt.split(/\s+-\s+/).map((segment) => segment.trim()).filter(Boolean);
-	const dashedQuestionSegment = dashedSegments.find((segment) => /[?]$/.test(segment) || isLikelyQuestionPrompt(segment));
+	const dashedSegments = prompt
+		.split(/\s+-\s+/)
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+	const dashedQuestionSegment = dashedSegments.find(
+		(segment) => /[?]$/.test(segment) || isLikelyQuestionPrompt(segment),
+	);
 	if (dashedQuestionSegment) {
 		prompt = dashedQuestionSegment;
 	}
@@ -1242,12 +1422,10 @@ function normalizeClarifyingQuestionPrompt(head: string, continuationOptions: st
 		}
 	}
 
-	const trailingChoiceSection = [...extractTopLevelDelimitedSections(prompt)]
-		.reverse()
-		.find((section) => {
-			const suffix = prompt.slice(section.end + 1).trim();
-			return suffix.length === 0 || suffix === "?";
-		});
+	const trailingChoiceSection = [...extractTopLevelDelimitedSections(prompt)].reverse().find((section) => {
+		const suffix = prompt.slice(section.end + 1).trim();
+		return suffix.length === 0 || suffix === "?";
+	});
 	if (trailingChoiceSection && trailingChoiceSection.start > 0) {
 		const suffix = prompt.slice(trailingChoiceSection.end + 1).trim();
 		prompt = `${prompt.slice(0, trailingChoiceSection.start).trim()}${suffix === "?" ? "?" : ""}`.trim();
@@ -1372,10 +1550,7 @@ function splitClarifyingChoiceText(text: string): string[] {
 
 function unwrapSurroundingChoiceDelimiter(value: string | undefined): string {
 	const trimmed = value?.trim() ?? "";
-	if (
-		(trimmed.startsWith("(") && trimmed.endsWith(")")) ||
-		(trimmed.startsWith("[") && trimmed.endsWith("]"))
-	) {
+	if ((trimmed.startsWith("(") && trimmed.endsWith(")")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
 		return trimmed.slice(1, -1).trim();
 	}
 	return trimmed;
@@ -1417,21 +1592,28 @@ function looksLikeStandaloneChoice(value: string): boolean {
 	const trimmed = value.trim();
 	if (!trimmed) return true;
 	if (/[?:]/.test(trimmed)) return false;
-	if (/^(target|what|which|who|where|when|why|how|do|does|did|is|are|can|could|should|would|will|any|interface|type|platform|feature|features|key features|scope|language|runtime|framework|library|display|specific requirements|requirements|constraints)\b/i.test(trimmed)) {
+	if (
+		/^(target|what|which|who|where|when|why|how|do|does|did|is|are|can|could|should|would|will|any|interface|type|platform|feature|features|key features|scope|language|runtime|framework|library|display|specific requirements|requirements|constraints)\b/i.test(
+			trimmed,
+		)
+	) {
 		return false;
 	}
 	return trimmed.split(/\s+/).length <= 6;
 }
 
 function isLowQualityClarifyingOption(option: string, prompt?: string): boolean {
-	const normalizedOption = option.replace(/[?:]+$/g, "").trim().toLowerCase();
-	const normalizedPrompt = prompt?.replace(/[?:]+$/g, "").trim().toLowerCase();
+	const normalizedOption = option
+		.replace(/[?:]+$/g, "")
+		.trim()
+		.toLowerCase();
+	const normalizedPrompt = prompt
+		?.replace(/[?:]+$/g, "")
+		.trim()
+		.toLowerCase();
 	if (!normalizedOption) return true;
 	if (normalizedPrompt && normalizedOption === normalizedPrompt) return true;
-	if (
-		/^(?:\/|\.\.?\/|~\/)/.test(option.trim()) ||
-		/(?:^|\s)(?:\/home\/|\/tmp\/|\/var\/|\/etc\/)/i.test(option)
-	) {
+	if (/^(?:\/|\.\.?\/|~\/)/.test(option.trim()) || /(?:^|\s)(?:\/home\/|\/tmp\/|\/var\/|\/etc\/)/i.test(option)) {
 		return true;
 	}
 	if (/^(?:e\.g\.|eg\.?|example:?)\s+/i.test(option)) {
@@ -1447,13 +1629,19 @@ function isLowQualityClarifyingOption(option: string, prompt?: string): boolean 
 }
 
 function shouldPreferOpenEndedClarifyingAnswer(prompt?: string): boolean {
-	const normalizedPrompt = prompt?.replace(/[?:]+$/g, "").trim().toLowerCase();
+	const normalizedPrompt = prompt
+		?.replace(/[?:]+$/g, "")
+		.trim()
+		.toLowerCase();
 	if (!normalizedPrompt) return false;
 	return /^(any )?(specific )?(requirements|constraints|notes|preferences|trade-?offs)$/.test(normalizedPrompt);
 }
 
 function isBooleanClarifyingQuestion(prompt?: string): boolean {
-	const normalizedPrompt = prompt?.replace(/[?:]+$/g, "").trim().toLowerCase();
+	const normalizedPrompt = prompt
+		?.replace(/[?:]+$/g, "")
+		.trim()
+		.toLowerCase();
 	if (!normalizedPrompt) return false;
 	return /^(would|do|does|did|is|are|can|could|should|will)\b/.test(normalizedPrompt);
 }
@@ -1483,7 +1671,11 @@ function appendSection(lines: string[], title: string, items: string[], numbered
 function formatInteractivePlanSteps(artifact: InteractivePlanArtifact): string[] {
 	const completed = new Set(getCompletedStepIndexes(artifact));
 	return artifact.steps.map((step, index) => {
-		const state = completed.has(index) ? "done" : index === getNextInteractivePlanStepIndex(artifact) ? "next" : "pending";
+		const state = completed.has(index)
+			? "done"
+			: index === getNextInteractivePlanStepIndex(artifact)
+				? "next"
+				: "pending";
 		return `[${state}] ${step}`;
 	});
 }

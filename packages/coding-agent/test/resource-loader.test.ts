@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -25,6 +25,7 @@ describe("DefaultResourceLoader", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -157,6 +158,8 @@ Project skill`,
 		});
 
 		it("should keep both extensions loaded when command names collide", async () => {
+			// Project-local extensions require workspace trust (S13); this test trusts the temp project.
+			vi.stubEnv("AG1_TRUST_PROJECT", "1");
 			const userExtDir = join(agentDir, "extensions");
 			const projectExtDir = join(cwd, ".ag1", "extensions");
 			mkdirSync(userExtDir, { recursive: true });

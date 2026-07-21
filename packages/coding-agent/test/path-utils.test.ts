@@ -157,7 +157,7 @@ describe("path-utils", () => {
 			const outsideDir = mkdtempSync(join(tmpdir(), "path-utils-outside-"));
 			symlinkSync(outsideDir, join(tempDir, "outside"));
 
-			expect(() => resolveContainedPath("outside/secret.txt", tempDir, { allowMissing: true })).toThrow(
+			expect(() => resolveContainedPath("outside/secret.txt", tempDir)).toThrow(
 				/outside the workspace|symlinked path/i,
 			);
 

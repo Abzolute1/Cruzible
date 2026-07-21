@@ -1,5 +1,6 @@
 import { existsSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { RESEARCH_ARTIFACT_ENTRY_TYPE } from "../src/core/research-artifacts.js";
 import {
 	getInteractiveWorkspaceSummary,
 	renderInteractiveDebugLogStatus,
@@ -8,7 +9,6 @@ import {
 	writeInteractiveDebugLog,
 } from "../src/modes/interactive/interactive-report-actions.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
-import { RESEARCH_ARTIFACT_ENTRY_TYPE } from "../src/core/research-artifacts.js";
 
 describe("interactive-report-actions", () => {
 	const debugLogPath = "/tmp/ag1-debug-report-test.log";
@@ -77,7 +77,7 @@ describe("interactive-report-actions", () => {
 			width: 100,
 			height: 30,
 			renderedLines: ["hello"],
-			messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }],
 			modelId: "provider/model",
 			mode: "interactive",
 			stabilization: {

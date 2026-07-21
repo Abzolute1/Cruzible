@@ -501,18 +501,25 @@ export class TUI extends Container {
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
 		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
-		this.renderTimer = setTimeout(() => {
-			this.renderTimer = undefined;
-			if (this.stopped || !this.renderRequested) {
-				return;
-			}
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
-			this.doRender();
-			if (this.renderRequested) {
+		if (delay > 0) {
+			// Inside the throttle window: wait it out, then re-enter scheduleRender
+			// (which re-checks stopped/renderRequested and renders immediately).
+			this.renderTimer = setTimeout(() => {
+				this.renderTimer = undefined;
 				this.scheduleRender();
-			}
-		}, delay);
+			}, delay);
+			return;
+		}
+		// Outside the throttle window: render immediately. scheduleRender already
+		// runs async (process.nextTick from requestRender), and deferring to a
+		// zero-delay timer would needlessly push the frame behind anything else
+		// scheduled in the meantime.
+		this.renderRequested = false;
+		this.lastRenderAt = performance.now();
+		this.doRender();
+		if (this.renderRequested) {
+			this.scheduleRender();
+		}
 	}
 
 	private handleInput(data: string): void {
@@ -841,7 +848,8 @@ export class TUI extends Container {
 			" ".repeat(afterPad);
 
 		// CRITICAL: Always verify and truncate to terminal width.
-		// This is the final safeguard against width overflow which would crash the TUI.
+		// This is the final safeguard against width overflow (over-wide lines are
+		// truncated at render time, but relying on that costs a re-render).
 		// Width tracking can drift from actual visible width due to:
 		// - Complex ANSI/OSC sequences (hyperlinks, colors)
 		// - Wide characters at segment boundaries
@@ -882,7 +890,50 @@ export class TUI extends Container {
 		return null;
 	}
 
+	/**
+	 * Render a frame, guarding against unexpected exceptions.
+	 * doRenderFrame runs inside process.nextTick/setTimeout callbacks with nothing
+	 * further up the stack to catch, so an uncaught throw would kill the process
+	 * mid-session. Expected glitches (e.g. an over-wide line) are handled inline;
+	 * anything else is a genuine bug: dump state to the crash log, restore the
+	 * terminal, then rethrow.
+	 */
 	private doRender(): void {
+		try {
+			this.doRenderFrame();
+		} catch (error) {
+			this.writeCrashLog(error);
+			this.stop();
+			throw error;
+		}
+	}
+
+	/**
+	 * Dump render state to the crash log for genuine unexpected exceptions.
+	 * NOTE: the log contains rendered session content, which may include sensitive
+	 * data (e.g. pasted secrets) — the file's first line says so as well.
+	 */
+	private writeCrashLog(error: unknown): void {
+		try {
+			const crashLogPath = path.join(os.homedir(), ".ag1", "agent", "ag1-crash.log");
+			const crashData = [
+				"WARNING: this crash log may contain sensitive session content (rendered terminal output, possibly including pasted secrets). Handle and share it accordingly.",
+				`Crash at ${new Date().toISOString()}`,
+				`Terminal size: ${this.terminal.columns}x${this.terminal.rows}`,
+				`Error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+				"",
+				"=== Last rendered lines ===",
+				...this.previousLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
+				"",
+			].join("\n");
+			fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
+			fs.writeFileSync(crashLogPath, crashData);
+		} catch {
+			// Crash logging must never take down the process itself
+		}
+	}
+
+	private doRenderFrame(): void {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
@@ -911,11 +962,14 @@ export class TUI extends Container {
 
 		newLines = this.applyLineResets(newLines);
 
-		// Helper to clear scrollback and viewport and render all new lines
+		// Helper to clear the viewport and render all new lines.
+		// Never emit \x1b[3J here: it erases the terminal's entire scrollback,
+		// including shell output from before the app started. Redraw artifacts are
+		// handled by re-rendering all lines below.
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			if (clear) buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
+			if (clear) buffer += "\x1b[2J\x1b[H"; // Clear screen and home (scrollback preserved)
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
 				buffer += newLines[i];
@@ -943,6 +997,7 @@ export class TUI extends Container {
 			if (!debugRedraw) return;
 			const logPath = path.join(os.homedir(), ".ag1", "agent", "ag1-debug.log");
 			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
+			fs.mkdirSync(path.dirname(logPath), { recursive: true });
 			fs.appendFileSync(logPath, msg);
 		};
 
@@ -1097,35 +1152,15 @@ export class TUI extends Container {
 		for (let i = firstChanged; i <= renderEnd; i++) {
 			if (i > firstChanged) buffer += "\r\n";
 			buffer += "\x1b[2K"; // Clear current line
-			const line = newLines[i];
+			let line = newLines[i];
 			const isImage = isImageLine(line);
 			if (!isImage && visibleWidth(line) > width) {
-				// Log all lines to crash file for debugging
-				const crashLogPath = path.join(os.homedir(), ".ag1", "agent", "ag1-crash.log");
-				const crashData = [
-					`Crash at ${new Date().toISOString()}`,
-					`Terminal width: ${width}`,
-					`Line ${i} visible width: ${visibleWidth(line)}`,
-					"",
-					"=== All rendered lines ===",
-					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
-					"",
-				].join("\n");
-				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-				fs.writeFileSync(crashLogPath, crashData);
-
-				// Clean up terminal state before throwing
-				this.stop();
-
-				const errorMsg = [
-					`Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${width}).`,
-					"",
-					"This is likely caused by a custom TUI component not truncating its output.",
-					"Use visibleWidth() to measure and truncateToWidth() to truncate lines.",
-					"",
-					`Debug log written to: ${crashLogPath}`,
-				].join("\n");
-				throw new Error(errorMsg);
+				// Over-wide lines must not crash the session: truncate to the terminal
+				// width and keep rendering. The component should have fitted its output
+				// itself (visibleWidth() to measure, truncateToWidth() to truncate).
+				console.error(`TUI: line ${i} exceeds terminal width (${visibleWidth(line)} > ${width}); truncating`);
+				line = sliceByColumn(line, 0, width, true);
+				newLines[i] = line;
 			}
 			buffer += line;
 		}

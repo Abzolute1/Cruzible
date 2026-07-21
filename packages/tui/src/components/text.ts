@@ -1,5 +1,5 @@
 import type { Component } from "../tui.js";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+import { applyBackgroundToLine, sanitizeTerminalText, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
 /**
  * Text component - displays multi-line text with word wrapping
@@ -16,14 +16,14 @@ export class Text implements Component {
 	private cachedLines?: string[];
 
 	constructor(text: string = "", paddingX: number = 1, paddingY: number = 1, customBgFn?: (text: string) => string) {
-		this.text = text;
+		this.text = sanitizeTerminalText(text);
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.customBgFn = customBgFn;
 	}
 
 	setText(text: string): void {
-		this.text = text;
+		this.text = sanitizeTerminalText(text);
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;

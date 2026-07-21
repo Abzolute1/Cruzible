@@ -17,14 +17,8 @@ function outcome(tool: string, overrides: Partial<ToolOutcome> = {}): ToolOutcom
 describe("buildLocalEvidencePromptAddendum", () => {
 	it("nudges reuse when discovery tools keep isolating the same file", () => {
 		const addendum = buildLocalEvidencePromptAddendum({
-			toolCallHistory: [
-				outcome("find", { file: "src/foo.ts" }),
-				outcome("grep", { file: "src/foo.ts" }),
-			],
-			fileAccessHistory: [
-				outcome("find", { file: "src/foo.ts" }),
-				outcome("grep", { file: "src/foo.ts" }),
-			],
+			toolCallHistory: [outcome("find", { file: "src/foo.ts" }), outcome("grep", { file: "src/foo.ts" })],
+			fileAccessHistory: [outcome("find", { file: "src/foo.ts" }), outcome("grep", { file: "src/foo.ts" })],
 		});
 
 		expect(addendum).toContain("already isolated `src/foo.ts`");
@@ -176,138 +170,10 @@ describe("buildLocalEvidencePromptAddendum", () => {
 		expect(addendum).toContain("Do not restart broad web search");
 	});
 
-	it("does not treat metric-query grep guidance as the implementation answer", () => {
-		const control = buildLocalEvidenceControl({
-			userPrompt: "where is score per 1k tokens computed in this repo? answer from the implementation, not benchmark output files",
-			toolCallHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 204,
-					},
-				}),
-			],
-			fileAccessHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 204,
-					},
-				}),
-			],
-		});
-
-		expect(control).toBeUndefined();
-		const addendum = buildLocalEvidencePromptAddendum({
-			userPrompt: "where is score per 1k tokens computed in this repo? answer from the implementation, not benchmark output files",
-			toolCallHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 204,
-					},
-				}),
-			],
-			fileAccessHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 204,
-					},
-				}),
-			],
-		});
-
-		expect(addendum).toContain("only references the phrase `score per 1k tokens`");
-		expect(addendum).toContain("Do not answer from this file");
-	});
-
-	it("does not treat current-events normalization guidance hits as the implementation answer", () => {
-		const control = buildLocalEvidenceControl({
-			userPrompt: "find where current-events query normalization is implemented in this repo and summarize it; do not browse the web",
-			toolCallHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 199,
-						recoveryPattern: "normalizeCurrentEventsQuery",
-						recoveryPath: "packages/coding-agent/src/core/tools",
-						recoveryRequired: true,
-					},
-				}),
-			],
-			fileAccessHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 199,
-						recoveryPattern: "normalizeCurrentEventsQuery",
-						recoveryPath: "packages/coding-agent/src/core/tools",
-						recoveryRequired: true,
-					},
-				}),
-			],
-		});
-
-		expect(control).toBeUndefined();
-		const addendum = buildLocalEvidencePromptAddendum({
-			userPrompt: "find where current-events query normalization is implemented in this repo and summarize it; do not browse the web",
-			toolCallHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 199,
-						recoveryPattern: "normalizeCurrentEventsQuery",
-						recoveryPath: "packages/coding-agent/src/core/tools",
-						recoveryRequired: true,
-					},
-				}),
-			],
-			fileAccessHistory: [
-				outcome("grep", {
-					file: "packages/coding-agent/src/core/tools/grep.ts",
-					metadata: {
-						matchCount: 1,
-						uniqueFileCount: 1,
-						firstMatchPath: "packages/coding-agent/src/core/tools/grep.ts",
-						firstMatchLine: 199,
-						recoveryPattern: "normalizeCurrentEventsQuery",
-						recoveryPath: "packages/coding-agent/src/core/tools",
-						recoveryRequired: true,
-					},
-				}),
-			],
-		});
-
-		expect(addendum).toContain("only references current-events normalization in tests or steering code");
-		expect(addendum).toContain("normalizeCurrentEventsQuery");
-		expect(addendum).toContain("Do not read or answer from this file first");
-	});
-
 	it("uses decisive grep metadata when the raw grep file was a weaker first hit", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			userPrompt:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 			toolCallHistory: [
 				outcome("grep", {
 					file: "scripts/profile-coding-agent-node.mjs",
@@ -338,7 +204,8 @@ describe("buildLocalEvidencePromptAddendum", () => {
 
 	it("nudges script directory lookups away from repeated no-match find patterns", () => {
 		const addendum = buildLocalEvidencePromptAddendum({
-			userPrompt: "which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
+			userPrompt:
+				"which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
 			toolCallHistory: [
 				outcome("find", { detail: "/home/alex/AG1" }),
 				outcome("find", { detail: "/home/alex/AG1" }),
@@ -352,9 +219,10 @@ describe("buildLocalEvidencePromptAddendum", () => {
 		expect(addendum).toContain("repo-root `scripts/`");
 	});
 
-	it("nudges benchmark command lookups back to repo-root scripts after stale package-local search", () => {
+	it("nudges repo-level command lookups back to repo-root scripts after stale package-local search", () => {
 		const addendum = buildLocalEvidencePromptAddendum({
-			userPrompt: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			userPrompt:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 			toolCallHistory: [
 				outcome("find", { detail: "/home/alex/AG1/packages/coding-agent" }),
 				outcome("find", { detail: "/home/alex/AG1/packages/coding-agent" }),
@@ -362,9 +230,9 @@ describe("buildLocalEvidencePromptAddendum", () => {
 			fileAccessHistory: [],
 		});
 
-		expect(addendum).toContain("benchmark harness commands");
+		expect(addendum).toContain("repo-level commands");
 		expect(addendum).toContain("repo-root `scripts/`");
-		expect(addendum).toContain("scripts/harness-benchmark-*");
+		expect(addendum).toContain("under `scripts/`");
 	});
 
 	it("nudges answering now when a substantial file read already happened", () => {
@@ -564,17 +432,6 @@ describe("buildLocalEvidencePromptAddendum", () => {
 		expect(addendum).not.toContain("decisive location");
 	});
 
-	it("demotes grep hits that only come from prompt or transcript guidance files", () => {
-		const addendum = buildLocalEvidencePromptAddendum({
-			toolCallHistory: [outcome("grep", { file: "packages/coding-agent/src/core/tools/research-output.ts" })],
-			fileAccessHistory: [outcome("grep", { file: "packages/coding-agent/src/core/tools/research-output.ts" })],
-		});
-
-		expect(addendum).toContain("looks like transcript or prompt guidance");
-		expect(addendum).toContain("research-intent.ts");
-		expect(addendum).toContain("websearch.ts");
-	});
-
 	it("nudges answering now when find results already cluster under one directory", () => {
 		const addendum = buildLocalEvidencePromptAddendum({
 			toolCallHistory: [
@@ -770,7 +627,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("prefers directory answer control for directory inventory prompts with clustered matches", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
+			userPrompt:
+				"which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
 			toolCallHistory: [
 				outcome("find", { file: "scripts/harness-benchmark-run.mjs" }),
 				outcome("find", { file: "scripts/harness-benchmark-compare.mjs" }),
@@ -819,7 +677,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("keeps comparative prompts inside the same file after a decisive read", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "find where createLiveProviderContext is defined and explain how it differs from createContextHygieneCopy; do not browse the web",
+			userPrompt:
+				"find where createLiveProviderContext is defined and explain how it differs from createContextHygieneCopy; do not browse the web",
 			toolCallHistory: [
 				outcome("grep", {
 					file: "src/foo.ts",
@@ -933,10 +792,7 @@ describe("buildLocalEvidenceControl", () => {
 					metadata: { progress: { completion: "partial", startLine: 241, endLine: 300, nextOffset: 301 } },
 				}),
 			],
-			fileAccessHistory: [
-				outcome("read", { file: "src/foo.ts" }),
-				outcome("read", { file: "src/foo.ts" }),
-			],
+			fileAccessHistory: [outcome("read", { file: "src/foo.ts" }), outcome("read", { file: "src/foo.ts" })],
 		});
 
 		expect(control?.mode).toBe("read_then_answer");
@@ -946,7 +802,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("forces answer-now after a rich authoritative docs fetch for a brief prompt", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "look up the official React docs for useActionState and explain the permalink parameter in one sentence",
+			userPrompt:
+				"look up the official React docs for useActionState and explain the permalink parameter in one sentence",
 			toolCallHistory: [
 				outcome("webfetch", {
 					detail: "https://react.dev/reference/react/useActionState",
@@ -963,7 +820,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("forces answer-now when an authoritative docs search snippet already answers the prompt", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "look up the official React docs for useActionState and explain the permalink parameter in one sentence",
+			userPrompt:
+				"look up the official React docs for useActionState and explain the permalink parameter in one sentence",
 			toolCallHistory: [
 				outcome("websearch", {
 					detail: "React useActionState permalink parameter explanation",
@@ -1015,7 +873,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("treats an authoritative docs signature snippet as sufficient when it includes the named parameter token", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "look up the official React docs for useActionState and explain the permalink parameter in one sentence",
+			userPrompt:
+				"look up the official React docs for useActionState and explain the permalink parameter in one sentence",
 			toolCallHistory: [
 				outcome("websearch", {
 					detail: "React useActionState permalink parameter official docs",
@@ -1102,7 +961,8 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("does not answer from a large repo-root listing for directory prompts", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
+			userPrompt:
+				"which directory holds the benchmark runner, compare, and archive scripts? list just those filenames",
 			toolCallHistory: [
 				outcome("ls", {
 					file: "/home/alex/AG1",
@@ -1130,27 +990,44 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("does not force a read from repeated directory listings", () => {
 		const control = buildLocalEvidenceControl({
-			userPrompt: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			userPrompt:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 			toolCallHistory: [
 				outcome("ls", {
 					file: "packages/coding-agent",
 					detail: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 				outcome("ls", {
 					file: "packages/coding-agent",
 					detail: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 			],
 			fileAccessHistory: [
 				outcome("ls", {
 					file: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 				outcome("ls", {
 					file: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 			],
 		});
@@ -1160,17 +1037,26 @@ describe("buildLocalEvidenceControl", () => {
 
 	it("nudges command lookups toward a listed scripts child directory", () => {
 		const addendum = buildLocalEvidencePromptAddendum({
-			userPrompt: "which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
+			userPrompt:
+				"which source file implements the benchmark archive command? give the exact path and one-sentence purpose",
 			toolCallHistory: [
 				outcome("ls", {
 					file: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 			],
 			fileAccessHistory: [
 				outcome("ls", {
 					file: "packages/coding-agent",
-					metadata: { directoryPath: "packages/coding-agent", entryCount: 14, entriesSample: ["scripts/", "src/"] },
+					metadata: {
+						directoryPath: "packages/coding-agent",
+						entryCount: 14,
+						entriesSample: ["scripts/", "src/"],
+					},
 				}),
 			],
 		});
@@ -1210,9 +1096,11 @@ describe("buildLocalEvidenceControl", () => {
 			],
 		});
 
-		expect(addendum).toContain("small benchmark workspace is already scoped by the top-level listing");
+		expect(addendum).toContain("small self-contained workspace is already scoped by the top-level listing");
 		expect(addendum).toContain("Stop shell-style file hunting");
-		expect(addendum).toContain("Read the likely implementation, importing caller, failing test, or named reference file next");
+		expect(addendum).toContain(
+			"Read the likely implementation, importing caller, failing test, or named reference file next",
+		);
 	});
 
 	it("nudges misleading-sibling tasks to confirm the caller or test before editing", () => {
@@ -1225,12 +1113,8 @@ describe("buildLocalEvidenceControl", () => {
 				"Stay inside this workspace.",
 				"The intended verification command is: `node --test`",
 			].join("\n"),
-			toolCallHistory: [
-				outcome("read", { file: "cli/formatter.mjs" }),
-			],
-			fileAccessHistory: [
-				outcome("read", { file: "cli/formatter.mjs" }),
-			],
+			toolCallHistory: [outcome("read", { file: "cli/formatter.mjs" })],
+			fileAccessHistory: [outcome("read", { file: "cli/formatter.mjs" })],
 		});
 
 		expect(addendum).toContain("misleading similarly named file");

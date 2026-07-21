@@ -11,8 +11,10 @@ import {
 	EventStream,
 	type Model,
 	parseStreamingJson,
+	readStallTimeoutMs,
 	type SimpleStreamOptions,
 	type StopReason,
+	stalledAssistantMessage,
 	type ToolCall,
 } from "@ag1/ai";
 
@@ -25,6 +27,17 @@ class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, Assista
 				if (event.type === "done") return event.message;
 				if (event.type === "error") return event.error;
 				throw new Error("Unexpected event type");
+			},
+			undefined,
+			{
+				stallTimeoutMs: readStallTimeoutMs(),
+				createStallEvent: (timeoutMs) => ({
+					type: "error",
+					reason: "error",
+					error: stalledAssistantMessage(
+						`Provider stream stalled: no events for ${Math.round(timeoutMs / 1000)}s. The connection was terminated (proxy hung or silently dropped it). Retry the request.`,
+					),
+				}),
 			},
 		);
 	}
@@ -152,6 +165,33 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 			reader = response.body!.getReader();
 			const decoder = new TextDecoder();
 			let buffer = "";
+			let terminalEventReceived = false;
+
+			const handleSseLine = (line: string) => {
+				// The SSE spec allows "data:" with or without a space after the colon.
+				if (!line.startsWith("data:")) {
+					return;
+				}
+				const data = line.slice(5).trim();
+				if (!data) {
+					return;
+				}
+				let proxyEvent: ProxyAssistantMessageEvent;
+				try {
+					proxyEvent = JSON.parse(data) as ProxyAssistantMessageEvent;
+				} catch {
+					// Skip malformed SSE lines instead of killing the whole stream
+					console.warn(`Skipping malformed proxy SSE line: ${data.slice(0, 200)}`);
+					return;
+				}
+				if (proxyEvent.type === "done" || proxyEvent.type === "error") {
+					terminalEventReceived = true;
+				}
+				const event = processProxyEvent(proxyEvent, partial);
+				if (event) {
+					stream.push(event);
+				}
+			};
 
 			while (true) {
 				const { done, value } = await reader.read();
@@ -166,24 +206,33 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 				buffer = lines.pop() || "";
 
 				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						const data = line.slice(6).trim();
-						if (data) {
-							const proxyEvent = JSON.parse(data) as ProxyAssistantMessageEvent;
-							const event = processProxyEvent(proxyEvent, partial);
-							if (event) {
-								stream.push(event);
-							}
-						}
-					}
+					handleSseLine(line);
 				}
+			}
+
+			// Flush the decoder's held-back bytes and process the trailing
+			// unterminated line left in the buffer, if any.
+			buffer += decoder.decode();
+			for (const line of buffer.split("\n")) {
+				handleSseLine(line);
 			}
 
 			if (options.signal?.aborted) {
 				throw new Error("Request aborted by user");
 			}
 
-			stream.end();
+			if (!terminalEventReceived) {
+				// Server closed the connection without a completion event; result() would hang otherwise
+				partial.stopReason = "error";
+				partial.errorMessage = "Stream ended unexpectedly: connection closed without completion event";
+				stream.push({
+					type: "error",
+					reason: "error",
+					error: partial,
+				});
+			}
+
+			stream.end(partial);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			const reason = options.signal?.aborted ? "aborted" : "error";

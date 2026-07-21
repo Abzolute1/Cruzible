@@ -91,6 +91,34 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("README.md");
 	});
 
+	test("shows a neutral receiving state while args stream, not a missing-path error", () => {
+		// Model streams {"content": ...} before "path" (alphabetical key order)
+		const component = new ToolExecutionComponent(
+			"write",
+			"tool-args-1",
+			{ content: "partial file body" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
+		const streaming = stripAnsi(component.render(120).join("\n"));
+		expect(streaming).toContain("receiving args…");
+		expect(streaming).not.toContain("(missing path)");
+
+		// Once args are final, a genuinely absent path is an actual error again
+		component.setArgsComplete();
+		const completed = stripAnsi(component.render(120).join("\n"));
+		expect(completed).toContain("(missing path)");
+	});
+
+	test("bash call shows receiving state until the command finishes streaming", () => {
+		const component = new ToolExecutionComponent("bash", "tool-args-2", {}, {}, undefined, createFakeTui());
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("receiving args…");
+
+		component.updateArgs({ command: "ls -la" });
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("ls -la");
+	});
+
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
 		const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
 		const operations: BashOperations = {
@@ -301,7 +329,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("READ");
 		expect(rendered).toContain("Loaded README.md · 2 lines");
 		expect(rendered).toContain("README.md");
-		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("to expand");
 		expect(rendered).not.toContain("one");
 		expect(rendered).not.toContain("two");
 		expect(rendered).not.toContain("DONE");
@@ -332,14 +360,21 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = stripAnsi(component.render(160).join("\n"));
 		expect(rendered).toContain("Loaded README.md · 6 lines");
 		expect(rendered).toContain("README.md");
-		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("to expand");
 		expect(rendered).not.toContain("l1");
 		expect(rendered).not.toContain("l2");
 		expect(rendered).not.toContain("l6");
 	});
 
 	test("keeps web fetch results summarized by default", () => {
-		const component = new ToolExecutionComponent("webFetch", "tool-10", { url: "https://example.com" }, {}, undefined, createFakeTui());
+		const component = new ToolExecutionComponent(
+			"webFetch",
+			"tool-10",
+			{ url: "https://example.com" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
 		component.updateResult(
 			{
 				content: [{ type: "text", text: "full body that should not dominate the transcript" }],
@@ -357,7 +392,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("WEBFETCH");
 		expect(rendered).toContain("Fetched Example Domain");
 		expect(rendered).toContain("https://example.com");
-		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("to expand");
 		expect(rendered).not.toContain("Static example page");
 		expect(rendered).not.toContain("Preview line 1");
 		expect(rendered).not.toContain("Preview line 3");
@@ -385,26 +420,66 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("BASH");
 		expect(rendered).toContain("directory listing · 3 lines available");
 		expect(rendered).toContain("ls -la ~/Downloads");
-		expect(rendered).toContain("to expand");
+		expect(rendered).not.toContain("to expand");
 		expect(rendered).not.toContain("file1");
 		expect(rendered).not.toContain("file2");
 	});
 
+	test("verbose mode restores the three-line layout with expand hints", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-verbose-1",
+			{ path: "README.md" },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+		);
+		component.setVerbose(true);
+		component.updateResult(
+			{ content: [{ type: "text", text: "one\ntwo\n" }], details: undefined, isError: false },
+			false,
+		);
+		const rendered = stripAnsi(component.render(160).join("\n"));
+		expect(rendered).toContain("to expand");
+		expect(rendered).toContain("└ README.md");
+	});
+
 	test("uses a dot indicator instead of text status badges in tool headers", () => {
-		const running = new ToolExecutionComponent("bash", "tool-12", { command: "ls -la" }, {}, undefined, createFakeTui());
+		const running = new ToolExecutionComponent(
+			"bash",
+			"tool-12",
+			{ command: "ls -la" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
 		running.markExecutionStarted();
 		const runningRendered = stripAnsi(running.render(160).join("\n"));
 		expect(runningRendered).toContain("● BASH");
 		expect(runningRendered).not.toContain("RUNNING");
 
-		const success = new ToolExecutionComponent("webFetch", "tool-13", { url: "https://example.com" }, {}, undefined, createFakeTui());
+		const success = new ToolExecutionComponent(
+			"webFetch",
+			"tool-13",
+			{ url: "https://example.com" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
 		success.markExecutionStarted();
 		success.updateResult({ content: [], details: {}, isError: false }, false);
 		const successRendered = stripAnsi(success.render(160).join("\n"));
 		expect(successRendered).toContain("● WEBFETCH");
 		expect(successRendered).not.toContain("DONE");
 
-		const failure = new ToolExecutionComponent("bash", "tool-14", { command: "exit 1" }, {}, undefined, createFakeTui());
+		const failure = new ToolExecutionComponent(
+			"bash",
+			"tool-14",
+			{ command: "exit 1" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
 		failure.markExecutionStarted();
 		failure.updateResult({ content: [], details: {}, isError: true }, false);
 		const failureRendered = stripAnsi(failure.render(160).join("\n"));

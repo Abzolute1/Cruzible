@@ -76,8 +76,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -135,7 +135,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 				visualAssessment: {
 					target: "checkout page",
 					latestJudgment: "fail",
-					summary: "latest visual verification for checkout page found blocking issues: console errors: layout overflow",
+					summary:
+						"latest visual verification for checkout page found blocking issues: console errors: layout overflow",
 					blockingIssues: ["console errors: layout overflow"],
 					lastEvaluatedDetail: "http://localhost:3000/checkout",
 					basis: "screenshot_metadata",
@@ -144,7 +145,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 					activeSubtask: "Replan the next slice",
 					nextAction: "Replan into 1-2 concrete steps",
 					plannedNextStep: "Replan into 1-2 concrete steps, pick the first step, and execute it immediately.",
-					stepRationale: "Repeated drift indicates the current plan is not holding, so the run needs a tighter short-horizon plan.",
+					stepRationale:
+						"Repeated drift indicates the current plan is not holding, so the run needs a tighter short-horizon plan.",
 					expectedVerification: "npm test",
 					intentStatus: "pending",
 					lastIntentOutcome: undefined,
@@ -193,8 +195,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastAutonomousWorkspace: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			getAutonomousRecoveryActions: (InteractiveMode as any).prototype.getAutonomousRecoveryActions,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
@@ -229,14 +231,18 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 				taskJournal: {
 					activeSubtask: "Recover from the blocker",
 					nextAction: "Resolve blocker: failed verification: npm test",
-					plannedNextStep: "Define the smallest verifiable slice, execute only that slice, and verify it immediately.",
-					stepRationale: "Repeated drift or failure indicates the current scope is too broad, so the run must shrink to a smaller verified target.",
+					plannedNextStep:
+						"Define the smallest verifiable slice, execute only that slice, and verify it immediately.",
+					stepRationale:
+						"Repeated drift or failure indicates the current scope is too broad, so the run must shrink to a smaller verified target.",
 					expectedVerification: "npm test",
 					intentStatus: "failed",
 					lastIntentOutcome: "verification failed: npm test",
 					planItems: [],
 					completedCheckpoints: [],
-					blockedReasons: ["Autonomous run stopped after 3 consecutive failed steps: verification failed: npm test"],
+					blockedReasons: [
+						"Autonomous run stopped after 3 consecutive failed steps: verification failed: npm test",
+					],
 				},
 				currentFocus: "recovering blocker",
 				progressDetail: "npm test",
@@ -270,8 +276,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -376,8 +382,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -413,7 +419,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 				taskJournal: {
 					activeSubtask: "Stabilize the next step",
 					nextAction: "Resume from the last concrete point",
-					plannedNextStep: "Resume from the last concrete point, make only the next smallest step, and keep the response terse.",
+					plannedNextStep:
+						"Resume from the last concrete point, make only the next smallest step, and keep the response terse.",
 					stepRationale: "The previous turn degraded, so the loop should stabilize before taking on more scope.",
 					expectedVerification: "npm test",
 					intentStatus: "pending",
@@ -455,8 +462,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -495,7 +502,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 				taskJournal: {
 					activeSubtask: "Gather current sources",
 					nextAction: "Search current docs",
-					plannedNextStep: "Use webSearch to find the most relevant current or authoritative sources, then webFetch the best result before proceeding.",
+					plannedNextStep:
+						"Use webSearch to find the most relevant current or authoritative sources, then webFetch the best result before proceeding.",
 					stepRationale: "The task depends on external information.",
 					expectedVerification: "Carry forward authoritative source URLs from webSearch and webFetch",
 					intentStatus: "pending",
@@ -537,8 +545,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -572,7 +580,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 					lane: "research",
 					planRevision: 1,
 					executionAttempts: 1,
-					handoffSummary: "Research evidence is sufficient. Stop browsing and synthesize the answer from the saved sources.",
+					handoffSummary:
+						"Research evidence is sufficient. Stop browsing and synthesize the answer from the saved sources.",
 				},
 				research: {
 					searchQueries: ["React 19 documentation"],
@@ -594,8 +603,10 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 				taskJournal: {
 					activeSubtask: "Finalize and report verified completion",
 					nextAction: "Stop and present the verified result",
-					plannedNextStep: "Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
-					stepRationale: "The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
+					plannedNextStep:
+						"Summarize the source-backed answer from the saved research artifacts, cite the supporting URLs, and stop unless a concrete evidence gap remains.",
+					stepRationale:
+						"The run already has enough authoritative evidence, so further browsing would waste budget instead of improving the answer.",
 					expectedVerification: "Cite supporting source URLs such as https://react.dev/",
 					intentStatus: "pending",
 					lastIntentOutcome: undefined,
@@ -636,8 +647,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -716,8 +727,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 			lastStatusText: undefined,
 			showStatus: (InteractiveMode as any).prototype.showStatus,
 			formatAutonomousCheckpointStatus: (InteractiveMode as any).prototype.formatAutonomousCheckpointStatus,
-			getAutonomousControlStateFromSnapshot:
-				(InteractiveMode as any).prototype.getAutonomousControlStateFromSnapshot,
+			getAutonomousControlStateFromSnapshot: (InteractiveMode as any).prototype
+				.getAutonomousControlStateFromSnapshot,
 			formatVisualActionRecipeSummary: (InteractiveMode as any).prototype.formatVisualActionRecipeSummary,
 		};
 
@@ -757,7 +768,8 @@ describe("InteractiveMode.handleAutonomousCheckpoint", () => {
 					activeSubtask: "Finalize and report verified completion",
 					nextAction: "Stop and present the verified result",
 					plannedNextStep: "Summarize the verified result, note any residual risks, and stop.",
-					stepRationale: "The latest implementation slice is already backed by concrete verification, so more turns would only add cost.",
+					stepRationale:
+						"The latest implementation slice is already backed by concrete verification, so more turns would only add cost.",
 					expectedVerification: "npm test",
 					intentStatus: "pending",
 					lastIntentOutcome: undefined,
@@ -1213,7 +1225,8 @@ describe("InteractiveMode.handleEvent xml fallback", () => {
 			outputTokens: 15000,
 			textLength: 52000,
 			reasons: ["truncated_turn", "very_high_output_tokens", "very_long_output_text"],
-			recoveryHint: "Continue from the last concrete point only, keep the next response short, and avoid repeating prior analysis.",
+			recoveryHint:
+				"Continue from the last concrete point only, keep the next response short, and avoid repeating prior analysis.",
 		});
 
 		expect(fakeThis.footer.setWarning).toHaveBeenCalledWith(expect.stringContaining("Turn degraded critical"));

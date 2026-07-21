@@ -297,6 +297,66 @@ export function extractAnsiCode(str: string, pos: number): { code: string; lengt
 }
 
 /**
+ * Fast-path check for text that needs no sanitization.
+ * Matches all C0 controls except \t and \n, plus DEL and the C1 range.
+ */
+const NEEDS_SANITIZE_REGEX = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
+
+/**
+ * Sanitize untrusted text before it is written to the terminal.
+ *
+ * Strips C0/C1 control characters (except \n and \t) and all ANSI escape
+ * sequences except SGR styling (ESC[...m). This prevents terminal escape
+ * injection (OSC 52 clipboard writes, OSC 8 link spoofing, DCS/APC commands,
+ * cursor movement, ...) from untrusted content such as model output or tool
+ * results. Theme-applied SGR styling is unaffected: it is added by render
+ * code after sanitization, and any pre-styled SGR in the input is preserved.
+ */
+export function sanitizeTerminalText(text: string): string {
+	if (!NEEDS_SANITIZE_REGEX.test(text)) {
+		return text;
+	}
+
+	let result = "";
+	let i = 0;
+	while (i < text.length) {
+		const char = text[i]!;
+
+		if (char === "\x1b") {
+			const ansi = extractAnsiCode(text, i);
+			if (ansi) {
+				// Keep SGR styling only; drop OSC/APC and non-SGR CSI codes
+				if (ansi.code.endsWith("m")) {
+					result += ansi.code;
+				}
+				i += ansi.length;
+			} else {
+				// Drop lone or unrecognized ESC (incl. DCS, which extractAnsiCode doesn't parse)
+				i++;
+			}
+			continue;
+		}
+
+		if (char === "\n" || char === "\t") {
+			result += char;
+			i++;
+			continue;
+		}
+
+		const code = char.charCodeAt(0);
+		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			i++;
+			continue;
+		}
+
+		result += char;
+		i++;
+	}
+
+	return result;
+}
+
+/**
  * Track active ANSI SGR codes to preserve styling across line breaks.
  */
 class AnsiCodeTracker {

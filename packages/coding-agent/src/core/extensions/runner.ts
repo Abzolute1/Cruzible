@@ -675,13 +675,26 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				const handlerResult = await handler(event, ctx);
+				try {
+					const handlerResult = await handler(event, ctx);
 
-				if (handlerResult) {
-					result = handlerResult as ToolCallEventResult;
-					if (result.block) {
-						return result;
+					if (handlerResult) {
+						result = handlerResult as ToolCallEventResult;
+						if (result.block) {
+							return result;
+						}
 					}
+				} catch (err) {
+					// Per-handler isolation: one throwing extension must not abort the
+					// remaining handlers or propagate into the tool call itself.
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "tool_call",
+						error: message,
+						stack,
+					});
 				}
 			}
 		}

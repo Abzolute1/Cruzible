@@ -2,7 +2,8 @@
  * Shared nudge detection functions for interactive mode.
  * Standalone - no dependencies on auton modules.
  */
-import { buildToolOutcomeFingerprint, normalizeToolName } from "./auton/nudges/types.js";
+import { detectErrorLoop, detectNoProgressLoop, detectPingPong } from "./auton/nudges/loop-detection.js";
+import { normalizeToolName } from "./auton/nudges/types.js";
 
 /** Tool outcome for tracking */
 interface ToolOutcome {
@@ -12,15 +13,39 @@ interface ToolOutcome {
 	file?: string;
 	detail?: string;
 	fingerprint?: string;
+	callDigest?: string;
+	resultDigest?: string;
 }
 
 // Thresholds (matching auton nudge-eval.ts)
-const MAX_CONSECUTIVE_DUPLICATE_TOOLS = 3;
 const MAX_CONSECUTIVE_SAME_FILE = 4;
 const MAX_EXPLORATION_TURNS = 12;
 const MAX_FILE_CHURN_TURNS = 8;
 const MAX_WASTED_READ_TOKENS = 20_000;
-const MIN_TEXT_CHARS = 50;
+
+/** Tools whose successful execution mutates files — always progress, never "stuck". */
+const MUTATION_TOOLS = new Set(["edit", "write", "str_replace_editor", "patch", "multi_edit"]);
+
+/** Tools that count as visual verification of frontend work. */
+const VISUAL_VERIFICATION_TOOLS = new Set(["screenshot_url", "interact_then_screenshot", "verify_ui"]);
+
+const FRONTEND_FILE_RE = /\.(html?|css|scss|sass|less|jsx|tsx|vue|svelte)$/i;
+
+/**
+ * True when frontend files were mutated without any visual verification since.
+ * Scans backwards: a visual verification call clears everything before it.
+ */
+export function hasUnverifiedFrontendWork(history: ToolOutcome[]): boolean {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const entry = history[i];
+		const tool = normalizeToolName(entry.tool);
+		if (VISUAL_VERIFICATION_TOOLS.has(tool)) return false;
+		if (entry.success && MUTATION_TOOLS.has(tool) && entry.file && FRONTEND_FILE_RE.test(entry.file)) {
+			return true;
+		}
+	}
+	return false;
+}
 
 export interface NudgeWarning {
 	type: string;
@@ -33,15 +58,10 @@ export interface InteractiveNudgeContext {
 	toolCallHistory: ToolOutcome[];
 	fileAccessHistory: ToolOutcome[];
 	lastOutputTokens: number;
-}
-
-function hasDuplicateToolCalls(history: ToolOutcome[], threshold: number): boolean {
-	if (history.length < threshold) return false;
-	const recent = history.slice(-threshold);
-	const first = recent[0];
-	if (!first) return false;
-	const firstFingerprint = buildToolOutcomeFingerprint(first);
-	return recent.every((entry) => buildToolOutcomeFingerprint(entry) === firstFingerprint);
+	/** True when the todo list has open items but hasn't been updated recently. */
+	todoStale?: boolean;
+	/** True when visual verification tools (screenshot_url, verify_ui) are active. */
+	visualToolsActive?: boolean;
 }
 
 function hasWastedReadTokens(history: ToolOutcome[]): boolean {
@@ -69,7 +89,11 @@ function hasStuckFileAccess(history: ToolOutcome[]): boolean {
 	const recent = history.slice(-MAX_CONSECUTIVE_SAME_FILE);
 	const first = recent[0];
 	if (!first?.file) return false;
-	return recent.every((entry) => entry.file === first.file);
+	if (!recent.every((entry) => entry.file === first.file)) return false;
+	// Successful mutations are progress, not stuckness — editing the same file
+	// repeatedly is normal work.
+	if (recent.some((entry) => entry.success && MUTATION_TOOLS.has(normalizeToolName(entry.tool)))) return false;
+	return true;
 }
 
 function isDiscoveryTool(tool: string): boolean {
@@ -81,11 +105,45 @@ export function evaluateInteractiveNudges(context: InteractiveNudgeContext): Nud
 	const warnings: NudgeWarning[] = [];
 	const { turnIndex, toolCallHistory, fileAccessHistory, lastOutputTokens } = context;
 
-	if (hasDuplicateToolCalls(toolCallHistory, MAX_CONSECUTIVE_DUPLICATE_TOOLS)) {
-		const lastTool = toolCallHistory[toolCallHistory.length - 1]?.tool;
+	const errorLoop = detectErrorLoop(toolCallHistory);
+	if (errorLoop) {
 		warnings.push({
-			type: "duplicate_tools",
-			message: `Tool repetition detected: \`${lastTool}\` called ${MAX_CONSECUTIVE_DUPLICATE_TOOLS}+ times. Consider a different approach.`,
+			type: "error_loop",
+			message: `\`${errorLoop.tool}\` failed ${errorLoop.count}× with identical arguments. The same call will keep failing — change the arguments or fix the underlying problem first.`,
+			severity: "warning",
+		});
+	}
+
+	const noProgress = detectNoProgressLoop(toolCallHistory);
+	if (noProgress) {
+		warnings.push({
+			type: "no_progress",
+			message: `\`${noProgress.tool}\` returned the same result ${noProgress.count}× in a row. You already have this information — act on it instead of re-running the call.`,
+			severity: "warning",
+		});
+	}
+
+	const pingPong = detectPingPong(toolCallHistory);
+	if (pingPong) {
+		warnings.push({
+			type: "ping_pong",
+			message: `Oscillating between \`${pingPong.toolA}\` and \`${pingPong.toolB}\` without progress. Stop and decide based on the results you already have.`,
+			severity: "warning",
+		});
+	}
+
+	if (context.todoStale) {
+		warnings.push({
+			type: "todo_stale",
+			message: `Todo list is stale — no update in several tool calls. Mark finished items completed and keep exactly one task in progress.`,
+			severity: "warning",
+		});
+	}
+
+	if (context.visualToolsActive && hasUnverifiedFrontendWork(toolCallHistory)) {
+		warnings.push({
+			type: "ui_unverified",
+			message: `Frontend changed without visual verification. Run verify_ui with a concrete claim (e.g. "the submit button is visible and enabled") before wrapping up.`,
 			severity: "warning",
 		});
 	}

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, type Terminal, Text, TUI } from "@ag1/tui";
+import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
@@ -105,12 +106,12 @@ describe("edit tool TUI rendering", () => {
 
 		const redrawsBeforeResult = tui.fullRedraws;
 		const clearsBeforeResult = terminal.fullClearCount;
-			component.updateResult(
-				{
+		component.updateResult(
+			{
 				content: [{ type: "text", text: `Patched ${edits.length} block(s) in ${filePath}.` }],
-					details: diff,
-					isError: false,
-				},
+				details: diff,
+				isError: false,
+			},
 			false,
 		);
 		tui.requestRender();
@@ -120,7 +121,9 @@ describe("edit tool TUI rendering", () => {
 		expect(terminal.fullClearCount).toBe(clearsBeforeResult);
 
 		const settledRender = component.render(80).join("\n");
-		expect(settledRender).toContain("line 50 changed");
-		expect(settledRender).toContain("line 950 changed");
+		// Intra-line highlighting inserts ANSI codes between tokens, so match on stripped text
+		const settledText = stripAnsi(settledRender);
+		expect(settledText).toContain("line 50 changed");
+		expect(settledText).toContain("line 950 changed");
 	});
 });

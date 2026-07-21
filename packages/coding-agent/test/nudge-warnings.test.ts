@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { evaluateInteractiveNudges } from "../src/core/nudge-warnings.js";
+import { buildToolCallDigest, buildToolResultDigest } from "../src/core/tool-outcome-digests.js";
 import { extractTrackedFileFromToolResult } from "../src/core/tool-outcome-file.js";
 
 describe("tool outcome file extraction", () => {
@@ -25,7 +26,12 @@ describe("tool outcome file extraction", () => {
 			"find",
 			{ path: "." },
 			{
-				content: [{ type: "text", text: "src/core/tools/research-output.ts\n\n[1 match; next: read src/core/tools/research-output.ts or grep inside it]" }],
+				content: [
+					{
+						type: "text",
+						text: "src/core/tools/research-output.ts\n\n[1 match; next: read src/core/tools/research-output.ts or grep inside it]",
+					},
+				],
 			},
 		);
 
@@ -101,5 +107,78 @@ describe("evaluateInteractiveNudges", () => {
 		expect(warnings.find((warning) => warning.type === "stuck_file")?.message).toContain(
 			"Reuse the evidence you already have instead of searching again.",
 		);
+	});
+
+	test("does not warn for consecutive successful edits to the same file with different content", () => {
+		const edit = (oldText: string, newText: string) => {
+			const args = { path: "theme.ts", edits: [{ oldText, newText }] };
+			const result = {
+				content: [{ type: "text", text: "Patched 1 block(s) in theme.ts." }],
+				details: { diff: `-${oldText}\n+${newText}` },
+			};
+			return {
+				tool: "edit",
+				success: true,
+				file: "theme.ts",
+				callDigest: buildToolCallDigest("edit", args),
+				resultDigest: buildToolResultDigest(result, false),
+			};
+		};
+		const warnings = evaluateInteractiveNudges({
+			turnIndex: 6,
+			toolCallHistory: [edit("a", "b"), edit("c", "d"), edit("e", "f"), edit("g", "h")],
+			fileAccessHistory: [edit("a", "b"), edit("c", "d"), edit("e", "f"), edit("g", "h")],
+			lastOutputTokens: 120,
+		});
+
+		expect(warnings.some((w) => w.type === "error_loop" || w.type === "no_progress" || w.type === "ping_pong")).toBe(
+			false,
+		);
+		expect(warnings.some((w) => w.type === "stuck_file")).toBe(false);
+	});
+
+	test("warns when the same edit fails repeatedly with identical arguments", () => {
+		const failed = () => {
+			const args = { path: "theme.ts", edits: [{ oldText: "missing", newText: "x" }] };
+			const result = { content: [{ type: "text", text: "Could not find the exact text in theme.ts." }] };
+			return {
+				tool: "edit",
+				success: false,
+				file: "theme.ts",
+				callDigest: buildToolCallDigest("edit", args),
+				resultDigest: buildToolResultDigest(result, true),
+			};
+		};
+		const warnings = evaluateInteractiveNudges({
+			turnIndex: 6,
+			toolCallHistory: [failed(), failed(), failed()],
+			fileAccessHistory: [],
+			lastOutputTokens: 120,
+		});
+
+		const warning = warnings.find((w) => w.type === "error_loop");
+		expect(warning).toBeDefined();
+		expect(warning?.message).toContain("identical arguments");
+	});
+
+	test("warns when the same call returns the same result 4 times in a row", () => {
+		const grep = () => {
+			const args = { pattern: "foo", path: "src" };
+			const result = { content: [{ type: "text", text: "src/a.ts:1: foo" }] };
+			return {
+				tool: "grep",
+				success: true,
+				callDigest: buildToolCallDigest("grep", args),
+				resultDigest: buildToolResultDigest(result, false),
+			};
+		};
+		const warnings = evaluateInteractiveNudges({
+			turnIndex: 6,
+			toolCallHistory: [grep(), grep(), grep(), grep()],
+			fileAccessHistory: [],
+			lastOutputTokens: 120,
+		});
+
+		expect(warnings.some((w) => w.type === "no_progress")).toBe(true);
 	});
 });

@@ -1,11 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+	type CompactionQueuedMessage,
 	clearInteractiveQueuedMessages,
 	combineQueuedMessagesForEditor,
 	flushInteractiveCompactionQueue,
 	getInteractiveQueuedMessages,
 	handleInteractiveFollowUpSubmit,
-	type CompactionQueuedMessage,
 	type InteractiveCompactionQueueActions,
 	type InteractiveFollowUpActions,
 	type InteractiveFollowUpState,

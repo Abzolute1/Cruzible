@@ -1,16 +1,16 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn, spawnSync } from "child_process";
 import type { Component } from "@ag1/tui";
-import { copyToClipboard } from "../../utils/clipboard.js";
+import { spawn, spawnSync } from "child_process";
 import { getShareViewerUrl } from "../../config.js";
+import { copyToClipboard } from "../../utils/clipboard.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import {
+	type InteractiveEditorHostContainer,
+	type InteractiveEditorHostUi,
 	restoreEditorHost,
 	showEditorHostComponent,
-	type InteractiveEditorHostUi,
-	type InteractiveEditorHostContainer,
 } from "./interactive-editor-host.js";
 import { theme } from "./theme/theme.js";
 
@@ -139,7 +139,11 @@ export async function performInteractiveSessionShare(actions: InteractiveSession
 		return;
 	}
 
-	const loader = new BorderedLoader(actions.ui as ConstructorParameters<typeof BorderedLoader>[0], theme, "Creating gist...");
+	const loader = new BorderedLoader(
+		actions.ui as ConstructorParameters<typeof BorderedLoader>[0],
+		theme,
+		"Creating gist...",
+	);
 	showEditorHostComponent({
 		container: actions.editorContainer,
 		ui: actions.ui,

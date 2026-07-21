@@ -1,12 +1,9 @@
 import { Box, Container, Spacer, Text } from "@ag1/tui";
 import type { InteractivePlanArtifact } from "../interactive-plan-artifacts.js";
-import {
-	buildInteractiveExpandedPlanCardLines,
-	buildInteractivePlanCardLines,
-} from "../interactive-plan-review-ui.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import { buildInteractiveExpandedPlanCardLines, buildInteractivePlanCardLines } from "../interactive-plan-review-ui.js";
 import { theme } from "../theme/theme.js";
 import { buildConsoleBadge, buildConsoleHeader, buildConsoleMeta } from "./console-chrome.js";
+import { DynamicBorder } from "./dynamic-border.js";
 
 export class PlanReviewCardComponent extends Container {
 	private artifact: InteractivePlanArtifact;
@@ -96,6 +93,8 @@ export class PlanReviewCardComponent extends Container {
 				return "Approved Plan";
 			case "executing":
 				return "Plan Execution";
+			case "completed":
+				return "Completed Plan";
 			case "rejected":
 				return "Rejected Plan";
 			case "superseded":
@@ -110,6 +109,7 @@ export class PlanReviewCardComponent extends Container {
 			case "clarifying":
 				return (text) => theme.fg("warning", text);
 			case "accepted":
+			case "completed":
 				return (text) => theme.fg("success", text);
 			case "rejected":
 				return (text) => theme.fg("error", text);
@@ -123,6 +123,7 @@ export class PlanReviewCardComponent extends Container {
 	private getBackgroundColor(): (text: string) => string {
 		switch (this.artifact.status) {
 			case "accepted":
+			case "completed":
 				return (text) => theme.bg("toolSuccessBg", text);
 			case "rejected":
 				return (text) => theme.bg("toolErrorBg", text);
@@ -138,6 +139,7 @@ export class PlanReviewCardComponent extends Container {
 			case "clarifying":
 				return "warning";
 			case "accepted":
+			case "completed":
 				return "success";
 			case "rejected":
 				return "error";
@@ -153,6 +155,24 @@ export class PlanReviewCardComponent extends Container {
 	}
 
 	private isSectionHeading(line: string): boolean {
-		return /^[A-Z][A-Za-z ]+$/.test(line);
+		return PLAN_CARD_SECTION_HEADINGS.has(line.trim().toLowerCase());
 	}
 }
+
+/** Standalone heading lines emitted by the plan card/review line builders. */
+const PLAN_CARD_SECTION_HEADINGS = new Set([
+	"summary",
+	"steps",
+	"assumptions",
+	"constraints",
+	"risks",
+	"verification",
+	"questions",
+	"guidance",
+	"open questions",
+	"clarifying questions",
+	"clarification answers",
+	"latest step review",
+	"review actions",
+	"execution actions",
+]);

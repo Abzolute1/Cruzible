@@ -1,10 +1,10 @@
-import { Container } from "@ag1/tui";
+import { Container, type TUI } from "@ag1/tui";
 import { describe, expect, test, vi } from "vitest";
 import {
 	handleInteractiveCompactionEnd,
 	handleInteractiveCompactionStart,
-	handleInteractiveRecoveryReplaySkipped,
 	handleInteractiveDegradedTurnEvent,
+	handleInteractiveRecoveryReplaySkipped,
 	handleInteractiveRetryEnd,
 	handleInteractiveRetryStart,
 	handleInteractiveXmlFallbackEvent,
@@ -53,7 +53,7 @@ describe("interactive-event-actions", () => {
 		const result = handleInteractiveDegradedTurnEvent({
 			event: {
 				type: "degraded_turn",
-				severity: "warning",
+				severity: "elevated",
 				stopReason: "max_tokens",
 				outputTokens: 12000,
 				textLength: 32000,
@@ -89,7 +89,7 @@ describe("interactive-event-actions", () => {
 			event: {
 				type: "compaction_end",
 				reason: "manual",
-				result: { tokensBefore: 123, summary: "summary" },
+				result: { tokensBefore: 123, summary: "summary", firstKeptEntryId: "entry-1" },
 				aborted: false,
 				willRetry: false,
 			},
@@ -122,7 +122,7 @@ describe("interactive-event-actions", () => {
 	test("creates retry and compaction loaders and restores handlers on end", () => {
 		initTheme("dark", false);
 		const statusContainer = { clear: vi.fn(), addChild: vi.fn() };
-		const ui = { requestRender: vi.fn() };
+		const ui = { requestRender: vi.fn() } as unknown as TUI;
 		const defaultEditor: { onEscape?: (() => void) | undefined } = {};
 		const session = { abortRetry: vi.fn(), abortCompaction: vi.fn() };
 
@@ -137,7 +137,7 @@ describe("interactive-event-actions", () => {
 		expect(compactionStart.loader).toBeDefined();
 
 		const retryStart = handleInteractiveRetryStart({
-			event: { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1500 },
+			event: { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1500, errorMessage: "boom" },
 			defaultEditor,
 			statusContainer,
 			session,
@@ -146,7 +146,7 @@ describe("interactive-event-actions", () => {
 		expect(retryStart.loader).toBeDefined();
 
 		const retryEnd = handleInteractiveRetryEnd({
-			event: { type: "auto_retry_end", attempt: 1, maxAttempts: 3, success: false, finalError: "boom" },
+			event: { type: "auto_retry_end", attempt: 1, success: false, finalError: "boom" },
 			defaultEditor,
 			previousEscapeHandler: retryStart.nextEscapeHandler,
 			loader: retryStart.loader,

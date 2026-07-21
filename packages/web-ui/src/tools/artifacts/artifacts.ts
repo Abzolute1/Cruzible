@@ -1,8 +1,8 @@
 import { icon } from "@mariozechner/mini-lit";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
-import { Button } from "@mariozechner/mini-lit/dist/Button.js";
 import type { Agent, AgentMessage, AgentTool } from "@ag1/agent-core";
 import { StringEnum, type ToolCall } from "@ag1/ai";
+import { Button } from "@mariozechner/mini-lit/dist/Button.js";
 import { type Static, Type } from "@sinclair/typebox";
 import { html, LitElement, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -54,6 +54,7 @@ export type ArtifactsParams = Static<typeof artifactsParamsSchema>;
 export class ArtifactsPanel extends LitElement {
 	@state() private _artifacts = new Map<string, Artifact>();
 	@state() private _activeFilename: string | null = null;
+	@state() private _reconstructionWarning: string | null = null;
 
 	// Programmatically managed artifact elements
 	private artifactElements = new Map<string, ArtifactElement>();
@@ -348,6 +349,7 @@ export class ArtifactsPanel extends LitElement {
 		}
 
 		// 3) Compute final state per filename by simulating operations in-memory
+		let mismatchCount = 0;
 		const finalArtifacts = new Map<string, string>();
 		for (const op of operations) {
 			const filename = op.filename;
@@ -365,11 +367,23 @@ export class ArtifactsPanel extends LitElement {
 					break;
 				}
 				case "update": {
-					let existing = finalArtifacts.get(filename);
-					if (!existing) break; // skip invalid update (shouldn't happen for successful results)
+					const existing = finalArtifacts.get(filename);
+					if (!existing) {
+						mismatchCount++;
+						console.warn(`[artifacts] Reconstruction: skipping update for missing file "${filename}"`);
+						break;
+					}
 					if (op.old_str !== undefined && op.new_str !== undefined) {
-						existing = existing.replace(op.old_str, op.new_str);
-						finalArtifacts.set(filename, existing);
+						if (!existing.includes(op.old_str)) {
+							// Live path errors in this case; silently skipping here would
+							// make reloaded content diverge from the live session
+							mismatchCount++;
+							console.warn(
+								`[artifacts] Reconstruction: old_str not found in "${filename}" - update skipped, content may differ from the live session`,
+							);
+							break;
+						}
+						finalArtifacts.set(filename, existing.replace(op.old_str, op.new_str));
 					}
 					break;
 				}
@@ -383,6 +397,10 @@ export class ArtifactsPanel extends LitElement {
 					break;
 			}
 		}
+		this._reconstructionWarning =
+			mismatchCount > 0
+				? i18n("Some artifact changes could not be reconstructed; content may differ from the live session")
+				: null;
 
 		// 4) Reset current UI state before bulk create
 		this._artifacts.clear();
@@ -398,8 +416,9 @@ export class ArtifactsPanel extends LitElement {
 			const createParams: ArtifactsParams = { command: "create", filename, content } as const;
 			try {
 				await this.createArtifact(createParams, { skipWait: true, silent: true });
-			} catch {
-				// Ignore failures during reconstruction
+			} catch (error) {
+				// Ignore failures during reconstruction, but leave a trace
+				console.warn(`[artifacts] Reconstruction: failed to recreate "${filename}":`, error);
 			}
 		}
 
@@ -442,14 +461,9 @@ export class ArtifactsPanel extends LitElement {
 			return "";
 		}
 
-		return new Promise((resolve) => {
-			// Fallback timeout - just get logs after execution should complete
-			setTimeout(() => {
-				// Get whatever logs we have
-				const logs = element.getLogs();
-				resolve(logs);
-			}, 1500);
-		});
+		// Wait for the sandbox's execution-complete signal; timeout is only a fallback
+		await element.waitForExecution(1500);
+		return element.getLogs();
 	}
 
 	// Reload all HTML artifacts (called when any artifact changes)
@@ -702,6 +716,13 @@ export class ArtifactsPanel extends LitElement {
 				<!-- Content area where artifact elements are added programmatically -->
 				<div class="flex-1 overflow-hidden" ${ref(this.contentRef)}></div>
 			</div>
+
+			<!-- Non-blocking warning when reconstruction skipped operations -->
+			${
+				this._reconstructionWarning
+					? html`<div class="absolute bottom-0 left-0 right-0 px-3 py-1.5 text-xs text-yellow-500 bg-background/95 border-t border-border pointer-events-none">${this._reconstructionWarning}</div>`
+					: ""
+			}
 		`;
 	}
 }

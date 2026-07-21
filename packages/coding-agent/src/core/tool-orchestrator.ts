@@ -1,9 +1,9 @@
 import { basename, normalize, relative, resolve } from "node:path";
 import {
 	buildEvidencePlan,
+	type EvidencePlanStep,
 	formatEvidencePlanStep,
 	nextEvidencePlanStep,
-	type EvidencePlanStep,
 } from "./evidence-planner.js";
 import { RepairController } from "./repair-controller.js";
 import { StopController } from "./stop-controller.js";
@@ -87,9 +87,7 @@ function textFromToolResult(result: unknown): string {
 
 function commandLooksLikeDiscovery(command: string): boolean {
 	const normalized = normalizeCommand(command);
-	return /(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|pwd\b|git\s+status(\s|$)|git\s+branch(\s|$))/i.test(
-		normalized,
-	);
+	return /(^|[;&|]\s*)(ls\b|find\b|fd\b|rg\s+--files\b|pwd\b|git\s+status(\s|$)|git\s+branch(\s|$))/i.test(normalized);
 }
 
 function isBroadFind(pattern: string | undefined): boolean {
@@ -169,7 +167,7 @@ export class ToolOrchestrator {
 		}
 
 		const path = getToolPath(args);
-		if (path && !isContainedPath(path, this.cwd, { allowMissing: true })) {
+		if (path && !isContainedPath(path, this.cwd)) {
 			return {
 				allow: false,
 				reason: `Controlled runtime: ${toolName} path is outside the workspace: ${path}`,
@@ -215,7 +213,8 @@ export class ToolOrchestrator {
 
 		if (observation.toolName === "ls" || observation.toolName === "find" || SEARCH_TOOLS.has(observation.toolName)) {
 			this.counters.discoveryCalls++;
-			if (this.counters.patchAttempts === 0 && SEARCH_TOOLS.has(observation.toolName)) this.counters.searchesBeforePatch++;
+			if (this.counters.patchAttempts === 0 && SEARCH_TOOLS.has(observation.toolName))
+				this.counters.searchesBeforePatch++;
 			return;
 		}
 
@@ -272,7 +271,10 @@ export class ToolOrchestrator {
 
 	private evaluateSearch(toolName: string): ControlledToolDecision {
 		if (this.policy.mode !== "strict_benchmark") return { allow: true };
-		if (this.counters.patchAttempts === 0 && this.counters.searchesBeforePatch >= this.policy.maxSearchesBeforePatch) {
+		if (
+			this.counters.patchAttempts === 0 &&
+			this.counters.searchesBeforePatch >= this.policy.maxSearchesBeforePatch
+		) {
 			return {
 				allow: false,
 				reason: `Controlled runtime: ${toolName} exceeds the pre-patch search budget (${this.policy.maxSearchesBeforePatch}).`,
@@ -371,7 +373,9 @@ export class ToolOrchestrator {
 				setBashCommand(args, verifier);
 				return { allow: true, reason: `Controlled runtime: verifier command rewritten to: ${verifier}` };
 			}
-			const missingExpectedMutations = this.policy.expectedChangedPaths.filter((path) => !this.mutatedPaths.has(path));
+			const missingExpectedMutations = this.policy.expectedChangedPaths.filter(
+				(path) => !this.mutatedPaths.has(path),
+			);
 			if (
 				this.policy.mode === "strict_benchmark" &&
 				this.policy.mutationExpected &&
@@ -386,13 +390,18 @@ export class ToolOrchestrator {
 			}
 			return { allow: true };
 		}
-		if (this.policy.mode === "strict_benchmark" && commandLooksLikeDiscovery(command) && this.policy.allowedPaths.length > 0) {
+		if (
+			this.policy.mode === "strict_benchmark" &&
+			commandLooksLikeDiscovery(command) &&
+			this.policy.allowedPaths.length > 0
+		) {
 			return {
 				allow: false,
 				reason: `Controlled runtime: shell discovery is blocked because relevant files are already known: ${formatList(this.policy.allowedPaths)}.`,
-				nextAction: this.stopController.hasMutationSinceVerifier() && this.policy.verification
-					? `bash ${this.policy.verification}`
-					: this.nextPlannedAction() ?? this.nextReadAction(),
+				nextAction:
+					this.stopController.hasMutationSinceVerifier() && this.policy.verification
+						? `bash ${this.policy.verification}`
+						: (this.nextPlannedAction() ?? this.nextReadAction()),
 			};
 		}
 		return { allow: true };
@@ -401,7 +410,8 @@ export class ToolOrchestrator {
 	private nextPlannedAction(): string | undefined {
 		const repairSnapshot = this.repairController.snapshot();
 		if (repairSnapshot.shouldStop) return "final_answer";
-		if (repairSnapshot.failed && !repairSnapshot.mutationSinceFailure) return this.repairController.nextRepairAction();
+		if (repairSnapshot.failed && !repairSnapshot.mutationSinceFailure)
+			return this.repairController.nextRepairAction();
 		const next = nextEvidencePlanStep(this.evidencePlan, {
 			readPaths: this.readPaths,
 			mutatedPaths: this.mutatedPaths,
@@ -423,7 +433,10 @@ export class ToolOrchestrator {
 	}
 
 	private nextMutationOrVerifierAction(): string {
-		const target = this.policy.expectedChangedPaths[0] ?? this.policy.allowedPaths.find((path) => basename(path).includes(".")) ?? "";
+		const target =
+			this.policy.expectedChangedPaths[0] ??
+			this.policy.allowedPaths.find((path) => basename(path).includes(".")) ??
+			"";
 		if (this.policy.mutationExpected && target) return `edit ${target}`;
 		if (this.policy.verification) return `bash ${this.policy.verification}`;
 		return "final_answer";

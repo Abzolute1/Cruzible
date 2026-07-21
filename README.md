@@ -85,6 +85,11 @@ The project has been moving away from "god objects" toward dedicated coordinator
 
 That decomposition matters because reliability problems in agent harnesses usually come from control-flow sprawl, not from missing features.
 
+See [docs/architecture.md](docs/architecture.md) for the current runtime diagram, coordinator ownership map, and turn/control-flow summary.
+For local development commands and the package map, see [docs/contributing.md](docs/contributing.md).
+For benchmark methodology and result fields, see [docs/benchmarks.md](docs/benchmarks.md).
+For current safety boundaries and recommended sandbox usage, see [docs/security.md](docs/security.md).
+
 ## Autonomous Execution Model
 
 Autonomous mode is designed to be bounded and inspectable.

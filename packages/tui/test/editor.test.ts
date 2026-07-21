@@ -2031,6 +2031,57 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("survives a provider rejection without poisoning later requests", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			let calls = 0;
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (lines, _cursorLine, cursorCol, options) => {
+					if (!options.force) {
+						return null;
+					}
+					calls++;
+					if (calls === 1) {
+						throw new Error("provider exploded");
+					}
+					const text = lines[0] || "";
+					const prefix = text.slice(0, cursorCol);
+					if (prefix === "src") {
+						return {
+							items: [
+								{ value: "src/", label: "src/" },
+								{ value: "src.txt", label: "src.txt" },
+							],
+							prefix: "src",
+						};
+					}
+					return null;
+				},
+				applyCompletion,
+			};
+
+			editor.setAutocompleteProvider(mockProvider);
+
+			editor.handleInput("s");
+			editor.handleInput("r");
+			editor.handleInput("c");
+
+			// First request rejects; autocomplete UI must be reset
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+
+			// The rejected request must not poison the chain: a later request still works
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.strictEqual(calls, 2);
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			// Accept the first suggestion to prove the menu is functional
+			editor.handleInput("\t");
+			assert.strictEqual(editor.getText(), "src/");
+		});
+
 		it("keeps suggestions open when typing in force mode (Tab-triggered)", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

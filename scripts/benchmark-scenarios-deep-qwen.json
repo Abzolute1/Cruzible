@@ -1,0 +1,137 @@
+{
+  "id": "deep-qwen-bench-v1",
+  "name": "Deep & Wide Diagnostic Benchmark for AG1 + Qwen 35B A3B (v1)",
+  "description": "Wide and deep benchmark to surface weak points in context handling, recovery, planning, tool efficiency, and long-horizon reasoning when using the 35B local Qwen model with the AG1 harness. Scenarios are self-contained JS fixtures with clear verification. Designed to be run via the existing harness-benchmark-run.mjs.",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "debug_falsey_preserve",
+      "category": "debugging",
+      "description": "Fix config parser to preserve explicit falsey values.",
+      "weight": 3,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. Fix parseConfig so that user-provided false, 0, and '' override defaults instead of being falsy-coerced.\n2. Minimal change only.\n3. Run verification before finishing.\n4. Short summary at end.\n\nConstraints:\n- Stay inside this workspace.\n- Do not touch tests.\n- Verification: node --test",
+      "files": [
+        {"path": "src/parser.js", "lines": ["const d = {enabled:true, retries:3, name:'prod'}; export function parseConfig(u={}) { return {enabled: u.enabled || d.enabled, retries: u.retries || d.retries, name: u.name || d.name}; }"]},
+        {"path": "tests/parser.test.js", "lines": ["import {parseConfig} from '../src/parser.js'; import test from 'node:test'; import assert from 'node:assert/strict'; test('false', () => assert.equal(parseConfig({enabled:false}).enabled, false)); test('zero', () => assert.equal(parseConfig({retries:0}).retries, 0)); test('empty', () => assert.equal(parseConfig({name:''}).name, ''));"]}
+      ]
+    },
+    {
+      "id": "refactor_duplicate_logic",
+      "category": "refactoring",
+      "description": "Extract duplicated user/project state into shared module.",
+      "weight": 4,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 3,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. Extract duplicated state management from user.js and project.js into src/state.js.\n2. Update callers to use shared API.\n3. Keep tests passing.\n4. Verify.\n\nConstraints:\n- Minimal necessary changes.\n- Do not rewrite tests.\n- Verification: node --test",
+      "files": [
+        {"path": "src/user.js", "lines": ["let cur=null; export function setUser(u){cur=u} export function getUser(){return cur} export function clearUser(){cur=null}"]},
+        {"path": "src/project.js", "lines": ["let cur=null; export function setProject(p){cur=p} export function getProject(){return cur} export function clearProject(){cur=null}"]},
+        {"path": "tests/state.test.js", "lines": ["import {setUser,getUser,clearUser} from '../src/user.js'; import {setProject,getProject,clearProject} from '../src/project.js'; import test from 'node:test'; import assert from 'node:assert/strict'; test('user',()=>{setUser({id:1});assert.deepEqual(getUser(),{id:1});clearUser()}); test('proj',()=>{setProject({id:2});assert.deepEqual(getProject(),{id:2});clearProject()});"]}
+      ]
+    },
+    {
+      "id": "feature_add_rate_limit",
+      "category": "feature-add",
+      "description": "Implement rate limiting + tests from skeleton.",
+      "weight": 5,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 2,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. Implement rateLimit middleware in src/rate-limit.js (track per key, return 429 after N).\n2. Write passing tests in tests/rate-limit.test.js.\n3. Verify.\n\nConstraints:\n- Use only built-ins.\n- Clear code.\n- Verification: node --test",
+      "files": [
+        {"path": "src/rate-limit.js", "lines": ["// Implement here: export function rateLimit(max, windowMs) { ... }"]},
+        {"path": "tests/rate-limit.test.js", "lines": ["import test from 'node:test'; import assert from 'node:assert/strict'; // write tests that will pass after impl"]}
+      ]
+    },
+    {
+      "id": "recovery_misleading_file",
+      "category": "recovery",
+      "description": "Avoid trap file and correctly patch the active code.",
+      "weight": 5,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. There is a misleading similarly-named formatter.\n2. Patch only the correct one so output uses newlines.\n3. Verify.\n\nConstraints:\n- Do not edit the wrong file.\n- Verification: node --test",
+      "files": [
+        {"path": "cli/wrong-formatter.mjs", "lines": ["export function format(items){return items.map(i=>`* ${i}`).join(' ')}"]},
+        {"path": "src/formatter.mjs", "lines": ["export function format(items){return items.map(i=>`- ${i}`).join(' ')}"]},
+        {"path": "cli/render.mjs", "lines": ["import {format} from '../src/formatter.mjs'; export function render(items){return 'Summary:\\n'+format(items)}"]},
+        {"path": "tests/render.test.mjs", "lines": ["import {render} from '../cli/render.mjs'; import test from 'node:test'; import assert from 'node:assert/strict'; test('newlines',()=>assert.equal(render(['a','b']),'Summary:\\n- a\\n- b'));"]}
+      ]
+    },
+    {
+      "id": "context_many_files",
+      "category": "context-management",
+      "description": "Explore 7-file small app and add --json flag correctly.",
+      "weight": 6,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 2,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. The CLI has many small modules.\n2. Add support for --json in the main command (output JSON instead of text).\n3. Update relevant test.\n4. Verify with few re-reads.\n\nConstraints:\n- Efficient exploration.\n- Verification: node --test",
+      "files": [
+        {"path": "cli/main.js", "lines": ["// main"]},
+        {"path": "cli/parser.js", "lines": ["export function parse(args){return {json:args.includes('--json')}}"]},
+        {"path": "cli/commands/run.js", "lines": ["export function run(opts){ console.log(opts.json ? JSON.stringify({ok:true}) : 'ok'); }"]},
+        {"path": "cli/format/text.js", "lines": ["export const format = (d)=>String(d)"]},
+        {"path": "cli/format/json.js", "lines": ["export const format = JSON.stringify"]},
+        {"path": "tests/cli.test.js", "lines": ["import test from 'node:test'; import assert from 'node:assert/strict'; test('json mode', () => { /* expect json */ });"]},
+        {"path": "package.json", "lines": ["{\"name\":\"cli\"}"]}
+      ]
+    },
+    {
+      "id": "planning_multi_phase",
+      "category": "planning",
+      "description": "Plan then execute: add auth + tests + docs.",
+      "weight": 7,
+      "verifyCommand": "node --test && test -f README.md",
+      "expectedChangedFilesMax": 4,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. First write a short PLAN.md.\n2. Implement simple token auth middleware.\n3. Protect a route and add login test.\n4. Update README.\n5. Verify all.\n\nConstraints:\n- Follow your own plan.\n- Verification: node --test && test -f README.md",
+      "files": [
+        {"path": "src/server.js", "lines": ["// stub server"]},
+        {"path": "tests/auth.test.js", "lines": ["// to be extended"]},
+        {"path": "package.json", "lines": ["{\"name\":\"app\"}"]}
+      ]
+    },
+    {
+      "id": "integration_full_flow",
+      "category": "integration",
+      "description": "Make parser + transform + reporter work end-to-end.",
+      "weight": 5,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 2,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. The integration test expects a full pipeline.\n2. Implement the missing transform step.\n3. Make the test pass.\n4. Verify.\n\nConstraints:\n- Follow test expectations.\n- Verification: node --test",
+      "files": [
+        {"path": "src/parser.js", "lines": ["export const parse = s => s.split(',');"]},
+        {"path": "src/transform.js", "lines": ["// implement toUpper or similar"]},
+        {"path": "src/reporter.js", "lines": ["export const report = arr => arr.join('|');"]},
+        {"path": "tests/integration.test.js", "lines": ["import test from 'node:test'; import assert from 'node:assert/strict'; import {parse} from '../src/parser.js'; import {transform} from '../src/transform.js'; import {report} from '../src/reporter.js'; test('pipeline', () => assert.equal(report(transform(parse('a,b,c'))), 'A|B|C'));"]}
+      ]
+    },
+    {
+      "id": "error_recovery_chain",
+      "category": "recovery",
+      "description": "Multiple failed attempts before correct minimal fix.",
+      "weight": 6,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. Tests will initially fail.\n2. Use failing output to iterate and recover.\n3. Apply the correct small fix for the off-by-one.\n4. Verify.\n\nConstraints:\n- Show recovery behavior.\n- Verification: node --test",
+      "files": [
+        {"path": "src/calc.js", "lines": ["export function sumTo(n){ let s=0; for(let i=1;i<n;i++) s+=i; return s; }"]},
+        {"path": "tests/calc.test.js", "lines": ["import {sumTo} from '../src/calc.js'; import test from 'node:test'; import assert from 'node:assert/strict'; test('to 4',()=>assert.equal(sumTo(4),10)); test('to 1',()=>assert.equal(sumTo(1),1));"]}
+      ]
+    },
+    {
+      "id": "docs_to_code_migration",
+      "category": "architecture",
+      "description": "Read local docs and apply the recommended pattern.",
+      "weight": 4,
+      "verifyCommand": "node --test",
+      "expectedChangedFilesMax": 1,
+      "task": "You are in a self-contained benchmark workspace.\n\nTask:\n1. Read the reference doc about AbortSignal.\n2. Migrate the fetch helper to use signal instead of timeoutMs.\n3. Verify.\n\nConstraints:\n- Only change the implementation file.\n- Verification: node --test",
+      "files": [
+        {"path": "reference/abort.md", "lines": ["Use AbortSignal.timeout(ms) for timeouts. Do not pass timeoutMs down."]},
+        {"path": "src/fetch.js", "lines": ["export async function get(url, {timeoutMs=1000}={}) { return fetch(url, {timeoutMs}); }"]},
+        {"path": "tests/fetch.test.js", "lines": ["import test from 'node:test'; import assert from 'node:assert/strict'; import {get} from '../src/fetch.js'; test('uses signal', async () => { const r=await get('x'); assert.ok(r.options.signal); });"]}
+      ]
+    }
+  ]
+}

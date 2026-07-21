@@ -1,21 +1,36 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@ag1/agent-core";
-import { type Message, type Model, streamSimple } from "@ag1/ai";
+import type { Message, Model } from "@ag1/ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
-import { createContextHygieneCopy, createLiveProviderContext } from "./compaction/micro-compact.js";
+import {
+	type ContextHygieneOptions,
+	createContextHygieneCopy,
+	createLiveProviderContext,
+} from "./compaction/micro-compact.js";
+import { createContextAuditLogger } from "./context-audit-log.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { convertToLlm } from "./messages.js";
+import { inferModelCapabilityProfile } from "./model-capability-profile.js";
 import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
+import { createResilientStreamFn } from "./nvidia-stream-fallback.js";
+import {
+	cacheHitRatio,
+	capturePrefixShape,
+	comparePrefixShape,
+	type PrefixChangeReason,
+	type PrefixShape,
+	type PrefixShapeUsage,
+} from "./prefix-shape.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
 import type { ToolSafetyPolicy } from "./safety-policy.js";
-import type { TaskPolicy } from "./task-policy.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
+import type { TaskPolicy } from "./task-policy.js";
 import { time } from "./timings.js";
 import {
 	allTools,
@@ -33,6 +48,7 @@ import {
 	editTool,
 	findTool,
 	grepTool,
+	isTaskToolDisabled,
 	lsTool,
 	readOnlyTools,
 	readTool,
@@ -138,6 +154,20 @@ function getDefaultAgentDir(): string {
 	return getAgentDir();
 }
 
+/** Hit-ratio drop (fraction points) vs the previous turn that triggers miss-reason attribution. */
+const CACHE_HIT_RATIO_DROP_THRESHOLD = 0.2;
+
+/** Usage of the most recent completed assistant turn, for cache-hit attribution. */
+function findLastTurnUsage(messages: AgentMessage[]): PrefixShapeUsage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "assistant" && "usage" in message && message.usage) {
+			return { cacheReadTokens: message.usage.cacheRead, inputTokens: message.usage.input };
+		}
+	}
+	return undefined;
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -201,8 +231,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 
-	// If session has data, try to restore model from it
-	if (!model && hasExistingSession && existingSession.model) {
+	// If no model was requested, restore the model recorded in the session. Note this must
+	// NOT depend on message count: workspace switching (autonomous isolation) re-creates
+	// sessions that carry a model in their header with zero messages — without restoring
+	// it, resolution silently falls back to pickPreferredAvailableModel (e.g. local) and
+	// CLI/default model choices are lost across the switch.
+	if (!model && existingSession.model) {
 		const restoredModel = modelRegistry.find(existingSession.model.provider, existingSession.model.modelId);
 		if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
 			model = restoredModel;
@@ -252,24 +286,110 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = "off";
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "grep", "find", "ls", "bash", "edit", "write", "webSearch", "webFetch"];
-	const initialActiveToolNames: ToolName[] = options.tools
+	const defaultActiveToolNames: string[] = [
+		"read",
+		"grep",
+		"find",
+		"ls",
+		"bash",
+		"edit",
+		"write",
+		"webSearch",
+		"webFetch",
+		"todo",
+	];
+	if (!isTaskToolDisabled()) {
+		defaultActiveToolNames.push("task");
+	}
+	const initialActiveToolNames: string[] = options.tools
 		? options.tools.map((t) => t.name).filter((n): n is ToolName => n in allTools)
 		: defaultActiveToolNames;
+	const modelCapabilityProfile = model ? inferModelCapabilityProfile(model) : undefined;
+	const contextHygieneOptions: ContextHygieneOptions | undefined =
+		modelCapabilityProfile?.recommendedCompactionPolicy === "local_small"
+			? {
+					keepTurns: 1,
+					maxToolResultChars: 160,
+					maxHiddenCustomChars: 100,
+				}
+			: modelCapabilityProfile?.toolCallReliability === "medium"
+				? {
+						keepTurns: 2,
+						maxToolResultChars: 180,
+						maxHiddenCustomChars: 140,
+					}
+				: undefined;
+	const contextAuditMetadata = model
+		? {
+				model: {
+					provider: model.provider,
+					id: model.id,
+					api: model.api,
+					contextWindow: model.contextWindow,
+				},
+				modelCapabilityProfile,
+			}
+		: {};
 
 	let agent: Agent;
+	const contextAuditLogger = createContextAuditLogger({
+		sessionId: sessionManager.getSessionId(),
+		cwd,
+	});
+	// Prefix-shape attribution state: tracks the previous request's prefix shape and the
+	// cache-hit ratio of the previous completed turn, so a meaningful ratio drop can be
+	// attributed to the prefix change recorded when that turn's request was built.
+	let prevPrefixShape: PrefixShape | undefined;
+	let prevPrefixChangeReasons: PrefixChangeReason[] = [];
+	let prevCacheHitRatio: number | undefined;
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const contextReadyMessages = createContextHygieneCopy(messages);
+		const contextReadyMessages = createContextHygieneCopy(messages, contextHygieneOptions, undefined);
 		const liveProviderMessages = createLiveProviderContext(contextReadyMessages);
 		const converted = convertToLlm(liveProviderMessages);
+		const prefixShape = capturePrefixShape(
+			agent?.state.systemPrompt ?? "",
+			agent?.state.tools ?? [],
+			sessionManager.getBranch().reduce((count, entry) => (entry.type === "compaction" ? count + 1 : count), 0),
+		);
+		const turnUsage = findLastTurnUsage(messages);
+		const currentCacheHitRatio = cacheHitRatio(turnUsage);
+		const prefixChangeReasons = comparePrefixShape(prevPrefixShape, prefixShape, turnUsage).reasons;
+		const missReasons =
+			currentCacheHitRatio !== undefined &&
+			prevCacheHitRatio !== undefined &&
+			prevCacheHitRatio - currentCacheHitRatio > CACHE_HIT_RATIO_DROP_THRESHOLD
+				? prevPrefixChangeReasons
+				: [];
+		prevPrefixShape = prefixShape;
+		prevPrefixChangeReasons = prefixChangeReasons;
+		if (currentCacheHitRatio !== undefined) {
+			prevCacheHitRatio = currentCacheHitRatio;
+		}
+		const runtimeAuditMetadata = {
+			...contextAuditMetadata,
+			contextHygieneOptions,
+			systemPromptChars: agent?.state.systemPrompt.length ?? 0,
+			prefixShape: {
+				prefixHash: prefixShape.prefixHash,
+				cacheReadTokens: turnUsage?.cacheReadTokens ?? 0,
+				inputTokens: turnUsage?.inputTokens ?? 0,
+				cacheHitRatio: currentCacheHitRatio ?? null,
+				missReasons,
+			},
+		};
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
+			contextAuditLogger.write(converted, {
+				...runtimeAuditMetadata,
+				sourceMessageCount: messages.length,
+				contextReadyMessageCount: contextReadyMessages.length,
+			});
 			return converted;
 		}
 		// Filter out ImageContent from all messages, replacing with text placeholder
-		return converted.map((msg) => {
+		const filtered = converted.map((msg) => {
 			if (msg.role === "user" || msg.role === "toolResult") {
 				const content = msg.content;
 				if (Array.isArray(content)) {
@@ -296,6 +416,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			return msg;
 		});
+		contextAuditLogger.write(filtered, {
+			...runtimeAuditMetadata,
+			sourceMessageCount: messages.length,
+			contextReadyMessageCount: contextReadyMessages.length,
+			blockImages: true,
+		});
+		return filtered;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -308,17 +435,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			tools: [],
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		streamFn: async (model, context, options) => {
-			const auth = await modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) {
-				throw new Error(auth.error);
-			}
-			return streamSimple(model, context, {
-				...options,
-				apiKey: auth.apiKey,
-				headers: auth.headers || options?.headers ? { ...auth.headers, ...options?.headers } : undefined,
-			});
-		},
+		streamFn: createResilientStreamFn(modelRegistry),
 		onPayload: async (payload, _model) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {

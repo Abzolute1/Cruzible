@@ -371,11 +371,11 @@ describe("AgentSession queue characterization", () => {
 			(context) => {
 				customTexts = context.messages
 					.filter((message) => message.role === "user" && typeof message.content !== "string")
-					.flatMap((message) =>
-						message.content
-							.filter((part) => part.type === "text")
-							.map((part) => part.text),
-					);
+					.flatMap((message) => {
+						const content = message.content;
+						if (!Array.isArray(content)) return [];
+						return content.flatMap((part) => (part.type === "text" ? [part.text] : []));
+					});
 				return fauxAssistantMessage("done");
 			},
 		]);

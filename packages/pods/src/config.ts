@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Config, Pod } from "./types.js";
@@ -26,15 +26,22 @@ export const loadConfig = (): Config => {
 		const data = readFileSync(configPath, "utf-8");
 		return JSON.parse(data);
 	} catch (e) {
-		console.error(`Error reading config: ${e}`);
-		return { pods: {} };
+		// Back up the corrupt file instead of silently overwriting it on next save
+		const backupPath = `${configPath}.corrupt-${Date.now()}`;
+		try {
+			copyFileSync(configPath, backupPath);
+		} catch {}
+		throw new Error(`Error reading config: ${e}. Corrupt file backed up to ${backupPath}`);
 	}
 };
 
 export const saveConfig = (config: Config): void => {
 	const configPath = getConfigPath();
+	const tmpPath = `${configPath}.tmp`;
 	try {
-		writeFileSync(configPath, JSON.stringify(config, null, 2));
+		// Write temp + rename so a crash mid-write can't corrupt pods.json
+		writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+		renameSync(tmpPath, configPath);
 	} catch (e) {
 		console.error(`Error saving config: ${e}`);
 		process.exit(1);

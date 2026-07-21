@@ -132,8 +132,20 @@ export class RuntimeMessageRouter {
 					return;
 				}
 
+				// Only accept messages from the registered sandbox's own iframe, or
+				// re-posted by our own window (SandboxedIframe re-posts sandbox-error
+				// as execution-error). sandboxIds alone are not a capability: other
+				// frames could guess them and forge messages, so verify e.source.
+				if (e.source !== window && e.source !== context.iframe?.contentWindow) {
+					return;
+				}
+
 				// Create respond() function for bidirectional communication
 				const respond = (response: any) => {
+					// NOTE: targetOrigin must stay "*". Sandboxed srcdoc/about:blank iframes
+					// have an opaque ("null") origin which cannot be expressed as a
+					// postMessage targetOrigin. Message integrity is enforced by the
+					// e.source check above instead.
 					context.iframe?.contentWindow?.postMessage(
 						{
 							type: "runtime-response",

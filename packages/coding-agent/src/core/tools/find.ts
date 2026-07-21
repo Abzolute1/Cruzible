@@ -62,15 +62,15 @@ function findPathRank(entry: string): number {
 	if (
 		normalized.includes("history/") ||
 		normalized.includes("history-test/") ||
+		normalized.includes("/reports/") ||
+		normalized.includes("/artifacts/") ||
 		normalized.includes("/debug/") ||
-		normalized.includes("benchmark-history") ||
 		normalized.includes("__pycache__")
 	) {
 		score += 80;
 	}
 
 	if (normalized.includes("compare")) score -= 20;
-	if (normalized.includes("benchmark")) score -= 10;
 
 	score += Math.min(normalized.length, 140);
 	return score;
@@ -126,7 +126,8 @@ function formatFindFollowupNotice(
 	if (results.length !== 1 || options.resultLimitReached || options.byteTruncated) return undefined;
 	const [result] = results;
 	if (!result) return undefined;
-	if (result.endsWith("/")) return `[1 directory match in ${result}; if the directory itself answers the question, answer now; otherwise next: ls ${result}]`;
+	if (result.endsWith("/"))
+		return `[1 directory match in ${result}; if the directory itself answers the question, answer now; otherwise next: ls ${result}]`;
 	return `[1 match in ${result}; if the user only asked which file/path, answer now; otherwise next: read ${result} limit=120]`;
 }
 
@@ -192,8 +193,9 @@ function formatFindNotice(limit: number, options: { resultLimitReached?: boolean
 
 function formatFindNoMatchNotice(pattern: string, searchDir?: string): string {
 	const notices = ["no matches"];
-	const anchorTerms = [...new Set((pattern.match(/[A-Za-z0-9]+/g) ?? []).map((term) => term.toLowerCase()))]
-		.filter((term) => term.length >= 3 && term !== "home" && term !== "alex");
+	const anchorTerms = [...new Set((pattern.match(/[A-Za-z0-9]+/g) ?? []).map((term) => term.toLowerCase()))].filter(
+		(term) => term.length >= 3 && term !== "home" && term !== "alex",
+	);
 	const normalizedDir = searchDir?.replace(/\\/g, "/").toLowerCase() ?? "";
 	if (anchorTerms.length >= 3) {
 		notices.push(
@@ -210,14 +212,19 @@ function formatFindNoMatchNotice(pattern: string, searchDir?: string): string {
 		);
 	}
 	if (
-		normalizedDir.includes("/packages/coding-agent/scripts")
-		&& (anchorTerms.includes("benchmark") || anchorTerms.includes("archive") || anchorTerms.includes("compare") || anchorTerms.includes("runner"))
+		normalizedDir.includes("/packages/coding-agent/scripts") &&
+		(anchorTerms.includes("archive") ||
+			anchorTerms.includes("compare") ||
+			anchorTerms.includes("runner") ||
+			anchorTerms.includes("script"))
 	) {
 		notices.push(
-			"for benchmark harness command scripts in this repo, do not stay in packages/coding-agent/scripts after a miss; pivot to repo-root `scripts/` and retry a stronger anchor like `harness-benchmark-*` or `*archive*.mjs`",
+			"for repo-level command/script lookups, do not stay in package-local scripts after a miss; pivot to repo-root `scripts/` and retry a stronger shared anchor like `*archive*.mjs`, `*compare*.mjs`, or `*runner*.mjs`",
 		);
 	}
-	notices.push("if matches later cluster under one directory, answer from that shared parent directory instead of expanding discovery");
+	notices.push(
+		"if matches later cluster under one directory, answer from that shared parent directory instead of expanding discovery",
+	);
 	return `[${notices.join("; ")}]`;
 }
 
@@ -274,21 +281,26 @@ export function createFindToolDefinition(
 							signal?.removeEventListener("abort", onAbort);
 							if (results.length === 0) {
 								resolve({
-									content: [{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` }],
+									content: [
+										{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` },
+									],
 									details: undefined,
 								});
 								return;
 							}
 
 							// Relativize paths against the search root for stable output.
-							const relativized = results.map((p) => {
-								if (p.startsWith(searchPath)) return toPosixPath(p.slice(searchPath.length + 1));
-								return toPosixPath(path.relative(searchPath, p));
-							}).map((entry) => toWorkspaceRelativePath(entry, searchPath, cwd)).sort((a, b) => {
-								const rankDiff = findPathRank(a) - findPathRank(b);
-								if (rankDiff !== 0) return rankDiff;
-								return a.localeCompare(b);
-							});
+							const relativized = results
+								.map((p) => {
+									if (p.startsWith(searchPath)) return toPosixPath(p.slice(searchPath.length + 1));
+									return toPosixPath(path.relative(searchPath, p));
+								})
+								.map((entry) => toWorkspaceRelativePath(entry, searchPath, cwd))
+								.sort((a, b) => {
+									const rankDiff = findPathRank(a) - findPathRank(b);
+									if (rankDiff !== 0) return rankDiff;
+									return a.localeCompare(b);
+								});
 							const resultLimitReached = relativized.length >= effectiveLimit;
 							const rawOutput = relativized.join("\n");
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
@@ -341,7 +353,9 @@ export function createFindToolDefinition(
 						// Default implementation uses fd.
 						const fdPath = await ensureTool("fd", true);
 						if (!fdPath) {
-							reject(new Error("fd is not available and could not be downloaded"));
+							reject(
+								new Error("fd is not available. Install fd on PATH or set AG1_ALLOW_TOOL_AUTO_DOWNLOAD=1."),
+							);
 							return;
 						}
 
@@ -388,7 +402,9 @@ export function createFindToolDefinition(
 						}
 						if (!output) {
 							resolve({
-								content: [{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` }],
+								content: [
+									{ type: "text", text: `(no matches)\n${formatFindNoMatchNotice(pattern, searchDir)}` },
+								],
 								details: undefined,
 							});
 							return;

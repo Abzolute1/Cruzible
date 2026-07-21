@@ -8,7 +8,7 @@
 
 import type { Server } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js";
-import { generatePKCE } from "./pkce.js";
+import { generatePKCE, generateState } from "./pkce.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
 
 type GeminiCredentials = OAuthCredentials & {
@@ -371,6 +371,12 @@ async function getUserEmail(accessToken: string): Promise<string | undefined> {
  * Refresh Google Cloud Code Assist token
  */
 export async function refreshGoogleCloudToken(refreshToken: string, projectId: string): Promise<OAuthCredentials> {
+	if (CLIENT_ID === "PLACEHOLDER_CLIENT_ID" || CLIENT_SECRET === "PLACEHOLDER_CLIENT_SECRET") {
+		throw new Error(
+			"This OAuth provider is not configured (placeholder client credentials). Gemini CLI login is unavailable in this build.",
+		);
+	}
+
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -380,6 +386,7 @@ export async function refreshGoogleCloudToken(refreshToken: string, projectId: s
 			refresh_token: refreshToken,
 			grant_type: "refresh_token",
 		}),
+		signal: AbortSignal.timeout(30_000),
 	});
 
 	if (!response.ok) {
@@ -414,7 +421,17 @@ export async function loginGeminiCli(
 	onProgress?: (message: string) => void,
 	onManualCodeInput?: () => Promise<string>,
 ): Promise<OAuthCredentials> {
+	if (CLIENT_ID === "PLACEHOLDER_CLIENT_ID" || CLIENT_SECRET === "PLACEHOLDER_CLIENT_SECRET") {
+		throw new Error(
+			"This OAuth provider is not configured (placeholder client credentials). Gemini CLI login is unavailable in this build.",
+		);
+	}
+
 	const { verifier, challenge } = await generatePKCE();
+	// The OAuth state must be independent of the PKCE verifier: it is echoed back
+	// in the redirect URL alongside the code, so reusing the verifier would nullify
+	// PKCE's interception protection.
+	const expectedState = generateState();
 
 	// Start local server for callback
 	onProgress?.("Starting local server for OAuth callback...");
@@ -431,7 +448,7 @@ export async function loginGeminiCli(
 			scope: SCOPES.join(" "),
 			code_challenge: challenge,
 			code_challenge_method: "S256",
-			state: verifier,
+			state: expectedState,
 			access_type: "offline",
 			prompt: "consent",
 		});
@@ -470,14 +487,14 @@ export async function loginGeminiCli(
 
 			if (result?.code) {
 				// Browser callback won - verify state
-				if (result.state !== verifier) {
+				if (result.state !== expectedState) {
 					throw new Error("OAuth state mismatch - possible CSRF attack");
 				}
 				code = result.code;
 			} else if (manualInput) {
 				// Manual input won
 				const parsed = parseRedirectUrl(manualInput);
-				if (parsed.state && parsed.state !== verifier) {
+				if (parsed.state && parsed.state !== expectedState) {
 					throw new Error("OAuth state mismatch - possible CSRF attack");
 				}
 				code = parsed.code;
@@ -491,7 +508,7 @@ export async function loginGeminiCli(
 				}
 				if (manualInput) {
 					const parsed = parseRedirectUrl(manualInput);
-					if (parsed.state && parsed.state !== verifier) {
+					if (parsed.state && parsed.state !== expectedState) {
 						throw new Error("OAuth state mismatch - possible CSRF attack");
 					}
 					code = parsed.code;
@@ -501,7 +518,7 @@ export async function loginGeminiCli(
 			// Original flow: just wait for callback
 			const result = await server.waitForCode();
 			if (result?.code) {
-				if (result.state !== verifier) {
+				if (result.state !== expectedState) {
 					throw new Error("OAuth state mismatch - possible CSRF attack");
 				}
 				code = result.code;
@@ -527,6 +544,7 @@ export async function loginGeminiCli(
 				redirect_uri: REDIRECT_URI,
 				code_verifier: verifier,
 			}),
+			signal: AbortSignal.timeout(30_000),
 		});
 
 		if (!tokenResponse.ok) {

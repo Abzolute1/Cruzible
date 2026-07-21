@@ -1,3 +1,6 @@
+import { keyText } from "./components/keybinding-hints.js";
+import { theme } from "./theme/theme.js";
+
 export type WorkingVerbContext =
 	| "read_file"
 	| "write_file"
@@ -398,10 +401,7 @@ export function formatWorkingActivityText(options: WorkingActivityOptions): stri
 }
 
 function buildPhaseSeed(phase: WorkingVerbPhase, options: WorkingActivityOptions, seedHint?: string): string {
-	return [
-		phase,
-		seedHint ?? options.promptText ?? "",
-	].join("|");
+	return [phase, seedHint ?? options.promptText ?? ""].join("|");
 }
 
 function stableHash(input: string): number {
@@ -466,7 +466,10 @@ function buildTarget(context: WorkingVerbContext, options: WorkingActivityOption
 		case "compile":
 		case "test":
 		case "bash":
-			return truncateText(extractBashTarget(options.command, options.args) ?? normalizeCommand(options.command) ?? "the command", 72);
+			return truncateText(
+				extractBashTarget(options.command, options.args) ?? normalizeCommand(options.command) ?? "the command",
+				72,
+			);
 		default:
 			return undefined;
 	}
@@ -505,8 +508,6 @@ function mapContextToPhase(context: WorkingVerbContext): WorkingVerbPhase {
 			return "building";
 		case "test":
 			return "testing";
-		case "bash":
-		case "default":
 		default:
 			return "executing";
 	}
@@ -526,7 +527,6 @@ function getPhasePoolContext(phase: WorkingVerbPhase): WorkingVerbContext {
 			return "compile";
 		case "testing":
 			return "test";
-		case "executing":
 		default:
 			return "bash";
 	}
@@ -622,7 +622,9 @@ function extractBashTarget(command: string | undefined, args?: Record<string, un
 	const tokens = normalized.split(/\s+/).filter(Boolean);
 
 	if (["ls", "dir", "tree", "find", "fd", "exa", "eza"].includes(primary)) {
-		const pathToken = [...tokens].reverse().find((token) => !token.startsWith("-") && !isOperatorToken(token) && token !== primary);
+		const pathToken = [...tokens]
+			.reverse()
+			.find((token) => !token.startsWith("-") && !isOperatorToken(token) && token !== primary);
 		return pathToken ?? "the workspace";
 	}
 
@@ -679,4 +681,109 @@ function truncateText(text: string | undefined, maxLength: number): string | und
 
 function isOperatorToken(token: string): boolean {
 	return ["&&", "||", "|", ";"].includes(token);
+}
+
+// ============================================================================
+// Working Verb Animation Controller (extracted from InteractiveMode)
+// ============================================================================
+
+export interface WorkingVerbState {
+	phase: WorkingVerbPhase;
+	verb: string;
+	tone: WorkingVerbTone;
+	target?: string;
+	interruptible: boolean;
+}
+
+export interface WorkingVerbAnimatorDeps {
+	isAutonomous(): boolean;
+	setMessage(message: string): void;
+	requestRender(): void;
+}
+
+export class WorkingVerbAnimator {
+	private frame = 0;
+	private timer: NodeJS.Timeout | undefined = undefined;
+	private state: WorkingVerbState | undefined = undefined;
+	private managedEnabled = false;
+
+	constructor(private readonly deps: WorkingVerbAnimatorDeps) {}
+
+	setState(next: WorkingVerbState | undefined, managedEnabled: boolean): void {
+		this.state = next;
+		this.managedEnabled = managedEnabled;
+	}
+
+	getState(): WorkingVerbState | undefined {
+		return this.state;
+	}
+
+	isManagedEnabled(): boolean {
+		return this.managedEnabled;
+	}
+
+	buildMessage(_lastSubmittedPromptText?: string): string {
+		if (!this.state) {
+			// Fallback simple activity (caller can enhance)
+			const verb = "Working";
+			return theme.bold(theme.fg("accent", verb));
+		}
+
+		const verb = this.renderShimmeringVerb(this.state.verb, this.state.tone);
+		const detail = this.state.target ? theme.fg("muted", ` ${this.state.target}`) : "";
+		const helper = this.state.interruptible ? theme.fg("dim", ` (${keyText("app.interrupt")} to interrupt)`) : "";
+		return `${verb}${detail}${helper}`;
+	}
+
+	startAnimation(): void {
+		if (this.timer || this.deps.isAutonomous()) return;
+		this.timer = setInterval(() => {
+			if (!this.state || !this.managedEnabled) {
+				return;
+			}
+			this.frame = (this.frame + 1) % 64;
+			this.deps.setMessage(this.buildMessage());
+			this.deps.requestRender();
+		}, 140);
+	}
+
+	stopAnimation(): void {
+		if (this.timer) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		}
+		this.frame = 0;
+	}
+
+	private renderShimmeringVerb(verb: string, tone: WorkingVerbTone): string {
+		if (this.deps.isAutonomous()) {
+			return theme.bold(theme.fg(tone, verb));
+		}
+		const chars = [...verb];
+		if (chars.length === 0) return theme.bold(theme.fg(tone, verb));
+		const pulseWidth = Math.max(2, Math.min(4, Math.ceil(chars.length / 4)));
+		const cycle = chars.length + pulseWidth;
+		const head = this.frame % cycle;
+		const tailStart = head - pulseWidth;
+		return chars
+			.map((char, index) => {
+				const inPulse = index >= tailStart && index < head;
+				if (inPulse && char.trim().length > 0) {
+					return theme.bold(theme.fg(this.getShimmerTone(tone), char));
+				}
+				return theme.bold(theme.fg(tone, char));
+			})
+			.join("");
+	}
+
+	private getShimmerTone(tone: WorkingVerbTone): "accentShimmer" | "successShimmer" | "bashModeShimmer" {
+		switch (tone) {
+			case "accent":
+				return "accentShimmer";
+			case "success":
+				return "successShimmer";
+			default:
+				return "bashModeShimmer";
+		}
+	}
 }

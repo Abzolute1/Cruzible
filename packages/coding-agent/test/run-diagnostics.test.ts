@@ -23,7 +23,12 @@ describe("run-diagnostics", () => {
 
 		expect(diagnostics.failureLabels).toEqual([]);
 		expect(diagnostics.wasteLabels).toEqual(
-			expect.arrayContaining(["repeated_tool_calls", "post_verifier_tool_attempt", "high_token_use", "policy_blocked_waste"]),
+			expect.arrayContaining([
+				"repeated_tool_calls",
+				"post_verifier_tool_attempt",
+				"high_token_use",
+				"policy_blocked_waste",
+			]),
 		);
 		expect(diagnostics.policyLabels).toEqual(["post_verifier_tool_block"]);
 	});
@@ -41,7 +46,12 @@ describe("run-diagnostics", () => {
 		});
 
 		expect(diagnostics.failureLabels).toEqual(
-			expect.arrayContaining(["final_answer_missing", "verification_failed", "missing_required_change", "wrong_target"]),
+			expect.arrayContaining([
+				"final_answer_missing",
+				"verification_failed",
+				"missing_required_change",
+				"wrong_target",
+			]),
 		);
 	});
 
